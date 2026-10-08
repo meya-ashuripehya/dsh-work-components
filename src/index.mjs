@@ -9,7 +9,7 @@
  *     settings.json（$DSH_HOME/data/dsh-work-components，见 ./tools.mjs dataDir；与组合 config 合并），
  *     避免 Desktop 无设置服务时开关（含会话控制）重启丢失。GET /settings 返回的密钥一律打码，
  *     并经 webServer 暴露 /dsh-workbench/api/settings、/dsh-workbench/api/components、
- *     POST /dsh-workbench/api/components/<id>/install|uninstall
+ *     POST /dsh-workbench/api/components/<id>/install|uninstall|cancel（cancel：取消进行中 / 排队中的下载并删除该组件的工具文件）
  *     （id：uv / node / office / blender / unity / figma / photoshop / chrome / godot），
  *     POST /dsh-workbench/api/components/godot/addon { project }（把同版本的 Godot AI 插件装进 Godot 项目），
  *     以及 /dsh-workbench/assets/*（插件 assets/ 下的静态文件；不要放入第三方界面截图或标志）。
@@ -562,7 +562,7 @@ export function apply(ctx, config) {
             const result = await components.installAddon(addon[1], body.project)
             return sendJson(res, 200, { ok: true, result, message: result.message, component: (await components.list()).find((c) => c.id === addon[1]) })
           }
-          const action = /^\/components\/([\w-]+)\/(install|uninstall)$/.exec(sub)
+          const action = /^\/components\/([\w-]+)\/(install|uninstall|cancel)$/.exec(sub)
           if (action && req.method === 'POST') {
             if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
             const [, id, verb] = action
@@ -570,6 +570,7 @@ export function apply(ctx, config) {
               const { component } = await components.install(id)
               return sendJson(res, 202, { ok: true, component })
             }
+            if (verb === 'cancel') return sendJson(res, 200, { ok: true, component: await components.cancel(id) })
             return sendJson(res, 200, { ok: true, component: await components.uninstall(id) })
           }
           const contrib = /^\/components\/([\w-]+)\/contribute$/.exec(sub)

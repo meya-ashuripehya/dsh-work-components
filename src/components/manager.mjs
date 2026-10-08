@@ -4,7 +4,8 @@
 import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
-  attachConsole, installNode, installUv, killInstallProcesses, managedPaths, readMarker, removeDir,
+  attachConsole, CANCELLED_TEXT, currentAbortSignal, installNode, installUv, isCancelled, killInstallProcesses, managedPaths, readMarker,
+  removeDir, removeInstallLeftovers, withAbortSignal,
 } from '../tools.mjs'
 import { PROBE_TTL_MS, defaultEnv, probeComponent } from '../connect.mjs'
 import { SOURCE_TEXT, resolveNode, resolveNpm, resolveUv } from './shared.mjs'
@@ -21,6 +22,19 @@ const LOG_SHOW = 80
 /** 启动门控提示：需要安装的组件在安装完成前不会启动。 */
 export const LAUNCH_BLOCK_INSTALLING = '正在安装：安装完成后可启动'
 export const LAUNCH_BLOCK_NOT_INSTALLED = '未安装：安装完成后可启动'
+/** 状态行正文（客户端会在前面加「未安装：」「未启动：」等状态标签，这里不再重复标签）。 */
+const DETAIL_NOT_INSTALLED = '安装完成后可启动'
+const DETAIL_INSTALLING = '正在安装，安装完成后可启动'
+const STATUS_LABEL = { connected: '已连接', on: '已启动', off: '未启动', error: '出错', missing: '未安装', ready: '可用' }
+
+/** 去掉正文开头与状态标签重复的「<标签>：」，避免显示成「未安装：未安装：…」。 */
+export function stripStatusLabel(status, detail) {
+  const label = STATUS_LABEL[status]
+  const text = String(detail ?? '')
+  if (!label) return text
+  const m = text.match(new RegExp(`^${label}\\s*[：:]\\s*`))
+  return m ? text.slice(m[0].length) : text
+}
 
 /**
  * 组件启动前是否必须先完成「下载安装」。
@@ -36,8 +50,14 @@ export function needsInstall(component, cfg) {
 }
 
 function idleInstall() {
-  return { state: 'idle', step: '', log: [], live: '', error: null, startedAt: null, finishedAt: null }
+  // dependsOn：正在等待的依赖安装（'uv' / 'node'），期间进度与控制台行取自该依赖的任务。
+  // cancelling：已请求取消（「正在取消」），等子进程退出、清理文件后回到 idle。
+  return { state: 'idle', step: '', log: [], live: '', error: null, startedAt: null, finishedAt: null, dependsOn: null, cancelling: false, percent: null }
 }
+
+const CANCELLING_TEXT = '正在取消'
+
+const DEP_LABEL = { uv: 'uv', node: 'Node.js' }
 
 /**
  * 管理所有组件的挂载与安装。getConfig 返回当前设置；每次 sync() 只重挂设置键变化了的组件。
@@ -104,7 +124,7 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       if (generation !== s.generation) return
       if (block) {
         s.status = block.missing ? 'missing' : 'off'
-        s.detail = block.reason
+        s.detail = block.missing ? DETAIL_NOT_INSTALLED : DETAIL_INSTALLING
         s.source = null
         return
       }
@@ -180,18 +200,25 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       proxy: proxy || '',
       step(text) { job.step = text },
       log: pushLog,
-      /** 子进程最新一行，不进日志。 */
-      live(line) { consoleOut.live(line) },
-      /** 下载字节进度，只刷新 live。 */
-      progress(line) { consoleOut.progress(line) },
+      /** 子进程最新一行，不进日志。没有字节进度时 percent 为空，客户端整行用流光。 */
+      live(line) { job.percent = null; consoleOut.live(line) },
+      /** 下载字节进度，只刷新 live。percent 为 0–100；未知总长时为 null。 */
+      progress(line, percent) {
+        job.percent = typeof percent === 'number' && Number.isFinite(percent) ? Math.max(0, Math.min(100, Math.round(percent))) : null
+        consoleOut.progress(line)
+      },
       /** 失败：把最近的控制台行追加进日志，并清掉 live。 */
       dumpConsole() { consoleOut.dump() },
       clearConsole() { consoleOut.clear() },
     }
   }
 
-  /** 下载前置工具（uv / Node.js）到 tools/，进度记在 job 上；失败时抛错（错误已记进 job）。 */
-  async function runPrereqInstall(job, cfg, installer) {
+  /**
+   * 下载前置工具（uv / Node.js）到 tools/，进度记在 job 上；失败时抛错（错误已记进 job）。
+   * 被取消时（自身被取消，或作为依赖时发起它的组件被取消）删除这次下载的临时文件，任务回到 idle 后抛出取消错误；
+   * tools/uv、tools/node 本身只在取消的就是 uv / Node.js 任务时由 runPrereqJob 删除。
+   */
+  async function runPrereqInstall(id, job, cfg, installer) {
     job.state = 'installing'
     job.startedAt ??= Date.now()
     const task = makeTask(job, cfg.proxy)
@@ -201,6 +228,13 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       job.step = '安装完成'
       task.log('安装完成')
     } catch (error) {
+      if (isCancelled(error)) {
+        task.clearConsole()
+        try { await removeInstallLeftovers(id) } catch {}
+        task.log(CANCELLED_TEXT)
+        Object.assign(job, { state: 'idle', step: '', live: '', error: null, cancelling: false })
+        throw error
+      }
       job.state = 'error'
       job.error = String(error?.message ?? error)
       job.step = '安装失败'
@@ -208,16 +242,16 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       task.dumpConsole()
       throw error
     } finally {
-      if (job.state !== 'error') task.clearConsole()
+      if (job.state === 'done') task.clearConsole()
       job.finishedAt = Date.now()
     }
   }
 
-  const runUvInstall = (job, cfg) => runPrereqInstall(job, cfg, (task) => installUv(task))
+  const runUvInstall = (job, cfg) => runPrereqInstall('uv', job, cfg, (task) => installUv(task))
   // Node.js：替换 tools/node 前先停掉正在用它的组件（只有在 beforeReplace 时才停，下载期间组件照常运行）。
   function runNodeInstall(job, cfg) {
     let users = []
-    const done = runPrereqInstall(job, cfg, (task) => installNode(task, {
+    const done = runPrereqInstall('node', job, cfg, (task) => installNode(task, {
       beforeReplace: async () => {
         users = componentsUsingManagedNode()
         for (const u of users) await suspend(u, '正在更新 Node.js，完成后自动重新挂载')
@@ -233,12 +267,68 @@ export function createComponentManager(ctx, getConfig, options = {}) {
     try {
       await (id === 'uv' ? runUvInstall(job, cfg) : runNodeInstall(job, cfg))
     } catch (error) {
-      ctx.logger?.warn?.(`dsh-workbench: install ${id} failed`, error)
+      // 取消的就是 uv / Node.js 本身：连同 tools/uv、tools/node 一并删除（先停掉正在用它的组件）。
+      if (isCancelled(error)) await removePrereqDir(id, job)
+      else ctx.logger?.warn?.(`dsh-workbench: install ${id} failed`, error)
     } finally {
       for (const u of users) await resume(u)
     }
     // uv / Node 到位后，之前「未安装」的组件可以用 uvx / npx 兜底启动了。
     for (const c of COMPONENTS) if (state.get(c.id).status === 'missing') await resume(c.id)
+  }
+
+  /** 删除 tools/uv 或 tools/node（取消 uv / Node.js 任务时）。 */
+  async function removePrereqDir(id, job) {
+    const m = managedPaths()
+    const dir = id === 'uv' ? dirname(m.uv) : m.node
+    const users = id === 'uv' ? componentsUsingManagedUv() : componentsUsingManagedNode()
+    for (const u of users) await suspend(u, '正在取消下载')
+    try {
+      await removeDir(dir)
+      job.log.push(`已删除 ${dir}`)
+    } catch (error) {
+      job.log.push(`未能删除 ${dir}：${error.message}`)
+    } finally {
+      for (const u of users) await resume(u)
+    }
+  }
+
+  /** 删除组件在 tools/ 里的安装目录和临时文件；partialOnly 时已安装完整的目录保留（排队中取消）。 */
+  async function removeComponentFiles(id, job, { partialOnly = false } = {}) {
+    const m = managedPaths()
+    const component = componentById(id)
+    let installed = false
+    if (partialOnly) {
+      try {
+        const raw = component.installed(getConfig())
+        installed = !!(typeof raw?.then === 'function' ? await raw : raw)
+      } catch {}
+    }
+    try { await removeInstallLeftovers(id) } catch {}
+    if (installed) return
+    const dir = id === 'office' ? m.officeRepo : m.dir(id)
+    if (!existsSync(dir)) return
+    try {
+      await component?.beforeRemove?.((line) => ctx.logger?.info?.(`dsh-workbench: ${line}`))
+      await removeDir(dir)
+      job.log.push(`已删除 ${dir}`)
+    } catch (error) {
+      job.log.push(`未能删除 ${dir}：${error.message}`)
+    }
+  }
+
+  /** 组件安装被取消：停掉组件、删除它的工具目录与临时文件，任务回到 idle（卡片显示「未安装」）。 */
+  async function finishCancelled(id, job, { partialOnly = false } = {}) {
+    job.step = CANCELLING_TEXT
+    job.live = ''
+    if (!partialOnly) await suspend(id, '正在取消下载')
+    try {
+      await removeComponentFiles(id, job, { partialOnly })
+    } finally {
+      job.log.push(CANCELLED_TEXT)
+      Object.assign(job, { state: 'idle', step: '', live: '', error: null, dependsOn: null, cancelling: false, finishedAt: Date.now() })
+      if (!partialOnly) await resume(id)
+    }
   }
 
   async function runInstall(id, job) {
@@ -251,6 +341,7 @@ export function createComponentManager(ctx, getConfig, options = {}) {
     const task = makeTask(job, cfg.proxy)
     let suspended = false
     let ok = false
+    let cancelled = false
     const hooks = { beforeReplace: async () => { suspended = true; await suspend(id) } }
     try {
       if (component.runtime === 'node') {
@@ -260,7 +351,8 @@ export function createComponentManager(ctx, getConfig, options = {}) {
           task.log('未检测到可用的 Node.js 20.19+ / 22.12+（含 npm），正在下载依赖：Node.js')
           const nodeJob = installs.get('node')
           Object.assign(nodeJob, idleInstall(), { state: 'installing', step: '正在作为依赖安装', startedAt: Date.now() })
-          try { await runNodeInstall(nodeJob, cfg) } catch (error) { throw new Error(`依赖安装失败（Node.js）：${error.message}`) }
+          job.dependsOn = 'node'
+          try { await runNodeInstall(nodeJob, cfg) } catch (error) { throw new Error(`依赖安装失败（Node.js）：${error.message}`) } finally { job.dependsOn = null }
           npm = resolveNpm(cfg)
           if (!npm) throw new Error('Node.js 已安装，但未找到 npm')
           task.log('依赖就绪：Node.js')
@@ -272,19 +364,30 @@ export function createComponentManager(ctx, getConfig, options = {}) {
         task.log('未检测到 uv，正在下载依赖：uv')
         const uvJob = installs.get('uv')
         Object.assign(uvJob, idleInstall(), { state: 'installing', step: '正在作为依赖安装', startedAt: Date.now() })
-        try { await runUvInstall(uvJob, cfg) } catch (error) { throw new Error(`依赖安装失败（uv）：${error.message}`) }
+        job.dependsOn = 'uv'
+        try { await runUvInstall(uvJob, cfg) } catch (error) { throw new Error(`依赖安装失败（uv）：${error.message}`) } finally { job.dependsOn = null }
         task.log('依赖就绪：uv')
       }
       await component.install(cfg, task, hooks)
       ok = true
       task.log('安装完成')
     } catch (error) {
-      ctx.logger?.warn?.(`dsh-workbench: install ${id} failed`, error)
-      job.state = 'error'
-      job.error = String(error?.message ?? error)
-      job.step = '安装失败'
-      task.log(`错误：${job.error}`)
-      task.dumpConsole()
+      if (isCancelled(error)) cancelled = true
+      else {
+        ctx.logger?.warn?.(`dsh-workbench: install ${id} failed`, error)
+        job.state = 'error'
+        job.error = String(error?.message ?? error)
+        job.step = '安装失败'
+        task.log(`错误：${job.error}`)
+        task.dumpConsole()
+      }
+    }
+    // 安装结束的同时收到取消：同样按取消处理（删除这次装的文件）。
+    if (currentAbortSignal()?.aborted) cancelled = true
+    if (cancelled) {
+      task.clearConsole()
+      await finishCancelled(id, job)
+      return
     }
     // 装好（或替换过文件）后重挂这个组件：设置里启用着就会改用 tools/ 里的新安装启动。
     // 先标记安装完成，启动门控才会放行这次重新挂载。
@@ -309,7 +412,19 @@ export function createComponentManager(ctx, getConfig, options = {}) {
   function publicInstall(id) {
     const j = installs.get(id)
     const busy = j.state === 'installing' || j.state === 'queued'
-    return { state: j.state, step: j.step, log: j.log.slice(-LOG_SHOW), live: busy ? (j.live || '') : '', error: j.error, startedAt: j.startedAt, finishedAt: j.finishedAt }
+    let step = j.step
+    let live = busy ? (j.live || '') : ''
+    // 正在下载 / 安装依赖（uv、Node.js）时，进度和控制台行跟随依赖任务，与依赖卡片显示一致。
+    const dep = busy && j.dependsOn && !j.cancelling ? installs.get(j.dependsOn) : null
+    if (dep && (dep.state === 'installing' || dep.state === 'queued')) {
+      const label = DEP_LABEL[j.dependsOn] || j.dependsOn
+      if (dep.step && dep.step !== '正在作为依赖安装') step = `依赖 ${label}：${dep.step}`
+      live = dep.live || live
+    }
+    let percent = busy ? (j.percent ?? null) : null
+    if (dep && (dep.state === 'installing' || dep.state === 'queued') && dep.live) percent = dep.percent ?? null
+    if (j.cancelling) { step = CANCELLING_TEXT; live = ''; percent = null }
+    return { state: j.state, step, log: j.log.slice(-LOG_SHOW), live, percent, error: j.error, startedAt: j.startedAt, finishedAt: j.finishedAt, cancelling: !!j.cancelling }
   }
 
   async function describe(id) {
@@ -400,10 +515,39 @@ export function createComponentManager(ctx, getConfig, options = {}) {
     /** 排队安装（或重新安装）；立刻返回，进度看 list() 里的 install 字段。done 是完成时 resolve 的 Promise。 */
     async install(id) {
       const job = checkId(id)
+      // 每次排队一个独立的 AbortController：取消只影响这一次安装；排队中取消时轮到它会直接跳过。
+      const ctrl = new AbortController()
       Object.assign(job, idleInstall(), { state: 'queued', step: '排队中' })
-      const done = queue.then(() => runInstall(id, job))
+      job.ctrl = ctrl
+      const done = queue.then(() => (ctrl.signal.aborted || disposed ? undefined : withAbortSignal(ctrl.signal, () => runInstall(id, job))))
       queue = done.catch(() => {})
       return { component: await describe(id), done }
+    },
+
+    /**
+     * 取消下载：正在安装的结束它的子进程树（含为它下载的 uv / Node.js），删除它的工具目录和临时文件；
+     * 排队中的移出队列，只删除未装完的残留，不影响正在为其他组件运行的安装。
+     */
+    async cancel(id) {
+      if (!installs.has(id)) throw httpError(404, `未知组件：${id}`)
+      const job = installs.get(id)
+      if (job.state !== 'installing' && job.state !== 'queued') throw httpError(409, '当前没有进行中的下载')
+      if (job.cancelling) return describe(id)
+      const queued = job.state === 'queued'
+      job.cancelling = true
+      job.step = CANCELLING_TEXT
+      job.ctrl?.abort()
+      if (queued) {
+        // 还没开始运行：队列轮到它时会跳过，这里直接清理残留。
+        if (id === 'uv' || id === 'node') {
+          try { await removeInstallLeftovers(id) } catch {}
+          job.log.push(CANCELLED_TEXT)
+          Object.assign(job, { state: 'idle', step: '', live: '', error: null, cancelling: false, finishedAt: Date.now() })
+        } else {
+          await finishCancelled(id, job, { partialOnly: true })
+        }
+      }
+      return describe(id)
     },
 
     /** 删除插件 tools/ 里的安装（共享的 tools/python 与缓存保留）。 */
@@ -533,6 +677,11 @@ export function createComponentManager(ctx, getConfig, options = {}) {
         const enabledKey = `${c.id}Enabled`
         const enabled = Object.prototype.hasOwnProperty.call(cfg, enabledKey) ? !!cfg[enabledKey] : false
         const block = await launchBlock(c, cfg, installed)
+        // 未启用的组件不会走到 launch 门控，s.status 停在 off；需要安装但未安装时应显示「未安装」而不是「未启动」。
+        let status = s.status === 'on' && connection?.state === 'connected' ? 'connected' : s.status
+        let detail = s.detail
+        if (status === 'off' && block?.missing) { status = 'missing'; detail = DETAIL_NOT_INSTALLED }
+        detail = stripStatusLabel(status, detail)
         return {
           id: c.id,
           label: c.label,
@@ -548,9 +697,9 @@ export function createComponentManager(ctx, getConfig, options = {}) {
           needsInstall: needsInstall(c, cfg),
           // 非 null 时客户端禁用启用开关（仍允许关闭），文本作为提示。
           launchBlocked: block ? block.reason : null,
-          status: s.status === 'on' && connection?.state === 'connected' ? 'connected' : s.status,
+          status,
           source: s.source,
-          detail: s.detail,
+          detail,
           command: s.command,
           connection,
           version,

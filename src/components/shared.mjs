@@ -135,7 +135,7 @@ export function http(serverName, url, extra = {}) {
   }
 }
 
-export const NOT_INSTALLED = (what) => `未安装 ${what}：请点击「下载安装」`
+export const NOT_INSTALLED = (what) => `缺少 ${what}：请点击「下载安装」`
 export const OFF = { ok: false, reason: '已在设置中停用' }
 
 /**

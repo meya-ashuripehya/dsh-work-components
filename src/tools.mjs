@@ -16,18 +16,19 @@
  *
  * 可写状态一律放在包目录之外的数据目录 dataDir()（默认 $DSH_HOME/data/dsh-work-components，
  * DSH_HOME 缺省为 ~/.dsh），这样以 npm 包安装时升级 / 重装不会丢，也不往 node_modules 里写。
- * 旧版本放在包目录里的 tools/、local-components/ 由 migrateLegacyState() 原地沿用（venv 里有绝对路径，搬动会坏），
- * 设置文件和 GameBot 数据则一次性搬进数据目录。
+ * 包目录里的 tools/、local-components/ 不再沿用（避免把 uv / Node.js / Python 和组件安装写进仓库）。
+ * 设置文件和 GameBot 数据仍一次性从包目录搬进数据目录。
  * 下载只用 Node 自带的 http/https（支持 HTTP 代理 CONNECT），解压用系统 tar（Windows 10+ 自带 bsdtar）。
  */
-import { execFileSync, spawn } from 'node:child_process'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFileSync, cpSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, cpSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cp, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import { homedir } from 'node:os'
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import tls from 'node:tls'
 import { fileURLToPath } from 'node:url'
 
@@ -73,32 +74,38 @@ function nonEmptyDir(p) {
 }
 
 let _legacy = null
+/** 路径是否落在包目录里（profile 的 junction 经 pluginRoot() 的 realpath 归一）。 */
+function insidePluginRoot(p) {
+  if (typeof p !== 'string' || !p) return false
+  let root, abs
+  try { root = resolve(pluginRoot()); abs = resolve(p) } catch { return false }
+  if (process.platform === 'win32') {
+    const r = root.toLowerCase()
+    const a = abs.toLowerCase()
+    return a === r || a.startsWith(r + '\\') || a.startsWith(r + '/')
+  }
+  const rel = relative(root, abs)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
 /**
- * 「沿用旧位置」的目录：{ tools?, localComponents? }（<数据目录>/legacy-locations.json）。
- * 第一次被问到时就做一次判定（不等 apply 里的迁移），这样任何代码路径先用到 toolsDir()
- * 也不会在数据目录里新建一个空 tools/、把旧检出里已装好的工具晾在一边。
- * tools/、local-components/ 里的 venv / 启动器写死了绝对路径，搬动会坏，所以原地沿用；
- * 要换到数据目录：停用组件后删掉 legacy-locations.json 里对应项，再在设置页重新「下载安装」。
+ * 数据目录之外的显式旧路径（<数据目录>/legacy-locations.json）。
+ * 包目录里的 tools/、local-components/ 不沿用：uv / Node.js / Python 和组件安装只进数据目录。
+ * 记录若指向包目录，读到时丢掉并写回。
  */
 function legacyLocations() {
   if (_legacy) return _legacy
   const dir = dataDir()
-  const done = readJson(join(dir, MIGRATION_FILE))
-  let legacy = readJson(join(dir, LEGACY_FILE))
-  // 有目录覆盖（冒烟 / 测试）时不下结论：否则一次测试就会永久跳过对真实旧目录的沿用。
-  const overridden = !!(process.env.DSH_WORKBENCH_TOOLS_DIR || process.env.DSH_WORKBENCH_LOCAL_COMPONENTS_DIR)
-  if (!done.adopt && !overridden) {
-    const root = pluginRoot()
-    legacy = { ...legacy }
-    const oldTools = join(root, 'tools')
-    if (!legacy.tools && nonEmptyDir(oldTools) && !existsSync(join(dir, 'tools'))) legacy.tools = oldTools
-    const oldLocal = join(root, 'local-components')
-    if (!legacy.localComponents && nonEmptyDir(oldLocal) && !existsSync(join(dir, 'local-components'))) legacy.localComponents = oldLocal
+  const legacy = readJson(join(dir, LEGACY_FILE))
+  let dropped = false
+  for (const key of ['tools', 'localComponents']) {
+    if (insidePluginRoot(legacy[key])) { delete legacy[key]; dropped = true }
+  }
+  if (dropped) {
     try {
       mkdirSync(dir, { recursive: true })
-      if (Object.keys(legacy).length) writeFileSync(join(dir, LEGACY_FILE), JSON.stringify(legacy, null, 2) + '\n', 'utf8')
-      writeMigration({ ...done, adopt: new Date().toISOString() })
-    } catch { /* read-only data dir: decide again next start */ }
+      writeFileSync(join(dir, LEGACY_FILE), JSON.stringify(legacy, null, 2) + '\n', 'utf8')
+    } catch { /* 下次启动再写 */ }
   }
   _legacy = legacy
   return _legacy
@@ -134,7 +141,7 @@ export const LEGACY_SETTINGS_FILE = '.dsh-workbench-settings.json'
 
 /**
  * 一次性把旧版本写在包目录里的状态迁到数据目录（每项只做一次，记录在 <数据目录>/migration.json）。
- *  - tools/、local-components/：原地沿用（见 legacyLocations）。
+ *  - tools/、local-components/：不从包目录沿用，一律用数据目录（见 legacyLocations）。
  *  - .dsh-workbench-settings.json → <数据目录>/settings.json（复制并校验后删除旧文件，里面可能有令牌）。
  *    设了 DSH_WORKBENCH_SETTINGS_FILE 时跳过（冒烟 / 测试用的临时文件）。
  *  - src/components/gamebot/data/ → <数据目录>/gamebot/data/（同上：复制后删除旧目录）。
@@ -373,12 +380,18 @@ function mb(n) { return (n / 1048576).toFixed(1) }
 /** 下载到 dest（先写 .part 再改名），跟随重定向，失败重试。onProgress(received, total|null)。 */
 export async function download(url, dest, { proxy, onProgress, retries = 3, timeoutMs = 60000, log } = {}) {
   await mkdir(dirname(dest), { recursive: true })
+  const signal = currentAbortSignal()
   let lastError
   for (let attempt = 1; attempt <= retries; attempt++) {
+    throwIfCancelled()
+    let res = null
+    // 取消下载：断开当前响应流；请求阶段用 race 立即返回（底层连接随后超时关闭）。
+    const onAbort = () => { try { res?.destroy(cancelledError()) } catch {} }
+    signal?.addEventListener('abort', onAbort, { once: true })
     try {
       let current = url
       for (let hop = 0; hop < 10; hop++) {
-        const res = await request(current, proxy, timeoutMs)
+        res = await raceAbort(request(current, proxy, timeoutMs), signal)
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume()
           current = new URL(res.headers.location, current).toString()
@@ -387,6 +400,7 @@ export async function download(url, dest, { proxy, onProgress, retries = 3, time
         if (res.statusCode !== 200) { res.resume(); throw new Error(`HTTP ${res.statusCode}：${current}`) }
         const total = Number(res.headers['content-length']) || null
         let received = 0
+        onProgress?.(0, total)
         const part = dest + '.part'
         await new Promise((ok, fail) => {
           const out = createWriteStream(part)
@@ -398,17 +412,25 @@ export async function download(url, dest, { proxy, onProgress, retries = 3, time
           res.pipe(out)
         })
         if (total && received !== total) throw new Error(`下载不完整：${received}/${total} 字节`)
+        throwIfCancelled()
         await rm(dest, { force: true })
         await rename(part, dest)
         return { bytes: received, url: current }
       }
       throw new Error('重定向次数过多')
     } catch (error) {
+      if (signal?.aborted) {
+        await rm(dest + '.part', { force: true }).catch(() => {})
+        throw cancelledError()
+      }
       lastError = error
       log?.(`下载失败（第 ${attempt}/${retries} 次）：${error.message}`)
-      if (attempt < retries) await new Promise((r) => setTimeout(r, 2000 * attempt))
+      if (attempt < retries) await raceAbort(new Promise((r) => setTimeout(r, 2000 * attempt)), signal).catch(() => {})
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
     }
   }
+  throwIfCancelled()
   throw lastError
 }
 
@@ -420,6 +442,54 @@ const children = new Set()
 export function killInstallProcesses() {
   for (const child of children) { try { child.kill() } catch {} }
   children.clear()
+}
+
+// ── 取消安装 ──
+// 每个安装任务在自己的 AbortSignal 上下文里运行（withAbortSignal）；run() / download() 从上下文取信号，
+// 取消时结束该任务的子进程树、断开下载，不影响其他任务，也不必给每个安装步骤单独传参。
+const abortStore = new AsyncLocalStorage()
+export const CANCELLED_TEXT = '已取消下载'
+
+export function withAbortSignal(signal, fn) { return abortStore.run(signal, fn) }
+export function currentAbortSignal() { return abortStore.getStore() ?? null }
+export function cancelledError() { return Object.assign(new Error(CANCELLED_TEXT), { name: 'AbortError', cancelled: true }) }
+export function isCancelled(error) { return !!error?.cancelled || currentAbortSignal()?.aborted === true }
+export function throwIfCancelled() { if (currentAbortSignal()?.aborted) throw cancelledError() }
+
+function raceAbort(promise, signal) {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(cancelledError())
+  return new Promise((ok, fail) => {
+    const onAbort = () => fail(cancelledError())
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then((v) => { signal.removeEventListener('abort', onAbort); ok(v) }, (e) => { signal.removeEventListener('abort', onAbort); fail(e) })
+  })
+}
+
+/** 结束子进程及其子进程（Windows 用 taskkill /T，uv / npm 会再拉起子进程）。 */
+function killTree(child) {
+  if (!child?.pid || child.exitCode !== null) return
+  if (IS_WIN) {
+    execFile('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, timeout: 10000 }, () => {})
+  } else {
+    try { child.kill('SIGKILL') } catch {}
+  }
+}
+
+/**
+ * 删除某个安装任务留下的临时文件：tools/.tmp-<id>-*（npm / uv / Node.js / OfficeMCP 的解压临时目录）
+ * 和 tools/.downloads 里属于它的下载文件（含 .part）。不碰 tools/<id> 本身、共享的 python / 缓存。
+ */
+export async function removeInstallLeftovers(id) {
+  const m = managedPaths()
+  const tmpPrefixes = [`.tmp-${id}-`]
+  const dlPrefixes = []
+  if (id === 'office') { tmpPrefixes.push('.tmp-officemcp-'); dlPrefixes.push('officemcp-') }
+  else if (id === 'uv') { const a = uvAsset(); if (a) dlPrefixes.push(a) }
+  else if (id === 'node') dlPrefixes.push('node-v')
+  const ls = (dir) => { try { return readdirSync(dir) } catch { return [] } }
+  for (const name of ls(m.root)) if (tmpPrefixes.some((p) => name.startsWith(p))) await removeDir(join(m.root, name))
+  for (const name of ls(m.downloads)) if (dlPrefixes.some((p) => name.startsWith(p))) await rm(join(m.downloads, name), { force: true, recursive: true })
 }
 
 /**
@@ -492,13 +562,17 @@ function consoleOf(task) {
 
 /** 运行命令，逐行回调输出；非零退出时带上最后几行输出抛错。 */
 export function run(command, args, { cwd, env, onLine } = {}) {
+  const signal = currentAbortSignal()
   return new Promise((ok, fail) => {
+    if (signal?.aborted) { fail(cancelledError()); return }
     const tail = []
     let child
     try {
       child = spawn(command, args, { cwd, env: env ?? process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (error) { fail(error); return }
     children.add(child)
+    const onAbort = () => killTree(child)
+    signal?.addEventListener('abort', onAbort, { once: true })
     const emit = (raw) => {
       // eslint-disable-next-line no-control-regex
       const line = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').trimEnd()
@@ -516,12 +590,14 @@ export function run(command, args, { cwd, env, onLine } = {}) {
     }
     child.stdout.on('data', onData('out'))
     child.stderr.on('data', onData('err'))
-    child.on('error', (e) => { children.delete(child); fail(e) })
+    child.on('error', (e) => { children.delete(child); signal?.removeEventListener('abort', onAbort); fail(signal?.aborted ? cancelledError() : e) })
     child.on('close', (code) => {
       children.delete(child)
+      signal?.removeEventListener('abort', onAbort)
       emit(partial.out)
       emit(partial.err)
-      if (code === 0) ok()
+      if (signal?.aborted) fail(cancelledError())
+      else if (code === 0) ok()
       else fail(new Error(`${command.split(/[\\/]/).pop()} ${args[0] ?? ''} 退出码 ${code}${tail.length ? '：' + tail.slice(-5).join(' | ') : ''}`))
     })
   })
@@ -614,16 +690,28 @@ export function uvEnv(proxy) {
   return env
 }
 
+function mibText(n) {
+  const v = n / 1048576
+  return v >= 10 ? v.toFixed(1) : v.toFixed(2)
+}
+
+/**
+ * HTTP 下载的 live 行。有 Content-Length 时带百分比（0–100）；
+ * 分块传输没有总长时只报已收字节和已用时间，percent 为 null，不编造百分比。
+ */
 function progressReporter(task, label) {
+  const started = Date.now()
   let last = 0
   return (received, total) => {
     const now = Date.now()
-    if (now - last < 300 && received !== total) return
+    if (now - last < 300 && !(total && received === total)) return
     last = now
-    const pct = total ? `（${Math.min(100, Math.round((received / total) * 100))}%）` : ''
-    const text = `正在下载${label}：${mb(received)}${total ? ` / ${mb(total)}` : ''} MB${pct}`
+    const pct = total ? Math.min(100, Math.round((received / total) * 100)) : null
+    const text = total
+      ? `正在下载${label}：${mibText(received)} / ${mibText(total)} MiB（${pct}%）`
+      : `正在下载${label}：${mibText(received)} MiB，已用 ${Math.max(0, Math.round((now - started) / 1000))} 秒`
     task.step(text)
-    task.progress?.(text)
+    task.progress?.(text, pct)
   }
 }
 
@@ -782,10 +870,259 @@ export async function installNpmPackage(task, { id, spec, bin, npm, extraArgs = 
   return { version: pkg.version, entry }
 }
 
+/**
+ * uv 的控制台输出与下载进度。
+ * - 伪控制台模式（Windows，见 runUvPty）：uv 画自己的进度条，bar(name, done, total) 收到每个包的已下载 / 总字节，
+ *   live 行显示「正在下载 pydantic-core：1.20 / 2.03 MiB（59%）」或汇总「已下载 12.3 / 40.1 MiB（31%），已完成 3 / 9」。
+ * - 管道模式（伪控制台不可用时）：uv 只打印「Downloading 包名 (大小)」和「 Downloaded 包名」，没有字节进度；
+ *   这时每秒显示包名、大小、完成数和已用时间。
+ */
+export function uvConsole(task, { tickMs = 1000 } = {}) {
+  const line = consoleOf(task)
+  if (typeof task?.progress !== 'function') return { onLine: line, bar() {}, stop() {} }
+  const pending = new Map() // 包名 -> { size, at }
+  const bars = new Map() // 包名 -> { done, total }（MiB）
+  let done = 0
+  let total = 0
+  let timer = null
+  const stop = () => { if (timer) { clearInterval(timer); timer = null } }
+  const num = (x) => (x >= 10 ? x.toFixed(1) : x.toFixed(2))
+  const pct = (d, t) => (t > 0 ? `（${Math.min(100, Math.floor((d / t) * 100))}%）` : '')
+  const showBars = () => {
+    const all = [...bars.entries()]
+    const active = all.filter(([, b]) => b.done < b.total)
+    if (!active.length) return
+    const finished = all.length - active.length
+    if (active.length === 1) {
+      const [name, b] = active[0]
+      const count = all.length > 1 ? `，已完成 ${finished} / ${all.length}` : ''
+      task.progress(`正在下载 ${name}：${num(b.done)} / ${num(b.total)} MiB${pct(b.done, b.total)}${count}`, b.total > 0 ? (b.done / b.total) * 100 : null)
+      return
+    }
+    let d = 0
+    let tot = 0
+    for (const [, b] of all) { d += b.done; tot += b.total }
+    task.progress(`已下载 ${num(d)} / ${num(tot)} MiB${pct(d, tot)}，已完成 ${finished} / ${all.length}`, tot > 0 ? (d / tot) * 100 : null)
+  }
+  const show = () => {
+    if (bars.size) { showBars(); return }
+    if (!pending.size) return
+    const [name, { size, at }] = pending.entries().next().value
+    const secs = Math.max(0, Math.round((Date.now() - at) / 1000))
+    const more = pending.size > 1 ? `等 ${pending.size} 个包` : ''
+    const count = total > 1 ? `，已完成 ${done} / ${total}` : ''
+    task.progress(`正在下载 ${name}（${size}）${more}${count}，已用 ${secs} 秒`, null)
+  }
+  return {
+    onLine(l) {
+      line(l)
+      let m
+      if ((m = /^\s*Downloading (\S+) \(([\d.]+\s*[KMGT]?i?B)\)\s*$/.exec(l))) {
+        if (!pending.has(m[1])) total++
+        pending.set(m[1], { size: m[2], at: Date.now() })
+        if (!timer) { timer = setInterval(show, tickMs); timer.unref?.() }
+        show()
+      } else if ((m = /^\s*Downloaded (\S+)\s*$/.exec(l)) && pending.delete(m[1])) {
+        done++
+        if (pending.size) show()
+        else stop()
+      }
+    },
+    /** 伪控制台里解析到的进度条：name 已下载 done / total MiB。 */
+    bar(name, doneMiB, totalMiB) {
+      if (!(totalMiB > 0)) return
+      bars.set(name, { done: Math.min(doneMiB, totalMiB), total: totalMiB })
+      stop() // 有真实进度后不再需要计时文案
+      showBars()
+    },
+    stop,
+  }
+}
+
+// ── 伪控制台（ConPTY）运行 uv ──
+// uv 只有在终端里（且 TERM 不是 dumb / 未设置）才画下载进度条。Windows 10 1809+ 的 CreatePseudoConsole 可以给 uv
+// 一个真正的控制台：由 Windows PowerShell 在运行时编译一段 C#（Add-Type，无原生插件）创建伪控制台并启动 uv，
+// 把 VT 输出转发到管道，这里解析进度条。辅助脚本启动 uv 失败（系统过旧、执行策略、编译失败）时退回普通管道模式。
+const PTY_SCRIPT_NAME = 'conpty-v1.ps1'
+const PTY_SCRIPT = String.raw`# Run a command inside a Windows pseudo console (ConPTY) and copy its VT output to stdout.
+# Usage: set DSH_PTY_CMD to the full Windows command line, then: powershell -File conpty.ps1 -Cols 300
+param([int]$Cols = 300, [int]$Rows = 50)
+$src = @"
+using System; using System.IO; using System.Runtime.InteropServices; using System.Threading; using Microsoft.Win32.SafeHandles;
+public static class Pty {
+  [StructLayout(LayoutKind.Sequential)] struct COORD { public short X, Y; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct STARTUPINFO { public int cb; public string lpReserved, lpDesktop, lpTitle; public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags; public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+  [StructLayout(LayoutKind.Sequential)] struct STARTUPINFOEX { public STARTUPINFO StartupInfo; public IntPtr lpAttributeList; }
+  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CreatePipe(out SafeFileHandle r, out SafeFileHandle w, IntPtr sa, int size);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern int CreatePseudoConsole(COORD size, SafeFileHandle hIn, SafeFileHandle hOut, uint flags, out IntPtr hpc);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern void ClosePseudoConsole(IntPtr hpc);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attr, IntPtr val, IntPtr size, IntPtr prev, IntPtr retSize);
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessW(string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+  public static int Run(string cmd, short cols, short rows) {
+    SafeFileHandle inR, inW, outR, outW;
+    CreatePipe(out inR, out inW, IntPtr.Zero, 0); CreatePipe(out outR, out outW, IntPtr.Zero, 0);
+    IntPtr hpc; int hr = CreatePseudoConsole(new COORD { X = cols, Y = rows }, inR, outW, 0, out hpc);
+    if (hr != 0) { Console.Error.WriteLine("CreatePseudoConsole failed " + hr); return 90; }
+    inR.Dispose(); outW.Dispose();
+    IntPtr size = IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+    var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX)); si.StartupInfo.dwFlags = 0x00000100; si.StartupInfo.hStdInput = IntPtr.Zero; si.StartupInfo.hStdOutput = IntPtr.Zero; si.StartupInfo.hStdError = IntPtr.Zero;
+    si.lpAttributeList = Marshal.AllocHGlobal(size);
+    if (!InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, ref size)) return 91;
+    if (!UpdateProcThreadAttribute(si.lpAttributeList, 0, (IntPtr)0x20016, hpc, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) return 92;
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x00080000 | 0x00000400, IntPtr.Zero, null, ref si, out pi)) { Console.Error.WriteLine("CreateProcess failed " + Marshal.GetLastWin32Error()); return 93; }
+    Console.Error.WriteLine("PID " + pi.dwProcessId);
+    var stdout = Console.OpenStandardOutput();
+    var reader = new Thread(() => { var fs = new FileStream(outR, FileAccess.Read); var buf = new byte[8192]; int n; try { while ((n = fs.Read(buf, 0, buf.Length)) > 0) { stdout.Write(buf, 0, n); stdout.Flush(); } } catch {} });
+    reader.IsBackground = true; reader.Start();
+    WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
+    uint code; GetExitCodeProcess(pi.hProcess, out code);
+    Thread.Sleep(300); ClosePseudoConsole(hpc); reader.Join(2000);
+    return (int)code;
+  }
+}
+"@
+Add-Type -TypeDefinition $src
+exit [Pty]::Run($env:DSH_PTY_CMD, [int16]$Cols, [int16]$Rows)
+`
+let ptyBroken = false
+
+function ptyScriptPath() {
+  const dir = join(toolsDir(), '.pty')
+  const file = join(dir, PTY_SCRIPT_NAME)
+  let current = null
+  try { current = readFileSync(file, 'utf8') } catch {}
+  if (current !== PTY_SCRIPT) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(file, PTY_SCRIPT, 'utf8')
+  }
+  return file
+}
+
+/** Windows 命令行引号规则（CreateProcess / CommandLineToArgvW）。 */
+function winQuote(arg) {
+  const s = String(arg)
+  if (s && !/[\s"]/.test(s)) return s
+  return '"' + s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"'
+}
+
+const UNIT_MIB = { B: 1 / 1048576, KiB: 1 / 1024, MiB: 1, GiB: 1024 }
+const BAR_RE = /^(\S+)\s+[-━─=>#]{5,}\s+([\d.]+)\s*(B|KiB|MiB|GiB)\/([\d.]+)\s*(B|KiB|MiB|GiB)\s*$/
+// 进度条之外的刷新内容（转圈、整体进度），不记入控制台缓冲。
+const PTY_NOISE_RE = /^[⠀-⣿]|Preparing packages\.\.\.|Installing wheels\.\.\.|Resolving dependencies|Building |[░█▏▎▍▌▋▊▉]{3,}/
+
+/**
+ * 在伪控制台里运行 uv。onLine：普通输出行（去掉 VT 控制序列）；onBar(name, doneMiB, totalMiB)：进度条。
+ * uv 没能启动时以 { ptyUnavailable: true } 的错误拒绝（调用方改用管道模式重试，不会重复执行 uv）。
+ */
+function runUvPty(command, args, { cwd, env, onLine, onBar } = {}) {
+  const signal = currentAbortSignal()
+  return new Promise((ok, fail) => {
+    if (signal?.aborted) { fail(cancelledError()); return }
+    let script
+    try { script = ptyScriptPath() } catch (error) { fail(Object.assign(error, { ptyUnavailable: true })); return }
+    const childEnv = { ...(env ?? process.env), TERM: 'xterm-256color', DSH_PTY_CMD: [command, ...args].map(winQuote).join(' ') }
+    delete childEnv.UV_NO_PROGRESS
+    let child
+    try {
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Cols', '300'], { cwd, env: childEnv, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (error) { fail(Object.assign(error, { ptyUnavailable: true })); return }
+    children.add(child)
+    const onAbort = () => killTree(child)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    let started = false
+    const diag = []
+    const tail = []
+    let last = ''
+    let carry = ''
+    // 伪控制台按整行重绘：多行之间常常没有换行，而是用光标定位和行尾补齐的空格隔开，所以再按长串空格切成行。
+    const handle = (piece) => {
+      for (const row of piece.split(/ {40,}/)) {
+        const text = row.trim()
+        if (!text) continue
+        const m = BAR_RE.exec(text)
+        if (m) { onBar?.(m[1], +m[2] * UNIT_MIB[m[3]], +m[4] * UNIT_MIB[m[5]]); continue }
+        if (PTY_NOISE_RE.test(text) || text === last) continue
+        last = text
+        tail.push(text)
+        if (tail.length > 15) tail.shift()
+        onLine?.(text)
+      }
+    }
+    const flush = (final) => {
+      let s = carry
+      // 不完整的控制序列留到下一块。
+      const partial = final ? -1 : s.search(/\x1b(\[[0-9;?]*[ -\/]*)?$|\x1b\][^\x07]*$/)
+      if (partial >= 0) { carry = s.slice(partial); s = s.slice(0, partial) } else carry = ''
+      s = s
+        .replace(/\x1b\][^\x07]*\x07/g, '') // 窗口标题
+        .replace(/\x1b\[(\d*)C/g, (_, n) => ' '.repeat(Math.min(Number(n) || 1, 300))) // 伪控制台用光标右移代替连续空格
+        .replace(/\x1b\[[0-9;?]*[ -\/]*[ABDEFGHJKSTfsu]/g, '\n') // 光标移动 / 清屏：按换行切分
+        .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '') // 其余（颜色、模式切换）
+        .replace(/\x1b./g, '')
+      const parts = s.split(/\r\n|\n|\r/)
+      const rest = final ? '' : parts.pop()
+      parts.forEach(handle)
+      if (final) return
+      // 没有换行的半行：完整的行（后面已有补齐空格）先处理，最后一段可能不完整，留到下一块。
+      const rows = rest.split(/( {40,})/)
+      const open = rows.pop()
+      if (rows.length) handle(rows.join(''))
+      carry = open + carry
+      if (carry.length > 8192) { handle(carry); carry = '' }
+    }
+    const debugFile = process.env.DSH_WORKBENCH_PTY_DEBUG // 排查用：把伪控制台原始输出追加到该文件
+    child.stdout.on('data', (buf) => {
+      if (debugFile) { try { appendFileSync(debugFile, buf) } catch {} }
+      carry += buf.toString('utf8')
+      flush(false)
+    })
+    child.stderr.on('data', (buf) => {
+      for (const l of buf.toString('utf8').split(/\r?\n/)) {
+        if (/^PID \d+/.test(l)) started = true
+        else if (l.trim()) { diag.push(l.trim()); if (diag.length > 10) diag.shift() }
+      }
+    })
+    child.on('error', (e) => { children.delete(child); signal?.removeEventListener('abort', onAbort); fail(signal?.aborted ? cancelledError() : Object.assign(e, { ptyUnavailable: !started })) })
+    child.on('close', (code) => {
+      children.delete(child)
+      signal?.removeEventListener('abort', onAbort)
+      flush(true)
+      if (signal?.aborted) fail(cancelledError())
+      else if (!started) fail(Object.assign(new Error(`伪控制台不可用（退出码 ${code}）${diag.length ? '：' + diag.slice(-3).join(' | ') : ''}`), { ptyUnavailable: true }))
+      else if (code === 0) ok()
+      else fail(new Error(`uv ${args[0] ?? ''} 退出码 ${code}${tail.length ? '：' + tail.slice(-5).join(' | ') : ''}`))
+    })
+  })
+}
+
+/** 会下载内容（包、Python）的 uv 子命令才值得用伪控制台显示进度。 */
+const usePty = (args) => IS_WIN && !ptyBroken && process.env.DSH_WORKBENCH_NO_PTY !== '1'
+  && (args[0] === 'venv' || args[0] === 'sync' || (args[0] === 'pip' && args[1] === 'install'))
+
 async function uv(task, args, cwd) {
   const m = managedPaths()
   task.log(`> uv ${args.join(' ')}`)
-  await run(m.uv, args, { cwd, env: uvEnv(task.proxy), onLine: consoleOf(task) })
+  const con = uvConsole(task)
+  const env = uvEnv(task.proxy)
+  try {
+    if (usePty(args)) {
+      try {
+        await runUvPty(m.uv, args, { cwd, env, onLine: con.onLine, onBar: con.bar })
+        return
+      } catch (error) {
+        if (!error?.ptyUnavailable) throw error
+        // uv 没有启动过：本次会话改用管道模式（只显示已用时间）。
+        ptyBroken = true
+        task.log(`无法显示下载进度（${error.message}），改用普通模式`)
+      }
+    }
+    await run(m.uv, args, { cwd, env, onLine: con.onLine })
+  } finally { con.stop() }
 }
 
 async function pruneCache(task) {
