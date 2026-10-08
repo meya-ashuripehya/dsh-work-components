@@ -62,8 +62,8 @@ export async function probe(ctx) {
   // ComfyUI 默认可在 8188；未开时仍可能已挂载 MCP（工具可 launch）。
   const open = await ctx.env.tcpOpen('127.0.0.1', 8188)
   const nr = mcpNotReady(ctx, this); if (nr) return nr
-  if (open) return result('connected', 'Comfy MCP 已挂载，本机 8188 端口开着（多半是 ComfyUI）', 'socket')
-  return result('connected', 'Comfy MCP 已挂载；本机 8188 未开——可用工具 launch_comfyui，或先手动启动 ComfyUI', 'mcp')
+  if (open) return result('connected', 'Comfy MCP 已挂载，本机 8188 端口已开放（通常为 ComfyUI）', 'socket')
+  return result('connected', 'Comfy MCP 已挂载；本机 8188 端口未开放：可使用工具 launch_comfyui，或手动启动 ComfyUI', 'mcp')
 }
 
 export default component

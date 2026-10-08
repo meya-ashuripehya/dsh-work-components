@@ -1,10 +1,11 @@
 /**
  * Smoke: built-in GameBot game cards end to end (no DSH host).
- *  - launch() all three games concurrently → one shared body (auto .venv if missing)
+ *  - launch() all three games concurrently → one shared body (prepares <dataDir>/gamebot/.venv on first run)
+ *  - a saved mineflayer driver is sent as minaret when no external bridge (GAMEBOT_MINECRAFT_BRIDGE_DIR) exists
  *  - card settings reach the body (PATCH /v1/games/<game>) — secrets compared, never printed
  *  - per-game MCP tools/list via the exact stdio plan launch() returned
  *  - disabling every game stops the body
- * Uses :8767 and a temp GAMEBOT_CONFIG_FILE, so real config / :8766 are untouched.
+ * Uses :8767 (SMOKE_GAMEBOT_URL) and a temp GAMEBOT_CONFIG_FILE / GAMEBOT_MEMORY_DIR, so real config / :8766 are untouched.
  */
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
@@ -15,7 +16,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const pluginRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const url = process.env.SMOKE_GAMEBOT_URL || 'http://127.0.0.1:8767'
 const cfgFile = join(tmpdir(), `gamebot-smoke-${Date.now()}.json`)
+const memDir = join(tmpdir(), `gamebot-smoke-memory-${Date.now()}`)
 process.env.GAMEBOT_CONFIG_FILE = cfgFile
+process.env.GAMEBOT_MEMORY_DIR = memDir
+delete process.env.GAMEBOT_MINECRAFT_BRIDGE_DIR
 
 const imp = (p) => import(pathToFileURL(join(pluginRoot, p)).href)
 const { RuntimeSettingsSchema } = await imp('lib/index.mjs')
@@ -25,7 +29,7 @@ const comps = Object.fromEntries(await Promise.all(GAMES.map(async (g) => [g, (a
 
 const fail = (m) => { console.error('FAIL:', m); cleanup(); process.exit(1) }
 const up = async () => { try { return (await fetch(`${url}/health`, { signal: AbortSignal.timeout(1000) })).ok } catch { return false } }
-function cleanup() { try { rmSync(cfgFile, { force: true }) } catch {} }
+function cleanup() { try { rmSync(cfgFile, { force: true }) } catch {} ; try { rmSync(memDir, { recursive: true, force: true }) } catch {} }
 
 const secret = `sk-smoke-${Math.random().toString(36).slice(2, 10)}`
 const base = RuntimeSettingsSchema({})
@@ -34,13 +38,13 @@ const card = {
   ...base,
   gamebotUrl: url,
   'gamebot-minecraftEnabled': true, 'gamebot-civilizationEnabled': true, 'gamebot-visionEnabled': true,
-  gb_minecraft_driver: 'mineflayer', gb_minecraft_MC_USERNAME: 'SmokeBot', gb_minecraft_MC_BRIDGE_PORT: '3199',
+  gb_minecraft_driver: 'mineflayer', gb_minecraft_MC_USERNAME: 'SmokeBot',
   gb_minecraft_LLM_PROVIDER: 'custom', gb_minecraft_LLM_API_KEY: secret,
   gb_civilization_CIV_POLL_INTERVAL_S: '7', gb_civilization_LLM_MODEL: 'smoke-model',
   gb_vision_max_px: '999',
 }
 const expect = {
-  minecraft: { driver: 'mineflayer', MC_USERNAME: 'SmokeBot', MC_BRIDGE_URL: 'http://127.0.0.1:3199', MC_DRIVER: 'mineflayer' },
+  minecraft: { driver: 'minaret', MC_USERNAME: 'SmokeBot', MC_DRIVER: 'neoforge_ws' },
   civilization: { CIV_POLL_INTERVAL_S: '7', LLM_MODEL: 'smoke-model' },
   vision: { max_px: '999' },
 }

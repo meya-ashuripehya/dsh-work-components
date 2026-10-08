@@ -1,4 +1,4 @@
-"""Mineflayer HTTP 后端：对接 TRIX-GAMEBOT/minecraft-bridge。"""
+"""Mineflayer HTTP 后端：对接外部 minecraft-bridge（不随插件提供，见 bridge_process.py）。"""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -111,7 +111,7 @@ class MineflayerBackend:
         body = {
             "host": self.config.get("MC_HOST") or "127.0.0.1",
             "port": int(self.config.get("MC_PORT") or 25565),
-            "username": self.config.get("MC_USERNAME") or "Shiro",
+            "username": self.config.get("MC_USERNAME") or "Player",
             "version": self.config.get("MC_VERSION") or "1.21.1",
             "auth": self.config.get("MC_AUTH") or "offline",
         }

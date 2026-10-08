@@ -20,7 +20,6 @@ def _truthy(raw: str, default: bool = True) -> bool:
 class Settings:
     host: str = "127.0.0.1"
     port: int = 8766
-    atri_base_url: str = "http://127.0.0.1:8000"
     evidence_dir: str = ""
 
     @classmethod
@@ -33,7 +32,6 @@ class Settings:
         return cls(
             host=_env("GAMEBOT_HOST", "127.0.0.1") or "127.0.0.1",
             port=port,
-            atri_base_url=_env("ATRI_BASE_URL", "http://127.0.0.1:8000").rstrip("/"),
             evidence_dir=_env("GAMEBOT_EVIDENCE_DIR", ""),
         )
 

@@ -47,7 +47,7 @@ router = APIRouter()
 
 class HealthResponse(BaseModel):
     ok: bool = True
-    service: str = "trix-gamebot"
+    service: str = "gamebot"
     sessions: int = 0
 
 

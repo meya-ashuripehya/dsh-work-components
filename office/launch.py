@@ -1,4 +1,4 @@
-"""dsh-multimodal 用来拉起 OfficeMCP（stdio）的启动脚本。
+"""dsh-work-components 用来拉起 OfficeMCP（stdio）的启动脚本。
 
 OfficeMCP 在启动和执行工具时会直接 print 到标准输出，而 stdio 模式下标准输出就是
 MCP 的 JSON-RPC 通道，这些日志会把协议搅乱。这里在导入 OfficeMCP 之前把默认的

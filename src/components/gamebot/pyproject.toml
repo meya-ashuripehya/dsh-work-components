@@ -1,7 +1,7 @@
 [project]
-name = "trix-gamebot"
+name = "dsh-work-components-gamebot"
 version = "0.1.0"
-description = "独立通用游戏机器人服务：能力发现 + 语义动作 + 多驱动适配"
+description = "GameBot body + MCP bridge bundled with dsh-work-components (dependencies only; code runs from PYTHONPATH)"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [

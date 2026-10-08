@@ -49,7 +49,7 @@ export const component = {
     return mcpRemoteLaunch(this, cfg, url, REMOTE_ARGS)
   },
   note() {
-    return '首次连接会打开浏览器做 Notion OAuth；授权缓存在 %USERPROFILE%\.mcp-auth。若提示找不到 mcp-remote，点「下载安装」。'
+    return '首次连接会打开浏览器做 Notion OAuth；授权缓存在 %USERPROFILE%\.mcp-auth。若提示未找到 mcp-remote，请点击「下载安装」。'
   },
 }
 

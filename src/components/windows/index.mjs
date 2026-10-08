@@ -34,6 +34,8 @@ export const component = {
     const spec = this.spec(cfg)
     return !!managedEntry('windows', spec, 'windows-mcp') || !!systemUvToolExe('windows-mcp', 'windows-mcp')
   },
+  // HTTP 模式连接已在运行的 Windows-MCP，无需安装。
+  needsInstall(cfg) { return cfg.windowsMode !== 'http' },
   install(cfg, task, hooks) {
     const spec = this.spec(cfg)
     return installVenvTool(task, { id: 'windows', spec, entry: 'windows-mcp', beforeReplace: hooks.beforeReplace })
@@ -75,7 +77,7 @@ export async function probe(ctx) {
     const host = (u.hostname || '127.0.0.1').replace(/^\[|\]$/g, '')
     const port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80)
     const ok = await ctx.env.tcpOpen(host === 'localhost' ? '127.0.0.1' : host, port)
-    if (!ok) return result('no-app', `连不上 Windows-MCP HTTP ${u.host}：确认计划任务 / 服务已启动，或改用 stdio 模式由插件拉起`, 'socket')
+    if (!ok) return result('no-app', `无法连接 Windows-MCP HTTP ${u.host}：请确认计划任务 / 服务已启动，或改用 stdio 模式由插件启动`, 'socket')
     return result('connected', `Windows-MCP HTTP ${u.host} 可连接`, 'socket')
   }
   const nr = mcpNotReady(ctx, this); if (nr) return nr

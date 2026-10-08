@@ -34,7 +34,7 @@ export const component = {
       return installVenvTool(task, { id: 'blender', spec, entry: packageName(spec), beforeReplace: hooks.beforeReplace })
     },
     launch(cfg) {
-      if (!cfg.blenderEnabled) return { ok: false, reason: '已在设置里关闭' }
+      if (!cfg.blenderEnabled) return { ok: false, reason: '已在设置中停用' }
       const spec = this.spec(cfg)
       const exe = managedEntry('blender', spec, packageName(spec))
       if (exe) return { ok: true, source: 'managed', config: stdio('blender', exe, []) }
@@ -51,7 +51,7 @@ export async function probe(ctx) {
     const port = Number(ctx.env.env.BLENDER_PORT) || 9876
     // 服务器用 Python 的 IPv4 socket 连 localhost，这里同样连 127.0.0.1。
     const ok = await ctx.env.tcpOpen(host === 'localhost' ? '127.0.0.1' : host, port)
-    if (!ok) return result('unreachable', `Blender 在运行，但连不上它的 MCP 插件端口 ${host}:${port}：在 Blender 侧栏 BlenderMCP 面板里点 Connect / Start MCP Server`, 'socket')
+    if (!ok) return result('unreachable', `Blender 正在运行，但无法连接 MCP 插件端口 ${host}:${port}：请在 Blender 侧栏 BlenderMCP 面板中点击 Connect / Start MCP Server`, 'socket')
     return result('connected', `Blender 插件端口 ${host}:${port} 可连接`, 'socket')
   
 }

@@ -12,11 +12,11 @@ import httpx
 _proc: Optional[subprocess.Popen] = None
 
 
-def _bridge_dir() -> Path:
+def _bridge_dir() -> Optional[Path]:
+    """The Mineflayer Node bridge is not shipped with dsh-work-components; point
+    GAMEBOT_MINECRAFT_BRIDGE_DIR at a checkout (server.js + npm install) to use it."""
     raw = (os.getenv("GAMEBOT_MINECRAFT_BRIDGE_DIR") or "").strip()
-    if raw:
-        return Path(raw)
-    return Path(__file__).resolve().parents[2] / "minecraft-bridge"
+    return Path(raw) if raw else None
 
 
 def _bridge_port(config: Optional[Dict[str, Any]] = None) -> int:
@@ -50,7 +50,7 @@ def status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "healthOk": healthy,
         "pid": _proc.pid if running else None,
         "bridgePort": port,
-        "bridgeDir": str(_bridge_dir()),
+        "bridgeDir": str(_bridge_dir()) if _bridge_dir() else None,
         "error": None if (running or healthy) else "bridge is not running",
     }
 
@@ -59,6 +59,14 @@ def start(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     global _proc
     port = _bridge_port(config)
     bridge_dir = _bridge_dir()
+    if bridge_dir is None:
+        return {
+            "ok": False,
+            "serviceRunning": False,
+            "healthOk": False,
+            "bridgePort": port,
+            "error": "Mineflayer 桥不随插件提供：设置环境变量 GAMEBOT_MINECRAFT_BRIDGE_DIR 指向 minecraft-bridge 目录（server.js + npm install）",
+        }
     server_js = bridge_dir / "server.js"
     node_modules = bridge_dir / "node_modules"
     if not server_js.exists():
@@ -85,12 +93,11 @@ def start(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     for key, fallback in (
         ("MC_HOST", "127.0.0.1"),
         ("MC_PORT", "25565"),
-        ("MC_USERNAME", "YUKI"),
+        ("MC_USERNAME", "Player"),
         ("MC_VERSION", "1.21.1"),
         ("MC_AUTH", "offline"),
         ("MC_BRIDGE_PORT", str(port)),
-        ("MC_ARCHIVE", "shiro"),
-        ("ATRI_BASE_URL", "http://127.0.0.1:8000"),
+        ("MC_ARCHIVE", ""),
     ):
         env[key] = str(cfg.get(key) or env.get(key) or fallback)
 
@@ -99,7 +106,7 @@ def start(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     log_path = log_dir / "bridge.log"
     log_file = open(log_path, "a", encoding="utf-8")
     _proc = subprocess.Popen(
-        [env.get("ATRI_NODE") or env.get("GAMEBOT_NODE") or "node", "server.js"],
+        [env.get("GAMEBOT_NODE") or "node", "server.js"],
         cwd=str(bridge_dir),
         env=env,
         stdout=log_file,

@@ -1,47 +1,76 @@
 /**
  * GameBot REST body process lifecycle (owned child only).
- * Spawned when the workbench enables GameBot; stopped on disable / plugin unload.
+ * Spawned when the workbench enables a game; stopped on disable / plugin unload.
  * Does not kill an externally started GameBot on the same port.
+ *
+ * Lifecycle: no module-level process listeners. The plugin's apply() installs the
+ * exit hook through ctx.effect (installExitHook) and awaits stopBody() on dispose.
+ * We never listen to SIGINT / SIGTERM: a listener would override the host's own
+ * signal handling (Node stops exiting by default once one is registered).
  */
-import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** @type {import('node:child_process').ChildProcess | null} */
 let owned = null
 /** Base URL we last started (no trailing slash). */
 let ownedUrl = ''
-let exitHooked = false
 
-function hookExit() {
-  if (exitHooked) return
-  exitHooked = true
-  const bye = () => { try { stopBodySync() } catch {} }
-  process.once('exit', bye)
-  process.once('SIGTERM', bye)
-  process.once('SIGINT', bye)
+const IS_WIN = process.platform === 'win32'
+
+/**
+ * Last-resort cleanup when the host process exits without disposing the plugin.
+ * 'exit' handlers must be synchronous, so this uses spawnSync. Returns a disposer.
+ */
+export function installExitHook() {
+  const onExit = () => {
+    const child = owned
+    if (!child?.pid || child.exitCode != null) return
+    try {
+      if (IS_WIN) spawnSync('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore', timeout: 5000 })
+      else child.kill('SIGTERM')
+    } catch {}
+  }
+  process.on('exit', onExit)
+  return () => { process.off('exit', onExit) }
 }
 
-function stopBodySync() {
+function waitExit(child, ms) {
+  if (child.exitCode != null || child.signalCode != null) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const t = setTimeout(() => { child.off('exit', done); resolve(false) }, ms)
+    function done() { clearTimeout(t); resolve(true) }
+    child.once('exit', done)
+  })
+}
+
+function runTaskkill(pid) {
+  return new Promise((resolve) => {
+    let p
+    try {
+      p = spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' })
+    } catch { resolve(false); return }
+    const t = setTimeout(() => { try { p.kill() } catch {} ; resolve(false) }, 10000)
+    p.once('error', () => { clearTimeout(t); resolve(false) })
+    p.once('close', (code) => { clearTimeout(t); resolve(code === 0) })
+  })
+}
+
+/** Stop the REST body we started (no-op if we never owned one). Resolves after the process tree is gone (bounded). */
+export async function stopBody() {
   const child = owned
   owned = null
   ownedUrl = ''
-  if (!child || child.killed) return
+  if (!child || child.exitCode != null || child.signalCode != null) return
   try {
-    if (process.platform === 'win32' && child.pid) {
-      spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], {
-        windowsHide: true,
-        stdio: 'ignore',
-      })
-    } else {
-      child.kill('SIGTERM')
-    }
+    if (IS_WIN && child.pid) await runTaskkill(child.pid)
+    else child.kill('SIGTERM')
   } catch {}
-}
-
-/** Stop the REST body we started (no-op if we never owned one). */
-export async function stopBody() {
-  stopBodySync()
+  if (!(await waitExit(child, 5000))) {
+    try { child.kill('SIGKILL') } catch {}
+    await waitExit(child, 2000)
+  }
 }
 
 export function bodyOwned() {
@@ -71,13 +100,13 @@ function parseListen(url) {
 }
 
 /**
- * Ensure GameBot REST is reachable at url. Spawns `python -m gamebot` under root when needed.
- * @param {{ root: string, python: string, url: string, log?: (line: string) => void }} opts
+ * Ensure GameBot REST is reachable at url. Spawns `python -m gamebot` (code from root/src,
+ * writable data under state) when needed.
+ * @param {{ root: string, state: string, python: string, url: string, log?: (line: string) => void }} opts
  */
 export async function ensureBodyRunning(opts) {
-  const { root, python, url, log } = opts
+  const { root, state, python, url, log } = opts
   const { host, port, base } = parseListen(url)
-  hookExit()
 
   if (await healthOk(base)) {
     log?.(`GameBot REST 已在线：${base}`)
@@ -93,19 +122,19 @@ export async function ensureBodyRunning(opts) {
     throw new Error(`GameBot 包不完整：${join(root, 'src', 'gamebot')}`)
   }
   if (!existsSync(python)) {
-    throw new Error(`找不到 Python：${python}`)
+    throw new Error(`未找到 Python：${python}`)
   }
 
   if (bodyOwned() && ownedUrl === base) {
     const ready = await waitHealth(base, 20000, log)
     if (ready) return { ok: true, reused: true, url: base }
-    stopBodySync()
+    await stopBody()
   } else if (bodyOwned() && ownedUrl !== base) {
-    log?.(`GameBot REST 地址变更（${ownedUrl} → ${base}），重启 body`)
-    stopBodySync()
+    log?.(`GameBot REST 地址已变更（${ownedUrl} → ${base}），正在重启`)
+    await stopBody()
   }
 
-  log?.(`启动 GameBot REST：${base}（python -m gamebot）`)
+  log?.(`正在启动 GameBot REST：${base}`)
   const env = {
     ...process.env,
     PYTHONIOENCODING: 'utf-8',
@@ -113,10 +142,16 @@ export async function ensureBodyRunning(opts) {
     GAMEBOT_HOST: host === 'localhost' ? '127.0.0.1' : host,
     GAMEBOT_PORT: port,
     GAMEBOT_OPEN_UI: '0',
-    GAMEBOT_CONFIG_FILE: process.env.GAMEBOT_CONFIG_FILE || join(root, 'data', 'game-configs.json'),
+    GAMEBOT_CONFIG_FILE: process.env.GAMEBOT_CONFIG_FILE || join(state, 'data', 'game-configs.json'),
+    GAMEBOT_MEMORY_DIR: process.env.GAMEBOT_MEMORY_DIR || join(state, 'data', 'memory'),
+    PYTHONPATH: [join(root, 'src'), process.env.PYTHONPATH].filter(Boolean).join(IS_WIN ? ';' : ':'),
+    // 字节码缓存写数据目录，不在包里生成 __pycache__。
+    PYTHONPYCACHEPREFIX: join(state, 'pycache'),
   }
+  mkdirSync(join(state, 'data'), { recursive: true })
+  // cwd = state：GameBot 的相对路径 data/…（outbox 等）都落在数据目录，不写包目录。
   const child = spawn(python, ['-m', 'gamebot'], {
-    cwd: root,
+    cwd: state,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
@@ -148,7 +183,7 @@ export async function ensureBodyRunning(opts) {
 
   const ready = await waitHealth(base, 25000, log)
   if (!ready) {
-    stopBodySync()
+    await stopBody()
     throw new Error(`GameBot REST 在 25s 内未就绪：${base}/health`)
   }
   log?.(`GameBot REST 已就绪：${base}`)
@@ -161,7 +196,7 @@ async function waitHealth(base, budgetMs, log) {
   while (Date.now() - start < budgetMs) {
     attempt++
     if (await healthOk(base, 1200)) return true
-    if (attempt === 1 || attempt % 5 === 0) log?.(`等待 GameBot /health…（${Math.round((Date.now() - start) / 1000)}s）`)
+    if (attempt === 1 || attempt % 5 === 0) log?.(`正在等待 GameBot 就绪（${Math.round((Date.now() - start) / 1000)} 秒）`)
     await new Promise((r) => setTimeout(r, 400))
   }
   return false
@@ -179,15 +214,15 @@ export async function acquireBody(user, opts) {
     return await inflight
   } catch (error) {
     users.delete(user)
-    if (!users.size) stopBodySync()
+    if (!users.size) await stopBody()
     throw error
   }
 }
 
-/** Drop `user`; stop our owned body when no game needs it any more. */
+/** Drop `user`; stop our owned body when no game needs it any more (awaits process exit). */
 export async function releaseBody(user) {
   users.delete(user)
-  if (!users.size) stopBodySync()
+  if (!users.size) await stopBody()
 }
 
 export function bodyUsers() { return [...users] }

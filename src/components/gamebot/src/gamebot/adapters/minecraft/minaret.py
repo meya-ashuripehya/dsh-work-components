@@ -68,7 +68,7 @@ class MinaretBackend:
         return str(self.config.get("NEOFORGE_WS_URL") or self.config.get("ws_url") or "ws://127.0.0.1:8765").strip()
 
     def _bot_name(self) -> str:
-        return str(self.config.get("MC_USERNAME") or self.config.get("username") or "Shiro").strip()
+        return str(self.config.get("MC_USERNAME") or self.config.get("username") or "Player").strip()
 
     def _headers(self) -> Optional[Dict[str, str]]:
         user = str(self.config.get("NEOFORGE_WS_AUTH_USER") or self.config.get("ws_user") or "").strip()

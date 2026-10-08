@@ -4,7 +4,7 @@
 import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
-  installNode, installUv, killInstallProcesses, managedPaths, readMarker, removeDir,
+  attachConsole, installNode, installUv, killInstallProcesses, managedPaths, readMarker, removeDir,
 } from '../tools.mjs'
 import { PROBE_TTL_MS, defaultEnv, probeComponent } from '../connect.mjs'
 import { SOURCE_TEXT, resolveNode, resolveNpm, resolveUv } from './shared.mjs'
@@ -18,8 +18,25 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms))
 const LOG_KEEP = 400
 const LOG_SHOW = 80
 
+/** 启动门控提示：需要安装的组件在安装完成前不会启动。 */
+export const LAUNCH_BLOCK_INSTALLING = '正在安装：安装完成后可启动'
+export const LAUNCH_BLOCK_NOT_INSTALLED = '未安装：安装完成后可启动'
+
+/**
+ * 组件启动前是否必须先完成「下载安装」。
+ * builtin 组件（如 GameBot，首次启用时自行准备环境）和没有 install() 的组件不需要；
+ * 组件可用 needsInstall(cfg) 声明当前设置下无需安装（远程 / HTTP 模式、设置中指定的路径等）。
+ */
+export function needsInstall(component, cfg) {
+  if (!component || component.builtin) return false
+  if (typeof component.needsInstall === 'function') {
+    try { return !!component.needsInstall(cfg) } catch { return true }
+  }
+  return typeof component.install === 'function'
+}
+
 function idleInstall() {
-  return { state: 'idle', step: '', log: [], error: null, startedAt: null, finishedAt: null }
+  return { state: 'idle', step: '', log: [], live: '', error: null, startedAt: null, finishedAt: null }
 }
 
 /**
@@ -53,6 +70,25 @@ export function createComponentManager(ctx, getConfig, options = {}) {
     s.command = null
   }
 
+  /**
+   * 启动门控：需要安装的组件在安装完成（installed 为真且没有进行中的安装任务）之前不允许启动。
+   * 返回 null 表示可以启动，否则返回 { missing, reason }。
+   */
+  async function launchBlock(component, cfg, known) {
+    const job = installs.get(component.id)
+    if (job && (job.state === 'installing' || job.state === 'queued')) return { missing: false, reason: LAUNCH_BLOCK_INSTALLING }
+    if (!needsInstall(component, cfg)) return null
+    let installed = known
+    if (installed === undefined) {
+      installed = false
+      try {
+        const raw = component.installed(cfg)
+        installed = !!(typeof raw?.then === 'function' ? await raw : raw)
+      } catch {}
+    }
+    return installed ? null : { missing: true, reason: LAUNCH_BLOCK_NOT_INSTALLED }
+  }
+
   async function syncOne(component) {
     const s = state.get(component.id)
     if (s.suspended || disposed) return
@@ -62,6 +98,17 @@ export function createComponentManager(ctx, getConfig, options = {}) {
     s.key = key
     stop(s)
     const generation = s.generation
+    // 已启用但未安装 / 正在安装：不启动（status 记为 missing / off，安装完成后 resume 会重新同步）。
+    if (cfg[`${component.id}Enabled`] === true) {
+      const block = await launchBlock(component, cfg)
+      if (generation !== s.generation) return
+      if (block) {
+        s.status = block.missing ? 'missing' : 'off'
+        s.detail = block.reason
+        s.source = null
+        return
+      }
+    }
     let plan
     try {
       const raw = component.launch(cfg)
@@ -83,7 +130,7 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       const via = plan.via ?? (plan.viaUvx ? 'uvx' : null)
       const how = plan.source === 'remote'
         ? `连接 ${plan.config.url}`
-        : via ? `${SOURCE_TEXT[plan.source]}的 ${via} 临时运行，尚未装进插件` : SOURCE_TEXT[plan.source] + (plan.runtime ? `，${plan.runtime}` : '')
+        : via ? `${SOURCE_TEXT[plan.source]}的 ${via} 临时运行` : SOURCE_TEXT[plan.source] + (plan.runtime ? `，${plan.runtime}` : '')
       s.detail = `已挂载（${how}），工具名前缀 mcp__${component.serverName}__`
     } catch (error) {
       if (generation !== s.generation) return
@@ -124,14 +171,22 @@ export function createComponentManager(ctx, getConfig, options = {}) {
   const componentsUsingManagedNode = () => componentsUsing(managedPaths().node)
 
   function makeTask(job, proxy) {
+    const consoleOut = attachConsole(job)
+    const pushLog = (line) => {
+      job.log.push(String(line))
+      if (job.log.length > LOG_KEEP) job.log.splice(0, job.log.length - LOG_KEEP)
+    }
     return {
       proxy: proxy || '',
       step(text) { job.step = text },
-      log(line) {
-        const text = String(line)
-        job.log.push(text)
-        if (job.log.length > LOG_KEEP) job.log.splice(0, job.log.length - LOG_KEEP)
-      },
+      log: pushLog,
+      /** 子进程最新一行，不进日志。 */
+      live(line) { consoleOut.live(line) },
+      /** 下载字节进度，只刷新 live。 */
+      progress(line) { consoleOut.progress(line) },
+      /** 失败：把最近的控制台行追加进日志，并清掉 live。 */
+      dumpConsole() { consoleOut.dump() },
+      clearConsole() { consoleOut.clear() },
     }
   }
 
@@ -150,8 +205,10 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       job.error = String(error?.message ?? error)
       job.step = '安装失败'
       task.log(`错误：${job.error}`)
+      task.dumpConsole()
       throw error
     } finally {
+      if (job.state !== 'error') task.clearConsole()
       job.finishedAt = Date.now()
     }
   }
@@ -199,24 +256,24 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       if (component.runtime === 'node') {
         let npm = resolveNpm(cfg)
         if (!npm) {
-          task.step('先安装 Node.js')
-          task.log('没有找到带 npm 的 Node.js 20.19+ / 22.12+，先下载 Node.js 到插件 tools/node…')
+          task.step('正在下载依赖：Node.js')
+          task.log('未检测到可用的 Node.js 20.19+ / 22.12+（含 npm），正在下载依赖：Node.js')
           const nodeJob = installs.get('node')
-          Object.assign(nodeJob, idleInstall(), { state: 'installing', step: '作为依赖自动安装', startedAt: Date.now() })
-          try { await runNodeInstall(nodeJob, cfg) } catch (error) { throw new Error(`安装 Node.js 失败：${error.message}`) }
+          Object.assign(nodeJob, idleInstall(), { state: 'installing', step: '正在作为依赖安装', startedAt: Date.now() })
+          try { await runNodeInstall(nodeJob, cfg) } catch (error) { throw new Error(`依赖安装失败（Node.js）：${error.message}`) }
           npm = resolveNpm(cfg)
-          if (!npm) throw new Error('Node.js 装好后仍然找不到 npm')
-          task.log('Node.js 已就绪')
+          if (!npm) throw new Error('Node.js 已安装，但未找到 npm')
+          task.log('依赖就绪：Node.js')
         }
         task.log(`使用 npm：${SOURCE_TEXT[npm.source]} ${npm.node}（Node ${npm.version}）`)
         hooks.npm = npm
       } else if (!existsSync(managedPaths().uv)) {
-        task.step('先安装 uv')
-        task.log('插件 tools/uv 里还没有 uv，先下载 uv…')
+        task.step('正在下载依赖：uv')
+        task.log('未检测到 uv，正在下载依赖：uv')
         const uvJob = installs.get('uv')
-        Object.assign(uvJob, idleInstall(), { state: 'installing', step: '作为依赖自动安装', startedAt: Date.now() })
-        try { await runUvInstall(uvJob, cfg) } catch (error) { throw new Error(`安装 uv 失败：${error.message}`) }
-        task.log('uv 已就绪')
+        Object.assign(uvJob, idleInstall(), { state: 'installing', step: '正在作为依赖安装', startedAt: Date.now() })
+        try { await runUvInstall(uvJob, cfg) } catch (error) { throw new Error(`依赖安装失败（uv）：${error.message}`) }
+        task.log('依赖就绪：uv')
       }
       await component.install(cfg, task, hooks)
       ok = true
@@ -227,29 +284,32 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       job.error = String(error?.message ?? error)
       job.step = '安装失败'
       task.log(`错误：${job.error}`)
+      task.dumpConsole()
     }
     // 装好（或替换过文件）后重挂这个组件：设置里启用着就会改用 tools/ 里的新安装启动。
-    if (ok || suspended) {
-      if (ok) job.step = '重新挂载组件'
-      await resume(id)
-    }
+    // 先标记安装完成，启动门控才会放行这次重新挂载。
     if (ok) {
       job.state = 'done'
       job.step = '安装完成'
+      task.clearConsole()
     }
     job.finishedAt = Date.now()
+    if (ok || suspended) await resume(id)
+    // 其他组件可能共用刚装好的文件（如 Notion / Cloudflare 共用 mcp-remote），之前「未安装」的一并重新同步。
+    if (ok) for (const c of COMPONENTS) if (c.id !== id && state.get(c.id).status === 'missing') await resume(c.id)
   }
 
   function checkId(id) {
     if (!installs.has(id)) throw httpError(404, `未知组件：${id}`)
     const job = installs.get(id)
-    if (job.state === 'installing' || job.state === 'queued') throw httpError(409, `${id} 正在安装，请等它完成`)
+    if (job.state === 'installing' || job.state === 'queued') throw httpError(409, `${id} 正在安装，请在安装完成后重试`)
     return job
   }
 
   function publicInstall(id) {
     const j = installs.get(id)
-    return { state: j.state, step: j.step, log: j.log.slice(-LOG_SHOW), error: j.error, startedAt: j.startedAt, finishedAt: j.finishedAt }
+    const busy = j.state === 'installing' || j.state === 'queued'
+    return { state: j.state, step: j.step, log: j.log.slice(-LOG_SHOW), live: busy ? (j.live || '') : '', error: j.error, startedAt: j.startedAt, finishedAt: j.finishedAt }
   }
 
   async function describe(id) {
@@ -287,6 +347,20 @@ export function createComponentManager(ctx, getConfig, options = {}) {
 
   const api = {
     sync: () => Promise.all(COMPONENTS.map(syncOne)),
+
+    /**
+     * 设置补丁里把组件从未启用改为启用时，检查启动门控；被拦下时返回错误文本（否则 null）。
+     * prev / next 为应用补丁前后的设置。
+     */
+    async enableBlocked(prev, next) {
+      for (const c of COMPONENTS) {
+        const k = `${c.id}Enabled`
+        if (next[k] !== true || prev[k] === true) continue
+        const block = await launchBlock(c, next)
+        if (block) return `无法启用「${c.label}」：${block.reason}`
+      }
+      return null
+    },
 
     /**
      * 探测已启动组件的连接（结果缓存 PROBE_TTL_MS，同一组件不会并发探测）。
@@ -361,10 +435,10 @@ export function createComponentManager(ctx, getConfig, options = {}) {
      */
     async installAddon(id, project) {
       const component = componentById(id)
-      if (!component?.installAddon) throw httpError(404, `${id} 没有可以装进项目的插件`)
+      if (!component?.installAddon) throw httpError(404, `${id} 不支持安装插件到项目`)
       const job = installs.get(id)
-      if (job.state === 'installing' || job.state === 'queued') throw httpError(409, `${id} 正在安装，请等它完成`)
-      if (addonBusy.has(id)) throw httpError(409, '上一次「安装插件到项目」还没完成')
+      if (job.state === 'installing' || job.state === 'queued') throw httpError(409, `${id} 正在安装，请在安装完成后重试`)
+      if (addonBusy.has(id)) throw httpError(409, '「安装插件到项目」正在进行，请稍后重试')
       addonBusy.add(id)
       try {
         return await component.installAddon(getConfig(), project, {
@@ -404,14 +478,14 @@ export function createComponentManager(ctx, getConfig, options = {}) {
         label: 'uv',
         url: 'https://github.com/astral-sh/uv',
         kind: 'prerequisite',
-        summary: 'Python 包管理器，安装和运行 Office / Blender / Unity / Godot 时使用；安装这些组件时会自动下载。',
+        summary: 'Python 包管理器，用于安装和运行 Office / Blender / Unity / Godot 等组件；安装这些组件时将自动下载。',
         enabled: true,
         installed: existsSync(m.uv),
         status: uv ? 'ready' : 'missing',
         source: uv?.source ?? null,
         detail: uv
           ? `${SOURCE_TEXT[uv.source]}：${uv.path}${uv.source === 'managed' && uvMarker?.version ? `（${uvMarker.version}）` : ''}`
-          : '安装 Office / Blender / Unity / Godot 时会自动下载，也可以直接点「下载安装」',
+          : '未安装。安装 Office / Blender / Unity / Godot 等组件时将自动下载，也可点击「下载安装」',
         command: uv?.path ?? null,
         install: publicInstall('uv'),
       }
@@ -422,7 +496,7 @@ export function createComponentManager(ctx, getConfig, options = {}) {
         label: 'Node.js',
         url: 'https://nodejs.org/',
         kind: 'prerequisite',
-        summary: '运行和安装 Chrome / Figma / Photoshop 组件（npm 包）；系统里没有带 npm 的 Node.js 时，安装这些组件会自动下载到 tools/node。',
+        summary: '用于运行和安装 Chrome / Figma / Photoshop 等 npm 组件；系统中没有带 npm 的 Node.js 时，安装这些组件将自动下载 Node.js。',
         enabled: true,
         installed: existsSync(m.nodeExe),
         status: npm || node ? 'ready' : 'missing',
@@ -430,8 +504,8 @@ export function createComponentManager(ctx, getConfig, options = {}) {
         detail: npm
           ? `${SOURCE_TEXT[npm.source]}：${npm.node}（${npm.version}，带 npm）`
           : node
-            ? `${SOURCE_TEXT[node.source]}：${node.path}（${node.version}）可以运行组件，但没有 npm；安装 npm 组件时会自动下载 Node.js`
-            : '没有找到 Node.js 20.19+ / 22.12+，安装 npm 组件时会自动下载，也可以直接点「下载安装」',
+            ? `${SOURCE_TEXT[node.source]}：${node.path}（${node.version}）可运行组件，但缺少 npm；安装 npm 组件时将自动下载 Node.js`
+            : '未检测到 Node.js 20.19+ / 22.12+。安装 npm 组件时将自动下载，也可点击「下载安装」',
         command: npm?.node ?? node?.path ?? null,
         install: publicInstall('node'),
       }
@@ -458,6 +532,7 @@ export function createComponentManager(ctx, getConfig, options = {}) {
         }
         const enabledKey = `${c.id}Enabled`
         const enabled = Object.prototype.hasOwnProperty.call(cfg, enabledKey) ? !!cfg[enabledKey] : false
+        const block = await launchBlock(c, cfg, installed)
         return {
           id: c.id,
           label: c.label,
@@ -469,6 +544,10 @@ export function createComponentManager(ctx, getConfig, options = {}) {
           moduleDir: c.moduleDir || null,
           enabled,
           installed,
+          builtin: !!c.builtin,
+          needsInstall: needsInstall(c, cfg),
+          // 非 null 时客户端禁用启用开关（仍允许关闭），文本作为提示。
+          launchBlocked: block ? block.reason : null,
           status: s.status === 'on' && connection?.state === 'connected' ? 'connected' : s.status,
           source: s.source,
           detail: s.detail,

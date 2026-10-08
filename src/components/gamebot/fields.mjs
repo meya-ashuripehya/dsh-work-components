@@ -3,7 +3,10 @@
  * - 设置键：gb_<game>_<GameBot 配置键>，Minecraft 驱动另有 gb_minecraft_driver。
  * - 值一律是字符串（与 GameBot config 相同；开关是 "1" / "0"，"" 表示继承 / 留空）。
  * - 下发：launch 时把本卡全部值 PATCH 到 GameBot /v1/games/<game>（见 toGameBotPatch）。
- * - lib/client.js 的 INPUT_FIELDS / FEATURES.keys 由 scripts/gen-gamebot-fields.mjs 从这里生成。
+ * - lib/client.js 的 INPUT_FIELDS / FEATURES.keys 由 scripts/gen-gamebot-fields.mjs 从这里生成
+ *   （npm run check / prepublishOnly 会用 --check 校验两边一致）。
+ * - Minecraft 只提供 minaret 驱动：Mineflayer 需要的 Node 桥（minecraft-bridge）不随包发布。
+ *   设置了环境变量 GAMEBOT_MINECRAFT_BRIDGE_DIR（指向装好依赖的桥目录）时，已存的 mineflayer 驱动值才会下发。
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -45,7 +48,7 @@ function llmBlock(d) {
     { cfg: 'CHAT_PERSONA', label: '聊天人设', kind: 'textarea', def: '', desc: '留空 = 使用 GameBot 默认。' },
     { cfg: 'MEMORY_ENABLED', label: '记忆', kind: 'select', options: ONOFF, def: d.MEMORY_ENABLED },
     { cfg: 'MEMORY_BLOCK_SIZE', label: '记忆块大小', kind: 'text', def: d.MEMORY_BLOCK_SIZE },
-    { cfg: 'DSH_SESSION', label: 'DSH 会话 id', kind: 'text', def: d.DSH_SESSION, desc: '交流正文写入的 DSH 会话（可留空）。' },
+    { cfg: 'DSH_SESSION', label: 'DSH 会话 id', kind: 'text', def: d.DSH_SESSION, desc: '可选：经 DSH 宿主内的陪玩桥把交流正文写入这个会话（不直接写会话文件）；留空不写。' },
   ]
 }
 
@@ -59,31 +62,26 @@ const BASE_LLM = {
 
 export const GAME_FIELDS = {
   minecraft: [
-    { cfg: 'driver', label: '驱动', kind: 'select', def: 'minaret', options: [{ value: 'minaret', label: 'minaret（NeoForge 模组 WebSocket）' }, { value: 'mineflayer', label: 'mineflayer（原版 / Paper 机器人）' }] },
-    { cfg: 'NEOFORGE_WS_URL', label: 'NeoForge WS 地址', kind: 'text', def: 'ws://127.0.0.1:8765', desc: 'minaret 驱动用。' },
+    { cfg: 'driver', label: '驱动', kind: 'select', def: 'minaret', options: [{ value: 'minaret', label: 'minaret（NeoForge 模组 WebSocket）' }], desc: 'Mineflayer 驱动需要的 Node 桥不随插件提供，已隐藏。' },
+    { cfg: 'NEOFORGE_WS_URL', label: 'NeoForge WS 地址', kind: 'text', def: 'ws://127.0.0.1:8765' },
     { cfg: 'NEOFORGE_WS_AUTH_USER', label: 'NeoForge WS 用户', kind: 'text', def: '' },
     { cfg: 'NEOFORGE_WS_AUTH_PASS', label: 'NeoForge WS 密码', kind: 'password', def: '' },
-    { cfg: 'MC_HOST', label: '服务器地址', kind: 'text', def: '127.0.0.1', desc: 'mineflayer 驱动用。' },
-    { cfg: 'MC_PORT', label: '服务器端口', kind: 'text', def: '25565' },
-    { cfg: 'MC_USERNAME', label: '机器人用户名', kind: 'text', def: 'YUKI' },
+    { cfg: 'MC_USERNAME', label: '机器人用户名', kind: 'text', def: 'Player' },
     { cfg: 'MC_VERSION', label: 'MC 版本', kind: 'text', def: '1.21.1' },
-    { cfg: 'MC_AUTH', label: '登录方式', kind: 'select', def: 'offline', options: ['offline', 'microsoft'] },
-    { cfg: 'MC_BRIDGE_PORT', label: 'mineflayer 桥端口', kind: 'text', def: '3100', desc: '桥地址自动为 http://127.0.0.1:<端口>。' },
-    { cfg: 'MC_ARCHIVE', label: '存档 / 档案名', kind: 'text', def: 'shiro' },
+    { cfg: 'MC_ARCHIVE', label: '存档 / 档案名', kind: 'text', def: '' },
     { cfg: 'MC_CHAT_FORWARD', label: '转发游戏聊天', kind: 'select', options: ONOFF, def: '1' },
     { cfg: 'MC_USE_TOOLS', label: '允许工具动作', kind: 'select', options: ONOFF, def: '1' },
     { cfg: 'MC_CHAT_PREFIX', label: '聊天触发前缀', kind: 'text', def: '', desc: '留空 = 所有聊天都处理。' },
     { cfg: 'MC_CHAT_COOLDOWN_MS', label: '聊天冷却（毫秒）', kind: 'text', def: '3000' },
     { cfg: 'MC_MODS_DIR', label: 'mods 目录', kind: 'text', def: '', desc: '安装 NeoForge 模组时使用的 .minecraft/versions/<版本>/mods。' },
-    { cfg: 'ATRI_BASE_URL', label: 'ATRI 地址', kind: 'text', def: 'http://127.0.0.1:8000' },
     ...llmBlock(BASE_LLM),
   ],
   civilization: [
-    { cfg: 'CIV6_MCP_PROJECT', label: 'civ6-mcp 项目目录', kind: 'text', def: 'S:\\TRIX\\civ6-mcp' },
+    { cfg: 'CIV6_MCP_PROJECT', label: 'civ6-mcp 项目目录', kind: 'text', def: '', desc: 'civ6-mcp 仓库所在目录；留空则沿用 GameBot 已存的值。' },
     { cfg: 'CIV6_MODS_DIR', label: '文明 VI Mods 目录', kind: 'text', def: '', desc: '…\\My Games\\Sid Meier\'s Civilization VI\\Mods，安装 TRIXCompanion 模组用。' },
     { cfg: 'CIV_POLL_INTERVAL_S', label: '轮询间隔（秒）', kind: 'text', def: '1' },
     { cfg: 'CIV_SAFE_AUTO', label: '安全自动（不主动结束回合）', kind: 'select', options: ONOFF, def: '1' },
-    { cfg: 'CIV_DSH_SESSION', label: '文明 DSH 会话 id', kind: 'text', def: '', desc: '陪玩评论写入的 DSH 会话。' },
+    { cfg: 'CIV_DSH_SESSION', label: '文明 DSH 会话 id', kind: 'text', def: '', desc: '可选：经 DSH 宿主内的陪玩桥把评论写入这个会话（不直接写会话文件）；留空不写。' },
     ...llmBlock(BASE_LLM),
   ],
   vision: [
@@ -116,6 +114,12 @@ const normProvider = (p) => {
   return v || 'openai'
 }
 
+/** 外部 Mineflayer 桥（GAMEBOT_MINECRAFT_BRIDGE_DIR）是否可用；不可用时 Minecraft 驱动固定为 minaret。 */
+export function mineflayerBridgeAvailable(env = process.env) {
+  const dir = String(env.GAMEBOT_MINECRAFT_BRIDGE_DIR || '').trim()
+  return !!dir && existsSync(join(dir, 'server.js'))
+}
+
 /** 卡片设置 → GameBot PATCH /v1/games/<game> 请求体。 */
 export function toGameBotPatch(game, cfg) {
   const config = {}
@@ -137,6 +141,7 @@ export function toGameBotPatch(game, cfg) {
     if (f.kind === 'textarea' && !v.trim()) continue // 留空 = GameBot 默认人设
     config[f.cfg] = v
   }
+  if (game === 'minecraft' && driver && driver !== 'minaret' && !mineflayerBridgeAvailable()) driver = 'minaret'
   const body = { config }
   if (driver) body.driver = driver
   if (Object.keys(providerKeys).length) body.provider_keys = providerKeys
@@ -171,9 +176,8 @@ export function legacyImportPatch(candidates) {
   return { file, patch }
 }
 
-export function legacyConfigCandidates(root, pluginRoot) {
-  return [
-    join(pluginRoot, '..', 'TRIX-GAMEBOT', 'data', 'game-configs.json'),
-    join(root, 'data', 'game-configs.json'),
-  ]
+/** 旧设置导入只看用户显式填写的外部 GameBot 目录（gamebotRoot）；包内自带的代码没有旧设置。 */
+export function legacyConfigCandidates(externalRoot) {
+  const root = String(externalRoot || '').trim()
+  return root ? [join(root, 'data', 'game-configs.json')] : []
 }

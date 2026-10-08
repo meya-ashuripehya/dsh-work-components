@@ -147,7 +147,7 @@ def build_envelope(
 
 
 def build_hello(user: str, sequence: int) -> Dict[str, Any]:
-    envelope = build_envelope("hello", {"user": user, "client": "trix-gamebot"}, sequence)
+    envelope = build_envelope("hello", {"user": user, "client": "dsh-gamebot"}, sequence)
     envelope["user"] = user
     return envelope
 

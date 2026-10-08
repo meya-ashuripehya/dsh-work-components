@@ -97,7 +97,7 @@ export const component = {
     if (!ff) {
       return 'Kinocut 需要本机 FFmpeg。「下载安装」只装 MCP 服务器（tools\\ffmpeg）；请另装 ffmpeg/ffprobe（例如 winget install ffmpeg），或填写下方「FFmpeg 路径」。'
     }
-    return `本机 FFmpeg：${ff.path}（${ff.source === 'setting' ? '设置路径' : '系统 PATH'}）。「下载安装」装的是 Kinocut（kino）MCP，媒体编解码仍走本机 ffmpeg。`
+    return `本机 FFmpeg：${ff.path}（${ff.source === 'setting' ? '设置路径' : '系统 PATH'}）。「下载安装」安装的是 Kinocut（kino）MCP，媒体编解码仍使用本机 ffmpeg。`
   },
 }
 
@@ -106,7 +106,7 @@ export async function probe(ctx) {
   if (!ff) {
     return result(
       'no-app',
-      '本机找不到 FFmpeg：请安装并加入 PATH，或在设置里填「FFmpeg 路径」（Kinocut 依赖本机 ffmpeg/ffprobe）',
+      '未找到本机 FFmpeg：请安装并加入 PATH，或在设置中填写「FFmpeg 路径」（Kinocut 依赖本机 ffmpeg/ffprobe）',
       'ffmpeg',
     )
   }

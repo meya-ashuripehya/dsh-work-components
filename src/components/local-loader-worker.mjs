@@ -26,8 +26,43 @@
  * is no Windows Electron cgroup. Shared Electron / cordis APIs are NOT available
  * here — local modules should keep using shared.mjs / tools.mjs / connect-lib.
  */
-import { pathToFileURL } from 'node:url'
+import { existsSync } from 'node:fs'
+import { register } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { listProcesses } from '../connect-lib.mjs'
+
+// This file is bundled to lib/local-loader-worker.mjs (connect-lib is inlined), so it runs from
+// the published package where src/ is absent. Local components import helpers either as
+// `dsh-work-components/sdk` or with repo-relative paths (../../src/components/shared.mjs …);
+// both resolve to the SDK build (lib/component-sdk.mjs, or src/component-sdk.mjs in a checkout)
+// when the relative file does not exist.
+const SDK_URL = [new URL('./component-sdk.mjs', import.meta.url), new URL('../component-sdk.mjs', import.meta.url)]
+  .find((u) => existsSync(fileURLToPath(u)))?.href || null
+
+const SDK_HOOKS = `
+let sdk = null
+export function initialize(data) { sdk = data && data.sdk }
+const LEGACY = /(^|\\/)src\\/(components\\/shared|tools|connect-lib)\\.mjs$/
+export async function resolve(specifier, context, next) {
+  if (sdk && (specifier === 'dsh-work-components/sdk')) return { url: sdk, shortCircuit: true }
+  try {
+    return await next(specifier, context)
+  } catch (err) {
+    if (sdk && err && err.code === 'ERR_MODULE_NOT_FOUND' && LEGACY.test(String(specifier).replace(/\\\\/g, '/'))) {
+      return { url: sdk, shortCircuit: true }
+    }
+    throw err
+  }
+}
+`
+
+if (SDK_URL) {
+  try {
+    register('data:text/javascript,' + encodeURIComponent(SDK_HOOKS), { data: { sdk: SDK_URL } })
+  } catch {
+    /* runtime without module.register: only imports that exist on disk work */
+  }
+}
 
 let mod = null
 let component = null

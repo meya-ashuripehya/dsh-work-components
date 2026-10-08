@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from gamebot.api.routes import router
 
-app = FastAPI(title="TRIX-GAMEBOT", version="0.1.0")
+app = FastAPI(title="GameBot (dsh-work-components)", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

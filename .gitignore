@@ -1,6 +1,7 @@
 node_modules/
 lib/index.mjs
 lib/index.mjs.map
+lib/component-sdk.mjs
 lib/smoke.png
 tools/
 local-components/
@@ -9,12 +10,10 @@ lib/.localcomp-smoke-dir/
 lib/.localcomp-isolation-dir/
 lib/localcomp-smoke.json
 
-# Runtime settings when Desktop has no ctx.settings service
+# Legacy in-repo state (now under $DSH_HOME/data/dsh-work-components; migrated once on start)
 .dsh-workbench-settings.json
 
-# GameBot embedded venv
 src/components/gamebot/.venv/
-# GameBot body data (plaintext provider keys live here)
 src/components/gamebot/data/
 src/components/gamebot/**/__pycache__/
 src/components/gamebot/src/*.egg-info/

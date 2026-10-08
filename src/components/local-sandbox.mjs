@@ -228,7 +228,7 @@ class LocalComponentChild {
         const tools = h.tools
         const def = typeof tools?.get === 'function' ? tools.get(args.fullName) : undefined
         if (!def || typeof def.execute !== 'function') {
-          throw new Error(`没有注册工具 ${args.fullName}`)
+          throw new Error(`未注册工具 ${args.fullName}`)
         }
         return await def.execute(args.args || {}, {})
       }
@@ -312,6 +312,8 @@ export function buildLocalProxy(manifest, child, dir) {
     installArgs: manifest.installArgs || undefined,
     moduleSource: 'local',
     moduleDir: dir,
+    /** 有 install() 的本地组件须安装完成后才能启动（见 manager 启动门控）。 */
+    needsInstall() { return !!manifest.hasInstall },
     /** @param {object} cfg */
     async installed(cfg) {
       return !!(await child.call('installed', { cfg }, LOCAL_CALL_TIMEOUT_MS))

@@ -1,5 +1,11 @@
 name: Publish to npm
 
+# npm trusted publishing (OIDC): no NPM_TOKEN secret. Configure the trusted publisher on
+# npmjs.com for package dsh-work-components -> GitHub Actions, repository
+# meya-ashuripehya/dsh-work-components, workflow publish.yml. Requires npm >= 11.5.1 and a
+# public repository whose URL matches package.json "repository.url"; provenance is attached
+# automatically.
+
 on:
   workflow_dispatch:
   push:
@@ -21,8 +27,16 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
+      # Node 22 ships npm 10; trusted publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@^11.5.1
+
+      - run: npm --version
+
       - run: npm ci
 
+      # prepublishOnly runs build + check again during publish; doing it here fails earlier.
       - run: npm run build
+
+      - run: npm run check
 
       - run: npm publish --access public --provenance

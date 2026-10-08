@@ -33,7 +33,7 @@ export const component = {
       return installVenvTool(task, { id: 'unity', spec: this.spec(cfg), entry: 'mcp-for-unity', beforeReplace: hooks.beforeReplace })
     },
     launch(cfg) {
-      if (!cfg.unityEnabled) return { ok: false, reason: '已在设置里关闭' }
+      if (!cfg.unityEnabled) return { ok: false, reason: '已在设置中停用' }
       const spec = this.spec(cfg)
       const args = ['--transport', 'stdio']
       const exe = managedEntry('unity', spec, 'mcp-for-unity')

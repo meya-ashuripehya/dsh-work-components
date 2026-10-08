@@ -1,7 +1,8 @@
 """Read and continue one DSH session transcript.
 
-New lines go through the in-host bridge so the live session keeps its own sequence
-numbers. Reading the log file is only the fallback when that session is not open.
+New lines go only through the in-host bridge (CIV_DSH_BRIDGE / GAMEBOT_DSH_BRIDGE), so the
+live Session owns its log, sequence numbers and projections. This module never writes
+session files; reading the log file is only the read-only fallback for recent lines.
 """
 
 from __future__ import annotations

@@ -24,15 +24,43 @@
 | FFmpeg | [Kinocut](https://github.com/KyaniteLabs/kinocut)（PyPI `kinocut`，原 mcp-video） | `mcp__ffmpeg__` | 本机已安装 ffmpeg/ffprobe（PATH 或设置路径） |
 | Obsidian | [obsidian-mcp-server](https://github.com/cyanheads/obsidian-mcp-server)（npm） | `mcp__obsidian__` | Obsidian 开着 + 社区插件 Local REST API + API 密钥 |
 
-组件依赖的运行时（uv + Python，或 Node.js）与各上游 MCP 包，都可以在设置页「下载安装」到插件自己的 `tools/` 目录。**新鲜安装时所有工作组件 MCP 与会话控制均默认关闭**（`*Enabled: false`），装好后在管理页逐个打开「启用」才会挂载对应 MCP。具体安装、桥接、端口与项目侧配置都在设置 UI 里完成，本 README 不重复操作步骤。
+组件依赖的运行时（uv + Python，或 Node.js）与各上游 MCP 包，都可以在设置页「下载安装」到插件数据目录的 `tools/`（见下文「数据目录」）。**新鲜安装时所有工作组件 MCP 与会话控制均默认关闭**（`*Enabled: false`），装好后在管理页逐个打开「启用」才会挂载对应 MCP。具体安装、桥接、端口与项目侧配置都在设置 UI 里完成，本 README 不重复操作步骤。
 
 已内嵌：GameBot（src/components/gamebot/）。
+
+## 安装
+
+在 DSH Desktop 里让智能体用内置的 `plugin_manager` 安装 bundle（不要自己在 profile 目录里跑 npm / pnpm，`install_bundle` 会完成包安装和 bundle 选择）：
+
+1. 对智能体说：「用 plugin_manager 的 install_bundle 安装 npm 包 `dsh-work-components`」。
+2. 本包没有 install / postinstall 构建脚本；如果结果里列出待批准的构建脚本，不要批准，先确认来源。
+3. 用 `list_bundles` / `list_plugins` 确认 `dsh-work-components` 已启用；结果是 `restart-required` 时重启 DSH Desktop。替换已装的版本（升级）同样需要重启才会加载新代码。
+4. 打开设置页「工作组件」，按需「下载安装」各组件并打开「启用」（新装时全部默认关闭）。
+
+卸载：`plugin_manager` 的 `remove_bundle`。数据目录（设置、已下载的工具、GameBot 数据）不随包删除，需要时手动删掉。
+
+要求：DSH Desktop（Node ≥ 22.15 运行时，会话控制要用 zstd）；Office / Photoshop / Windows 等组件只在 Windows 上可用。
+
+## 数据目录
+
+插件不往自己的包目录写任何东西（升级时包目录会被整个替换）。可写状态都在 `$DSH_HOME/data/dsh-work-components/`（`DSH_HOME` 缺省 `~/.dsh`；可用 `DSH_WORKBENCH_DATA_DIR` 整体改位置）：
+
+| 路径 | 内容 |
+|---|---|
+| `settings.json` | 没有 DSH 设置服务时的设置持久化（可用 `DSH_WORKBENCH_SETTINGS_FILE` 改） |
+| `tools/` | 「下载安装」落地的 uv / Python / Node.js / 各组件（可用 `DSH_WORKBENCH_TOOLS_DIR` 改） |
+| `local-components/` | 本地兼容组件源码（可用 `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR` 改） |
+| `gamebot/` | GameBot 的 Python 环境（`.venv`）与数据（`data/game-configs.json`、记忆等；含服务商密钥明文） |
+
+从旧版本（直接在仓库目录里运行）升级时，首次启动会一次性迁移：仓库根的 `.dsh-workbench-settings.json` 移到 `settings.json`，`src/components/gamebot/data/` 移到 `gamebot/data/`；已有的 `tools/`、`local-components/` 里有绝对路径（venv），所以原地沿用并记录在 `legacy-locations.json`。迁移记录在 `migration.json`，不会重复执行。
+
+`GET /dsh-workbench/api/settings` 返回的密钥字段（令牌、API key、密码）一律是占位值 `__dsh_secret_saved__`；POST 原样带回占位值 = 保持不变，传空字符串 = 清除。
 
 多模态：`mm_send_image`（本地图片 → Host `attachmentId`；render=`text`+`image`；UI：`presentationMeta.mm` → turnTail MmCard，toolview 仅 pending/compact）。
 
 ## 实装截图
 
-![工作组件列表](https://github.com/meya-ashuripehya/dsh-multimodal/raw/main/docs/images/01-settings-workbench-list.png)
+![工作组件列表](https://github.com/meya-ashuripehya/dsh-work-components/raw/main/docs/images/01-settings-workbench-list.png)
 
 ## 设置页
 
@@ -83,26 +111,28 @@ src/
   components/          仓库自带组件 + shared / registry / manager
   connect-lib.mjs      「已连接」共享原语（进程 / TCP / MCP 调用）
   connect.mjs          汇总各组件 app/probe，提供 probeComponent
-  tools.mjs            tools/ 布局、下载、uv / Node / npm / venv 安装
+  tools.mjs            数据目录 / 迁移、tools/ 布局、下载、uv / Node / npm / venv 安装
+  component-sdk.mjs    本地组件 SDK（shared + tools + connect-lib；构建成 lib/component-sdk.mjs）
 lib/
   index.mjs            构建产物（宿主）
+  local-loader-worker.mjs  构建产物（本地组件加载子进程）
+  component-sdk.mjs    构建产物（本地组件 SDK，`dsh-work-components/sdk`）
   client.js            前端设置页、mm_send_image toolview（pending）与 turnTail MmCard（ModuleLoader）
 office/launch.py       OfficeMCP 启动包装（stdio 友好）
 cordis.patch.yml       bundle 层，插入宿主插件行
 docs/component-module.md  组件模块约定（含 bundled vs local）
 scripts/               build、vendor:sync、各类 smoke
-tools/                 本机「下载安装」落地（gitignore）
-local-components/      用户本地兼容源码（gitignore；可用 DSH_WORKBENCH_LOCAL_COMPONENTS_DIR 覆盖）
+locale/ icon.svg       插件管理器里的标题 / 简介 / 图标
 ```
 
-**托管安装**：设置页可把 uv、Node.js 与各组件装进 `tools/`（`.dsh-install.json` 记版本）。启动查找顺序一般为：插件 `tools/` → 设置路径 → 系统 / 旁路兜底（如 uvx、`npx`、旁边的 `../officemcp`）。Figma「官方桌面版 MCP」模式走 streamable-http，不需本地包。测试可用环境变量 `DSH_WORKBENCH_TOOLS_DIR` 改落地目录。
+**托管安装**：设置页可把 uv、Node.js 与各组件装进数据目录的 `tools/`（`.dsh-install.json` 记版本）。启动查找顺序一般为：托管 `tools/` → 设置路径 → 系统 / 旁路兜底（如 uvx、`npx`、旁边的 `../officemcp`）。Figma「官方桌面版 MCP」模式走 streamable-http，不需本地包。测试可用环境变量 `DSH_WORKBENCH_TOOLS_DIR` 改落地目录。
 
 **同源 API**（前缀 `/dsh-workbench/api`）：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET/POST | `/settings` | 读写 `dsh-workbench` 设置 |
-| GET | `/components` | `{ ok, toolsDir, localComponentsDir, contributeCompareUrl, components }`；组件含 `moduleSource`（`bundled`/`local`）、`status`、`connection`、`install`、`source`（启动来源）等 |
+| GET/POST | `/settings` | 读写 `dsh-workbench` 设置（密钥打码，见「数据目录」） |
+| GET | `/components` | `{ ok, dataDir, toolsDir, localComponentsDir, contributeCompareUrl, components }`；组件含 `moduleSource`（`bundled`/`local`）、`status`、`connection`、`install`、`source`（启动来源）等 |
 | GET | `/components/<id>/contribute` | 仅 local：PR 清单、文件列表、compare URL、命令模板 |
 | POST | `/components/<id>/install` | 开始（重新）安装，202；冲突 409。`id`：`uv` / `node` / `office` / … / `godot` / `ffmpeg` / `obsidian` |
 | POST | `/components/<id>/uninstall` | 删除 `tools/` 中该安装 |
@@ -114,7 +144,7 @@ local-components/      用户本地兼容源码（gitignore；可用 DSH_WORKBEN
 
 本机原先在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里用 `@deepseek-ai/dsh-mcp-client` 直接挂的 Windows / Notion / Cloudflare / Cloudflare Docs / GitHub / ComfyUI，已收进本插件的「工作组件」。迁完后请**去掉** profile 里对应的 `mcp-*` 插入项，避免工具双重注册；备份目录示例：`~/.dsh/profiles/desktop/.backup-before-mcp-to-workbench-*`。
 
-**新增组件**：先写 `local-components/<id>/`（设置页「添加工作组件」提示词），再按 [docs/component-module.md](./docs/component-module.md) 合入 `src/components/` 并开 PR。本地模块由 registry 自动发现（**fork 子进程加载**，坏模块的 `process.exit` / 挂起不会拖垮宿主；仍勿运行不信任代码），与 bundled **同 id 时 bundled 优先**。宿主用 `RuntimeSettingsSchema` 合并本地 `*Enabled`（见 `src/index.mjs`）。运行时下载仍只落在 `tools/`（gitignore），仓库不附带已下载的 MCP 树。本机可有 gitignore 下的示例（如 `local-components/docker/`），文档只记约定，不强制提交该目录。测试可用 `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR` 指向桩目录。
+**新增组件**：先写本地组件目录下的 `<id>/index.mjs`（设置页「添加工作组件」提示词；宿主原语从 `dsh-work-components/sdk` 导入），再按 [docs/component-module.md](./docs/component-module.md) 合入 `src/components/` 并开 PR。本地模块由 registry 自动发现（**fork 子进程加载**，坏模块的 `process.exit` / 挂起不会拖垮宿主；仍勿运行不信任代码），与 bundled **同 id 时 bundled 优先**。宿主用 `RuntimeSettingsSchema` 合并本地 `*Enabled`（见 `src/index.mjs`）。运行时下载仍只落在 `tools/`，仓库与 npm 包都不附带已下载的 MCP 树。测试可用 `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR` 指向桩目录。
 
 ## 构建与测试
 
@@ -126,7 +156,11 @@ npm run smoke:tools    # 走同一套安装代码装组件，再 MCP initialize 
 npm run smoke:office   # 按插件启动方案拉起 OfficeMCP（可用 --expect-managed）
 npm run smoke:connect  # 「已连接」实机冒烟（Windows）：node scripts/connect-smoke.mjs chrome …
 npm run smoke:local    # 本地兼容发现 / moduleSource / contribute 清单
+npm run smoke:gamebot  # GameBot 设置下发冒烟（SMOKE_GAMEBOT_URL，默认 http://127.0.0.1:8767；临时配置 / 记忆目录）
+npm run check          # 语法检查 + GameBot 字段与 lib/client.js 一致性（prepublishOnly 会先 build 再跑它）
 ```
+
+发布走 GitHub Actions（`.github/workflows/publish.yml`，npm trusted publishing / OIDC，自动带 provenance）：推送 `v*` 标签触发；本地不要 `npm publish`。
 
 从源码挂进 DSH Desktop：在 `~/.dsh/profiles/desktop` 用 `pnpm add link:<插件目录>`，并在 `dsh.profile.bundles` 加入 `"dsh-work-components"`（若 profile 里曾直接挂同名 mcp-client，先去掉以免重复）。改 bundle 后需重启 Desktop。
 
@@ -149,7 +183,7 @@ npm run smoke:local    # 本地兼容发现 / moduleSource / contribute 清单
 2. 备份目录：`~/.dsh/repair-backups/workbench-session-controls-<时间戳>/`。
 3. 聊天内自动使用当前会话 `sessionId`，无需粘贴；设置页仍可调自动熔断阈值。
 4. 自动熔断阈值在设置页「会话控制」中调整。
-5. 主开关 `sessionControlsEnabled` 经 `/settings` 保存。有 DSH 设置服务时写入该服务；Desktop 无设置服务时写入插件目录 `.dsh-workbench-settings.json`（可用 `DSH_WORKBENCH_SETTINGS_FILE` 覆盖路径）。启用后聊天内撤回/重试/暂停会立即出现，无需重启。
+5. 主开关 `sessionControlsEnabled` 经 `/settings` 保存。有 DSH 设置服务时写入该服务；Desktop 无设置服务时写入数据目录的 `settings.json`（可用 `DSH_WORKBENCH_SETTINGS_FILE` 覆盖路径）。启用后聊天内撤回/重试/暂停会立即出现，无需重启。
 
 ### API（宿主）
 
@@ -172,9 +206,11 @@ GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层�
 - **每次应用/会话启动全部默认关闭**，需重新启用；共享的 `gamebotUrl` / `gamebotRoot` 会记住。
 - **共享 body**：任一游戏启用 → 自动启动一个 REST body（默认 `http://127.0.0.1:8766`）；全部关闭 → 停止（只停本插件拉起的进程）。
 - **按游戏的 MCP**：每张卡一个 MCP 服务器（工具前缀 `mcp__gamebot-<game>__`），桥带 `GAMEBOT_GAME=<game>`：游戏参数固定、只列该游戏会话、拒绝其他游戏的 session、去掉 `list_games`、`get_game` 结果里的密钥打码。
-- **仓库自带、已验证**：游戏卡没有「下载安装」。首次启用任一游戏时自动创建 / 复用共享 `src/components/gamebot/.venv`（`pip install -e .`，需要本机 Python 3.10–3.12）。
-- **设置页是唯一来源**：每张卡包含该游戏在 GameBot 里的全部配置（驱动、地址、端口、目录、决策 / 聊天模型、服务商、密钥、人设、记忆…，键名 `gb_<game>_<配置键>`）。启用或保存时通过 `PATCH /v1/games/<game>` 下发到 body。密钥字段留空 = 保持 GameBot 已存的该服务商密钥；人设留空 = GameBot 默认。首次加载会从旧 `TRIX-GAMEBOT/data/game-configs.json` 一次性导入。
+- **仓库自带、已验证**：游戏卡没有「下载安装」。首次启用任一游戏时自动准备共享 Python 环境 `<数据目录>/gamebot/.venv`：用插件托管的 uv（没有就先装进 `tools/uv`）建 Python 3.12 venv，再**从 PyPI 下载安装** `pyproject.toml` 里的依赖（fastapi、uvicorn、httpx、websockets、pydantic、mss、Pillow、numpy 等，约半分钟到几分钟，走设置里的下载代理）；GameBot 代码本身随包提供，不再安装。装好后写 `.dsh-gamebot-ready.json` 标记；装到一半失败下次会重建。uv 不可用时退回本机 Python 3.10–3.12 + pip。
+- **设置页是唯一来源**：每张卡包含该游戏在 GameBot 里的全部配置（驱动、地址、端口、目录、决策 / 聊天模型、服务商、密钥、人设、记忆…，键名 `gb_<game>_<配置键>`）。启用或保存时通过 `PATCH /v1/games/<game>` 下发到 body。密钥字段留空 = 保持 GameBot 已存的该服务商密钥；人设留空 = GameBot 默认。填写了 `gamebotRoot`（外部 GameBot 目录）时，首次加载会从它的 `data/game-configs.json` 一次性导入。
 - GameBot 自带的网页设置前端（`/ui`）已移除，body 只提供 REST。
+- Minecraft 只提供 minaret（NeoForge 模组 WebSocket）驱动。Mineflayer 驱动需要的 Node 桥（`minecraft-bridge`，依赖 mineflayer）不随包发布，所以设置页不显示；要用的话自备桥目录（`server.js` + `npm install`），设置环境变量 `GAMEBOT_MINECRAFT_BRIDGE_DIR` 指向它。
+- 文明 VI 陪玩评论只经 DSH 宿主内的桥写入会话，GameBot 不直接写会话文件。
 - 改了 `src/components/gamebot/fields.mjs` 后运行 `node scripts/gen-gamebot-fields.mjs` 再 `npm run build`。冒烟：`npm run smoke:gamebot`。
 
 **勿与 DSH 桌面大脑同时驱动同一游戏**（双脑）。

@@ -1,4 +1,4 @@
-"""Thin MCP stdio bridge over TRIX-GAMEBOT REST (no soft APIs).
+"""Thin MCP stdio bridge over the GameBot REST body (no soft APIs).
 
 Uses only httpx + stdlib so it stays compatible with GameBot's pinned
 FastAPI/anyio stack (official `mcp` package needs anyio>=4.5).
@@ -619,10 +619,9 @@ def _handle(msg: Dict[str, Any]) -> None:
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": (
-                    "TRIX-GAMEBOT MCP bridge wrapping existing REST. "
-                    f"GAMEBOT_URL={_base_url()}. Scope={GAME or 'all'}. Body is started by dsh-workbench. "
-                    "Dual-brain caution: do not let DSH desktop brain and GameBot brain "
-                    "drive the same game actions at once."
+                    f"GameBot tools for {GAME or 'all games'}: observe the game, run semantic actions, "
+                    "and read or change this game's GameBot sessions and settings. "
+                    "Do not drive the same game while GameBot's own decision brain (LLM_ENABLED) is acting on it."
                 ),
             }
         )

@@ -1,6 +1,6 @@
 /**
  * 组件注册表：加载仓库自带（bundled）与本地（local）组件，汇总 COMPONENTS / APPS / PROBES。
- * 本地目录见 localComponentsDir()（默认 <pluginRoot>/local-components/）。
+ * 本地目录见 localComponentsDir()（默认 <dataDir>/local-components/；旧检出里已有的 <pluginRoot>/local-components/ 会被原地沿用）。
  *
  * Local modules are imported in a forked child (see local-sandbox.mjs), not in the
  * host process — process.exit / hangs / crashes there cannot take down DSH Desktop.
@@ -47,7 +47,7 @@ import * as gamebotCivilizationMod from './gamebot-civilization/index.mjs'
 import * as gamebotVisionMod from './gamebot-vision/index.mjs'
 
 /** 上游贡献目标仓库（提交 PR / compare 用）。 */
-export const CONTRIBUTE_REPO = 'meya-ashuripehya/dsh-multimodal'
+export const CONTRIBUTE_REPO = 'meya-ashuripehya/dsh-work-components'
 export const CONTRIBUTE_COMPARE_URL = `https://github.com/${CONTRIBUTE_REPO}/compare`
 
 const BUNDLED_ENTRIES = [

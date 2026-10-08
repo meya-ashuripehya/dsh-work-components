@@ -93,7 +93,7 @@ export async function probe(ctx) {
   if (!open) {
     return result(
       'unreachable',
-      `Obsidian 在运行，但连不上 Local REST API ${host}:${port}：确认已启用插件，并打开「Non-encrypted (HTTP) Server」（或改用 HTTPS 地址 https://127.0.0.1:27124）`,
+      `Obsidian 正在运行，但无法连接 Local REST API ${host}:${port}：请确认已启用该插件并开启「Non-encrypted (HTTP) Server」（或改用 HTTPS 地址 https://127.0.0.1:27124）`,
       'socket',
     )
   }

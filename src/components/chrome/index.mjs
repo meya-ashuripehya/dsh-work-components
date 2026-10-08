@@ -60,7 +60,7 @@ export async function probe(ctx) {
         if (open && (status === 404 || status === 0)) {
           return result('unreachable', `调试地址 ${base} 端口开着，但 /json/version 不可用（HTTP ${status || '无响应'}）：这是 chrome://inspect/#remote-debugging 开关的典型表现，请把连接方式改成「连接正在运行的 Chrome（autoConnect）」；browserUrl 需要用 --remote-debugging-port 且带非默认 --user-data-dir 启动 Chrome`, 'http')
         }
-        return result('no-app', `连不上调试地址 ${base}（浏览器没开，或没用 --remote-debugging-port 启动）`, 'http')
+        return result('no-app', `无法连接调试地址 ${base}（浏览器未启动，或未使用 --remote-debugging-port 启动）`, 'http')
       }
       const nr = mcpNotReady(ctx, this); if (nr) return nr
       return listPages(ctx, this, `调试地址 ${base} 可用（${info.Browser || '浏览器'}）`)
@@ -70,23 +70,23 @@ export async function probe(ctx) {
       const dir = chromeDefaultUserDataDir(ctx.cfg.chromeChannel, ctx.env.env, ctx.env.home())
       const port = readDevToolsPort(dir)
       if (!port) {
-        return result('unreachable', `Chrome 在运行，但默认配置目录还没有 DevToolsActivePort（${dir}）：在 chrome://inspect/#remote-debugging 打开「允许为此浏览器实例进行远程调试」。打开开关本身不会弹窗；第一次用浏览器工具时 Chrome 才会弹出「允许调试」确认框。本模式不需要 %USERPROFILE%\\.cache`, 'devtools-port')
+        return result('unreachable', `Chrome 正在运行，但默认配置目录中尚无 DevToolsActivePort（${dir}）：在 chrome://inspect/#remote-debugging 打开「允许为此浏览器实例进行远程调试」。打开开关本身不会弹窗；第一次用浏览器工具时 Chrome 才会弹出「允许调试」确认框。本模式不需要 %USERPROFILE%\\.cache`, 'devtools-port')
       }
       if (!(await ctx.env.tcpOpen('127.0.0.1', port))) {
-        return result('unreachable', `Chrome 在运行，DevToolsActivePort 写着端口 ${port}，但连不上：在 chrome://inspect/#remote-debugging 确认远程调试已打开，或重启 Chrome 后再开一次`, 'devtools-port')
+        return result('unreachable', `Chrome 正在运行，DevToolsActivePort 指向端口 ${port}，但无法连接：请在 chrome://inspect/#remote-debugging 确认远程调试已打开，或重启 Chrome 后重新开启`, 'devtools-port')
       }
       const nr = mcpNotReady(ctx, this); if (nr) return nr
       // 第一次 autoConnect 要等 Puppeteer 握手（以及可能的「允许调试」弹窗），比默认 4 秒工具超时更宽裕。
       const r = await listPages(ctx, this, `Chrome 在运行，远程调试端口 ${port} 已打开`, 12000)
-      if (r.state !== 'connected' && /Could not connect|remote debugging|Allow|权限|拒绝|没有返回/i.test(r.detail || '')) {
-        return result('unreachable', `远程调试端口 ${port} 已打开，但 MCP 还没连上：第一次连接时请看 Chrome 是否弹出「允许调试」确认框并点允许（${r.detail}）`, r.via || 'tool:list_pages')
+      if (r.state !== 'connected' && /Could not connect|remote debugging|Allow|权限|拒绝|没有返回|未返回/i.test(r.detail || '')) {
+        return result('unreachable', `远程调试端口 ${port} 已打开，但 MCP 未连接：首次连接时请留意 Chrome 的「允许调试」确认框并点击允许（${r.detail}）`, r.via || 'tool:list_pages')
       }
       return r
     }
     // launch：只认 chrome-devtools-mcp 自己启动的那个 Chrome（它的配置目录被占用）；没开时不调 list_pages，免得替模型把 Chrome 拉起来。
     const dir = chromeProfileDir(ctx.cfg, ctx.env.home())
     if (!ctx.env.profileLocked(dir)) {
-      return result('no-app', `Chrome MCP 自己的 Chrome 还没打开（配置目录 ${dir}）：AI第一次使用此工具时才会启动，之后显示「已连接」`, 'profile-lock')
+      return result('no-app', `Chrome MCP 专用的 Chrome 尚未启动（配置目录 ${dir}）：AI 首次使用此工具时启动，之后显示「已连接」`, 'profile-lock')
     }
     const nr = mcpNotReady(ctx, this); if (nr) return nr
     return listPages(ctx, this, 'Chrome MCP 启动的 Chrome 在运行')

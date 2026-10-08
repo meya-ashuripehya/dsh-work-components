@@ -1,1 +1,0 @@
-{"body":"发布 dsh-work-components@0.2.2\n\n- ModuleLoader id 对齐包名 dsh-work-components，避免 DeepSeek 启动时重复注册崩溃\n- 侧栏收起时兜底清除 wallpaper-engine 毛玻璃（background / backdrop-filter / box-shadow）","name":"v0.2.2","target_commitish":"84ccdc217ba64fe47034e306c7b7f330bd8727f3","tag_name":"v0.2.2","prerelease":false,"draft":false}

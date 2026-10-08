@@ -21,7 +21,7 @@ export function wingetLink(file) {
   return existsSync(p) ? p : null
 }
 
-export const SOURCE_TEXT = { managed: '插件内置', setting: '设置里的路径', system: '系统安装', bundled: 'DSH 自带运行时', remote: '远程地址' }
+export const SOURCE_TEXT = { managed: '插件托管', setting: '设置中的路径', system: '系统安装', bundled: 'DSH 自带运行时', remote: '远程地址' }
 
 /** uv：插件 tools/uv → 设置里的 uvPath → WinGet 链接 → PATH。返回 { path, source } 或 null。 */
 export function resolveUv(cfg) {
@@ -135,8 +135,8 @@ export function http(serverName, url, extra = {}) {
   }
 }
 
-export const NOT_INSTALLED = (what) => `点「下载安装」把 ${what} 装进插件的 tools 目录`
-export const OFF = { ok: false, reason: '已在设置里关闭' }
+export const NOT_INSTALLED = (what) => `未安装 ${what}：请点击「下载安装」`
+export const OFF = { ok: false, reason: '已在设置中停用' }
 
 /**
  * npm 组件的启动方案：tools/<id> 里的安装（用 resolveNode 找到的 node 直接跑入口脚本，不联网）→
@@ -147,7 +147,7 @@ export function npmLaunch(c, cfg, args, env = {}, extra = {}) {
   const entry = managedNpmEntry(c.id, spec)
   if (entry) {
     const node = resolveNode(cfg)
-    if (!node) return { ok: false, missing: true, reason: `已装进 tools\\${c.id}，但找不到 Node.js 20.19+ / 22.12+：到「通用 → Node.js」下载安装，或填 node 路径` }
+    if (!node) return { ok: false, missing: true, reason: '已安装，但未找到 Node.js 20.19+ / 22.12+：请在「通用 → Node.js」中下载安装，或在设置中填写 node 路径' }
     return {
       ok: true, source: 'managed', runtime: `Node ${node.version}，${SOURCE_TEXT[node.source]}`,
       config: stdio(c.serverName, node.path, [entry, ...args], { ...extra, env: { ...node.env, ...env } }),
@@ -272,7 +272,7 @@ export function mcpRemoteLaunch(c, cfg, remoteUrl, extraArgs = [], env = {}) {
   const proxy = resolveMcpRemoteProxy(cfg, c.id, c.spec(cfg))
   if (proxy) {
     const node = resolveNode(cfg)
-    if (!node) return { ok: false, missing: true, reason: `已找到 mcp-remote（${SOURCE_TEXT[proxy.source] || proxy.source}），但找不到 Node.js 20.19+ / 22.12+` }
+    if (!node) return { ok: false, missing: true, reason: `已找到 mcp-remote（${SOURCE_TEXT[proxy.source] || proxy.source}），但未找到 Node.js 20.19+ / 22.12+` }
     return {
       ok: true, source: proxy.source, runtime: `Node ${node.version}，${SOURCE_TEXT[node.source]}`,
       config: stdio(c.serverName, node.path, [proxy.path, ...args], { env: { ...node.env, ...env } }),

@@ -30,6 +30,8 @@ export const component = {
     spec: (cfg) => cfg.figmaPackage || 'figma-console-mcp',
     bin: 'figma-console-mcp',
     installed(cfg) { return !!managedNpmEntry('figma', this.spec(cfg)) },
+    // 官方桌面版 MCP 模式直接连接 HTTP 地址，无需安装。
+    needsInstall(cfg) { return cfg.figmaMode !== 'official' },
     install(cfg, task, hooks) { return installNpmTool(this, cfg, task, hooks) },
     launch(cfg) {
       if (!cfg.figmaEnabled) return OFF
@@ -54,7 +56,7 @@ export async function probe(ctx) {
       const port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80)
       const host = u.hostname.replace(/^\[|\]$/g, '')
       const ok = await ctx.env.tcpOpen(host === 'localhost' ? '127.0.0.1' : host, port)
-      if (!ok) return result('unreachable', `Figma 在运行，但连不上官方 MCP 地址 ${u.host}：在 Figma 桌面版 Dev Mode 里启用「桌面版 MCP 服务器」`, 'socket')
+      if (!ok) return result('unreachable', `Figma 正在运行，但无法连接官方 MCP 地址 ${u.host}：请在 Figma 桌面版 Dev Mode 中启用「桌面版 MCP 服务器」`, 'socket')
       return result('connected', `官方 MCP 地址 ${u.host} 可连接`, 'socket')
     }
     const nr = mcpNotReady(ctx, this); if (nr) return nr
@@ -64,7 +66,7 @@ export async function probe(ctx) {
     try { st = JSON.parse(r.text) } catch {}
     const ws = st?.transport?.websocket
     if (!ws?.available) {
-      return result('unreachable', 'Figma 在运行，但 Desktop Bridge 插件没连上：在设计文件里运行「插件 → 开发 → Figma Desktop Bridge」', 'tool:figma_get_status')
+      return result('unreachable', 'Figma 正在运行，但 Desktop Bridge 插件未连接：请在设计文件中运行「插件 → 开发 → Figma Desktop Bridge」', 'tool:figma_get_status')
     }
     const file = ws.connectedFile?.fileName || (st.currentFileName && !/^\(unable/.test(st.currentFileName) ? st.currentFileName : '')
     return result('connected', `Desktop Bridge 已连上${file ? `：${file}` : ''}（figma_get_status）`, 'tool:figma_get_status')

@@ -68,7 +68,7 @@ export function appRunningIn(procs, id) {
 
 export function noAppById(id) {
   const app = _APPS[id]
-  return { state: 'no-app', detail: `没有检测到 ${app?.name || id} 在运行${app?.exe ? `（${app.exe}）` : ''}`, via: 'process' }
+  return { state: 'no-app', detail: `未检测到 ${app?.name || id} 运行${app?.exe ? `（${app.exe}）` : ''}`, via: 'process' }
 }
 
 
@@ -196,11 +196,11 @@ function textOf(value) {
 /** 直接执行 dsh-mcp-client 注册的工具定义（它的 execute 用自己的 MCP 连接发 tools/call）。 */
 export async function callMcpTool(tools, serverName, rawName, args = {}, timeoutMs = TOOL_TIMEOUT_MS) {
   const def = typeof tools?.get === 'function' ? tools.get(`mcp__${serverName}__${rawName}`) : undefined
-  if (!def || typeof def.execute !== 'function') return { ok: false, missing: true, error: `没有注册工具 ${rawName}` }
+  if (!def || typeof def.execute !== 'function') return { ok: false, missing: true, error: `未注册工具 ${rawName}` }
   const ac = new AbortController()
   let timer
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => { ac.abort(); reject(Object.assign(new Error(`${rawName} ${timeoutMs / 1000} 秒内没有返回`), { timeout: true })) }, timeoutMs)
+    timer = setTimeout(() => { ac.abort(); reject(Object.assign(new Error(`${rawName} 在 ${timeoutMs / 1000} 秒内未返回`), { timeout: true })) }, timeoutMs)
   })
   try {
     const value = await Promise.race([def.execute(args, { signal: ac.signal }), timeout])
@@ -216,7 +216,7 @@ export async function callMcpTool(tools, serverName, rawName, args = {}, timeout
 export const result = (state, detail, via) => ({ state, detail, via })
 // 工具调用失败；超时单独标出（服务器可能正忙着执行模型的调用，调用方可以沿用上一次的结果）。
 export const toolFailed = (r, detail, via) => ({ ...result('unreachable', detail, via), ...(r.timeout ? { timeout: true } : {}) })
-export const noAppFor = (app, extra = '') => result('no-app', `没有检测到 ${app.name} 在运行（${app.exe}）${extra}`, 'process')
+export const noAppFor = (app, extra = '') => result('no-app', `未检测到 ${app.name} 运行（${app.exe}）${extra}`, 'process')
 
 /** 工具结果里的 JSON（structuredContent 优先，其次文本）；取不到返回 null。 */
 export function jsonOf(r) {
@@ -228,7 +228,7 @@ export function jsonOf(r) {
 /** 服务器还没注册任何工具时（连接中 / 重连中 / 已放弃），不算已连接。 */
 export function mcpNotReady(ctx, component) {
   const names = mcpToolNames(ctx.tools, component.serverName)
-  if (names && names.length === 0) return result('mcp-down', 'MCP 服务器还没连上（没有注册任何工具），可能在启动或重连中', 'tools')
+  if (names && names.length === 0) return result('mcp-down', '未注册工具，可能正在启动或重连', 'tools')
   return null
 }
 
