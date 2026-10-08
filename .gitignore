@@ -6,7 +6,22 @@ tools/
 local-components/
 
 lib/.localcomp-smoke-dir/
+lib/.localcomp-isolation-dir/
 lib/localcomp-smoke.json
 
 # Runtime settings when Desktop has no ctx.settings service
 .dsh-workbench-settings.json
+
+# GameBot embedded venv
+src/components/gamebot/.venv/
+# GameBot body data (plaintext provider keys live here)
+src/components/gamebot/data/
+src/components/gamebot/**/__pycache__/
+src/components/gamebot/src/*.egg-info/
+
+# Local agent state (session logs, inbox markers, change journals)
+.claude/
+
+# Hand-made edit backups (lib/client.js.bak-before-…)
+*.bak
+*.bak-*
