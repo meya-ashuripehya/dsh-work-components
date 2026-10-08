@@ -119,13 +119,31 @@ uv、Node.js 在 `manager.list()` 里以 `kind: 'prerequisite'` 出现，**不�
 
 ---
 
+## 本地模块沙箱（隔离）
+
+`local-components/<id>/index.mjs` **不在宿主进程里** `import`。registry 通过 `child_process.fork` 拉起 `local-loader-worker.mjs`，在子进程中加载模块，并用 IPC 代理 `launch` / `install` / `probe` / `installed` / `note` 等生命周期方法。
+
+**为什么用 fork 而不是 Worker：** 在 Node 里，Worker 内的 `process.exit()` 仍会结束整个进程，无法达到「坏模块不能干掉 DSH Desktop」的目标。
+
+| 威胁 | 宿主行为 |
+| --- | --- |
+| 顶层 `process.exit(0)` / 未捕获异常 | 仅子进程退出；该组件加载失败并 `warn`，其它组件继续 |
+| 导入或方法调用时死循环 / 挂起 | 超时后 `kill` 子进程；宿主继续，该次调用报错 |
+| CPU / 内存打满 | 超时可杀子进程；**Windows Electron 下没有实用的 cgroup 限额**，无法保证整机不被拖慢 |
+
+**仍然不要运行不信任的代码。** 沙箱隔离的是进程退出与挂起，不是完整安全沙箱：子进程仍能读盘、起进程、占 CPU/内存；原生 addon 也在子进程加载。Local 模块也不应依赖宿主 Electron / cordis 私有 API（请继续用 `shared.mjs` / `tools.mjs` / `connect-lib.mjs`）。
+
+手动回归：在 `local-components/evil-exit/index.mjs` 顶层写 `process.exit(0)`，或 `while (true) {}`，重启 / 重载插件后宿主应仍活着，日志里有对该组件的失败 warn。
+
+---
+
 ## 本地 vs 仓库自带
 
 | | 仓库自带（bundled / 已兼容） | 本地兼容（local） |
 | --- | --- | --- |
 | 路径 | `src/components/<id>/`（进 git） | `local-components/<id>/`（默认；gitignore） |
 | 标记 | `moduleSource: 'bundled'`（registry 写入） | `moduleSource: 'local'` |
-| 发现 | `registry.mjs` 静态 import | 启动时扫描目录并 `import()` |
+| 发现 | `registry.mjs` 静态 import | 启动时扫描目录；在 **forked child** 中 `import()`（超时 / exit 隔离） |
 | 设置页 | 「工作组件」分组，徽标「已验证」 | 「本地兼容」分组，徽标「本地」；管理页可「贡献到仓库」 |
 | 覆盖 | — | 与 bundled **同 id 时 bundled 优先**，本地被忽略 |
 

@@ -11,5 +11,6 @@ export { pluginRoot } from './shared.mjs'
 export {
   COMPONENTS, MODULES, APPS, PROBES, componentById,
   CONTRIBUTE_REPO, CONTRIBUTE_COMPARE_URL, contributeInfo, discoverLocalComponents, localComponentsDir,
+  disposeLocalComponents,
 } from './registry.mjs'
 export { createComponentManager } from './manager.mjs'

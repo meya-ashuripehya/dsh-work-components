@@ -8,7 +8,7 @@ import {
 } from '../tools.mjs'
 import { PROBE_TTL_MS, defaultEnv, probeComponent } from '../connect.mjs'
 import { SOURCE_TEXT, resolveNode, resolveNpm, resolveUv } from './shared.mjs'
-import { COMPONENTS, componentById, contributeInfo, localComponentsDir, CONTRIBUTE_COMPARE_URL } from './registry.mjs'
+import { COMPONENTS, componentById, contributeInfo, localComponentsDir, CONTRIBUTE_COMPARE_URL, disposeLocalComponents } from './registry.mjs'
 
 function httpError(status, message) {
   return Object.assign(new Error(message), { status })
@@ -63,7 +63,10 @@ export function createComponentManager(ctx, getConfig, options = {}) {
     stop(s)
     const generation = s.generation
     let plan
-    try { plan = component.launch(cfg) } catch (error) { plan = { ok: false, reason: String(error?.message ?? error) } }
+    try {
+      const raw = component.launch(cfg)
+      plan = typeof raw?.then === 'function' ? await raw : raw
+    } catch (error) { plan = { ok: false, reason: String(error?.message ?? error) } }
     if (!plan.ok) {
       s.status = plan.missing ? 'missing' : 'off'
       s.detail = plan.reason
@@ -249,8 +252,8 @@ export function createComponentManager(ctx, getConfig, options = {}) {
     return { state: j.state, step: j.step, log: j.log.slice(-LOG_SHOW), error: j.error, startedAt: j.startedAt, finishedAt: j.finishedAt }
   }
 
-  function describe(id) {
-    return api.list().find((c) => c.id === id)
+  async function describe(id) {
+    return (await api.list()).find((c) => c.id === id)
   }
 
   /** 当前代的探测记录（组件重挂过就换一条新的「正在检查」）。 */
@@ -317,15 +320,16 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       disposed = true
       killInstallProcesses()
       for (const s of state.values()) stop(s)
+      try { disposeLocalComponents() } catch {}
     },
 
     /** 排队安装（或重新安装）；立刻返回，进度看 list() 里的 install 字段。done 是完成时 resolve 的 Promise。 */
-    install(id) {
+    async install(id) {
       const job = checkId(id)
       Object.assign(job, idleInstall(), { state: 'queued', step: '排队中' })
       const done = queue.then(() => runInstall(id, job))
       queue = done.catch(() => {})
-      return { component: describe(id), done }
+      return { component: await describe(id), done }
     },
 
     /** 删除插件 tools/ 里的安装（共享的 tools/python 与缓存保留）。 */
@@ -390,7 +394,7 @@ export function createComponentManager(ctx, getConfig, options = {}) {
 
 
 
-    list() {
+    async list() {
       const cfg = getConfig()
       const m = managedPaths()
       const uv = resolveUv(cfg)
@@ -431,12 +435,20 @@ export function createComponentManager(ctx, getConfig, options = {}) {
         command: npm?.node ?? node?.path ?? null,
         install: publicInstall('node'),
       }
-      return [uvItem, nodeItem, ...COMPONENTS.map((c) => {
+      const componentItems = await Promise.all(COMPONENTS.map(async (c) => {
         const s = state.get(c.id)
         let installed = false
-        try { installed = c.installed(cfg) } catch {}
+        try {
+          const raw = c.installed(cfg)
+          installed = !!(typeof raw?.then === 'function' ? await raw : raw)
+        } catch {}
         let note = null
-        try { note = c.note ? c.note(cfg) : null } catch {}
+        try {
+          if (c.note) {
+            const raw = c.note(cfg)
+            note = typeof raw?.then === 'function' ? await raw : raw
+          }
+        } catch {}
         const version = installed && c.id !== 'office' ? (readMarker(m.dir(c.id))?.version || null) : null
         // 已启动的组件带上连接探测结果；探测到已连接时 status 升为 connected（已连接 > 已启动 > 已安装 / 未安装）。
         let connection = null
@@ -466,7 +478,8 @@ export function createComponentManager(ctx, getConfig, options = {}) {
           note,
           install: publicInstall(c.id),
         }
-      })]
+      }))
+      return [uvItem, nodeItem, ...componentItems]
     },
   }
   return api

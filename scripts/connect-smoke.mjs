@@ -127,7 +127,7 @@ async function waitTools(env, id, ms = 90000) {
 async function state(env, id, force = true) {
   const t0 = Date.now()
   await env.manager.refreshConnections({ force })
-  const c = env.manager.list().find((x) => x.id === id)
+  const c = (await env.manager.list()).find((x) => x.id === id)
   console.log(`  ${id}: status=${c.status} connection=${c.connection ? `${c.connection.state}｜${c.connection.detail}` : 'null'}（探测 ${Date.now() - t0} ms）`)
   return c
 }
@@ -260,7 +260,7 @@ try {
           c = await state(env, 'chrome')
         }
         check(c.status === 'connected' && c.connection?.state === 'connected', `autoConnect -> 已连接（${c.connection?.detail || c.status}）`)
-        const launched = env.manager.list().find((x) => x.id === 'chrome')
+        const launched = (await env.manager.list()).find((x) => x.id === 'chrome')
         check(/--autoConnect/.test(String(launched?.command || '')), 'mounted command includes --autoConnect: ' + String(launched?.command || '').slice(0, 180))
       } finally {
         await env.close()
@@ -275,7 +275,7 @@ try {
     const env = makeManager({ [`${id}Enabled`]: true })
     try {
       await env.manager.sync()
-      const first = env.manager.list().find((x) => x.id === id)
+      const first = (await env.manager.list()).find((x) => x.id === id)
       if (first.status !== 'on') { console.log(`  ${id}: 没有启动（${first.status}：${first.detail}），跳过`); continue }
       const n = await waitTools(env, id)
       check(n > 0, `${id} server registered tools`)

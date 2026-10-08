@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod id="TRIX_COMPANION" version="1">
+  <Properties>
+    <Name>TRIX Companion</Name>
+    <Description>文明6游戏内陪玩聊天与动作确认</Description>
+    <Teaser>在游戏内和陪玩对话，危险操作需要确认。</Teaser>
+    <Authors>TRIX</Authors>
+  </Properties>
+  <InGameActions>
+    <AddUserInterfaces>
+      <Properties>
+        <Context>InGame</Context>
+      </Properties>
+      <File>UI/Companion.xml</File>
+    </AddUserInterfaces>
+  </InGameActions>
+  <Files>
+    <File>UI/Companion.xml</File>
+    <File>UI/Companion.lua</File>
+  </Files>
+</Mod>

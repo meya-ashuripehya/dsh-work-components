@@ -44,6 +44,22 @@ const info = reg.contributeInfo('demo-local')
 if (!info?.checklist || !info.compareUrl) throw new Error('contributeInfo missing')
 if (reg.contributeInfo('office')) throw new Error('office must not have contributeInfo')
 
+// Isolation: process.exit / tight loop in local modules must not kill this host process.
+const evilRoot = join(root, 'lib', '.localcomp-isolation-dir')
+rmSync(evilRoot, { recursive: true, force: true })
+mkdirSync(join(evilRoot, 'evil-exit'), { recursive: true })
+mkdirSync(join(evilRoot, 'evil-loop'), { recursive: true })
+writeFileSync(join(evilRoot, 'evil-exit', 'index.mjs'), 'process.exit(0)\n')
+writeFileSync(join(evilRoot, 'evil-loop', 'index.mjs'), 'while (true) {}\n')
+const warns = []
+const isolated = await reg.discoverLocalComponents({ dir: evilRoot, log: (m) => warns.push(String(m)) })
+if (isolated.length !== 0) throw new Error('evil local modules must not register')
+if (!warns.some((w) => w.includes('evil-exit'))) throw new Error('expected warn for evil-exit')
+if (!warns.some((w) => w.includes('evil-loop'))) throw new Error('expected warn for evil-loop')
+console.log('isolation ok:', warns.map((w) => w.slice(0, 120)).join(' | '))
+
+reg.disposeLocalComponents?.()
+
 console.log('contribute files:', (info.files || []).join(', ') || '(none)')
 console.log('compareUrl:', info.compareUrl)
 

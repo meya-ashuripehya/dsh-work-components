@@ -1,0 +1,72 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Context Name="TRIXCompanion" FontStyle="Shadow" ColorSet="Beige_Black">
+
+  <Instance Name="LaunchBarItem">
+    <Button ID="LaunchItemButton" Anchor="L,C" Offset="0,2" Size="51,51" Texture="LaunchBar_Hook_ScienceButton" Style="ButtonNormalText" TextureOffset="4,9" StateOffsetIncrement="0,60" ToolTip="TRIX Companion">
+      <Label ID="LaunchItemLabel" Anchor="C,C" Offset="0,1" String="T" Style="FontFlair16" ColorSet="BodyTextCool"/>
+    </Button>
+  </Instance>
+
+  <Instance Name="LaunchBarPin">
+    <Image ID="Pin" Anchor="L,C" Offset="0,-2" Size="7,7" Texture="LaunchBar_TrackPip" Color="255,255,255,200"/>
+  </Instance>
+
+  <Instance Name="ChatBubble">
+    <Container ID="BubbleRoot" Anchor="L,T" Size="320,40">
+      <Box ID="BubblePlate" Anchor="L,T" Offset="0,0" Size="280,32" Color="28,58,86,235">
+        <Label ID="BubbleText" Anchor="L,T" Offset="8,6" WrapWidth="260" Style="FontNormal14" ColorSet="BodyTextCool"/>
+      </Box>
+    </Container>
+  </Instance>
+
+  <Container ID="Panel" Anchor="L,T" Offset="0,0" Size="420,560" ConsumeMouse="1">
+    <Grid ID="Background" Size="parent,parent" Style="WindowFrameHUD" ConsumeMouse="1">
+      <Box ID="Inner" Anchor="C,C" Size="parent-56,parent-56" Color="16,28,44,235">
+        <Container ID="TitleBar" Anchor="L,T" Offset="12,10" Size="parent-24,28" ConsumeMouse="1">
+          <Container ID="TitleDragArea" Anchor="L,C" Size="parent-132,parent" ConsumeMouse="1">
+            <Drag ID="TitleDrag" Size="parent,parent" Buttons="L" SnapBackSpeed="0" DragThreshold="2"/>
+            <Label ID="Title" Anchor="L,C" Offset="4,0" String="TRIX" Style="FontFlair16" ColorSet="BodyTextCool"/>
+          </Container>
+          <GridButton ID="FoldButton" Anchor="R,C" Offset="64,0" Size="56,26" Texture="Controls_ButtonControl" SliceCorner="12,12" SliceTextureSize="24,24" StateOffsetIncrement="0,24" Style="FontNormal14">
+            <Label ID="FoldLabel" Anchor="C,C" String="收起" Style="FontNormal14" ColorSet="BodyTextCool"/>
+          </GridButton>
+          <GridButton ID="CloseButton" Anchor="R,C" Offset="0,0" Size="56,26" Texture="Controls_ButtonControl" SliceCorner="12,12" SliceTextureSize="24,24" StateOffsetIncrement="0,24" Style="FontNormal14">
+            <Label ID="CloseLabel" Anchor="C,C" String="关闭" Style="FontNormal14" ColorSet="BodyTextCool"/>
+          </GridButton>
+        </Container>
+        <Label ID="StatusText" Anchor="L,T" Offset="16,40" String="..." Style="FontNormal14" ColorSet="BodyTextCool"/>
+
+        <Container ID="Body" Anchor="L,T" Offset="12,64" Size="parent-24,parent-76">
+          <ScrollPanel ID="LogScroll" Anchor="L,T" Offset="4,0" Size="parent-8,parent-156" Vertical="1" AutoScrollBar="1">
+            <ScrollBar Style="Slider_Blue" Anchor="R,C" AnchorSide="O,I"/>
+            <Stack ID="LogStack" Anchor="L,T" Offset="0,4" Size="parent-18,0" StackGrowth="Bottom" Padding="8"/>
+          </ScrollPanel>
+          <Label ID="ProposalText" Anchor="L,B" Offset="4,112" Size="parent-8,36" String="" WrapWidth="360" Style="FontNormal14" Color="255,214,140,255"/>
+          <GridButton ID="ApproveButton" Anchor="L,B" Offset="4,80" Size="72,26" Hidden="1" Texture="Controls_ButtonControl" SliceCorner="12,12" SliceTextureSize="24,24" StateOffsetIncrement="0,24" Style="FontNormal14">
+            <Label ID="ApproveLabel" Anchor="C,C" String="批准" Style="FontNormal14" ColorSet="BodyTextCool"/>
+          </GridButton>
+          <GridButton ID="RejectButton" Anchor="L,B" Offset="84,80" Size="72,26" Hidden="1" Texture="Controls_ButtonControl" SliceCorner="12,12" SliceTextureSize="24,24" StateOffsetIncrement="0,24" Style="FontNormal14">
+            <Label ID="RejectLabel" Anchor="C,C" String="拒绝" Style="FontNormal14" ColorSet="BodyTextCool"/>
+          </GridButton>
+          <Grid ID="InputFrame" Anchor="L,B" Offset="4,46" Size="parent-88,28" Texture="Controls_TextArea" SliceCorner="11,11" SliceTextureSize="22,22">
+            <EditBox ID="Input" Anchor="L,C" Offset="6,0" Size="parent-12,18" MaxLength="400" EditMode="1" Style="FontNormal14" ColorSet="BodyTextCool"/>
+          </Grid>
+          <GridButton ID="SendButton" Anchor="R,B" Offset="4,46" Size="72,28" Texture="Controls_ButtonControl" SliceCorner="12,12" SliceTextureSize="24,24" StateOffsetIncrement="0,24" Style="FontNormal14">
+            <Label ID="SendLabel" Anchor="C,C" String="发送" Style="FontNormal14" ColorSet="BodyTextCool"/>
+          </GridButton>
+          <GridButton ID="AnalyzeButton" Anchor="L,B" Offset="4,10" Size="140,28" Texture="Controls_ButtonControl" SliceCorner="12,12" SliceTextureSize="24,24" StateOffsetIncrement="0,24" Style="FontNormal14">
+            <Label ID="AnalyzeLabel" Anchor="C,C" String="分析当前局面" Style="FontNormal14" ColorSet="BodyTextCool"/>
+          </GridButton>
+          <GridButton ID="PauseButton" Anchor="R,B" Offset="4,10" Size="72,28" Texture="Controls_ButtonControl" SliceCorner="12,12" SliceTextureSize="24,24" StateOffsetIncrement="0,24" Style="FontNormal14">
+            <Label ID="PauseLabel" Anchor="C,C" String="暂停" Style="FontNormal14" ColorSet="BodyTextCool"/>
+          </GridButton>
+        </Container>
+
+        <Button ID="ResizeGrip" Anchor="R,B" Offset="2,2" Size="18,18" Texture="Controls_ChatResizeButton" ToolTip="Resize">
+          <Drag ID="ResizeDrag" Size="parent,parent" Buttons="L" SnapBackSpeed="0" DragThreshold="0"/>
+        </Button>
+      </Box>
+    </Grid>
+    <AlphaAnim ID="PollAnim" Cycle="Once" Speed="1" Stopped="1" AlphaStart="0" AlphaEnd="0" Size="1,1"/>
+  </Container>
+</Context>

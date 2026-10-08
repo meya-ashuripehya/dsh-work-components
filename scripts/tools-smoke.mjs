@@ -49,13 +49,13 @@ const manager = createComponentManager(ctx, () => cfg)
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB'
 const secs = (ms) => (ms / 1000).toFixed(1) + ' s'
 
-function printList(title) {
+async function printList(title) {
   console.log(`\n== ${title}`)
-  for (const c of manager.list()) console.log(`  ${c.id.padEnd(9)} installed=${c.installed} status=${c.status} source=${c.source} | ${c.detail}${c.command ? `\n            cmd: ${c.command}` : ''}`)
+  for (const c of await manager.list()) console.log(`  ${c.id.padEnd(9)} installed=${c.installed} status=${c.status} source=${c.source} | ${c.detail}${c.command ? `\n            cmd: ${c.command}` : ''}`)
 }
 
 await manager.sync()
-printList('安装前')
+await printList('安装前')
 console.log('tools:', managedPaths().root, proxy ? `proxy=${proxy}` : '(无代理设置)')
 
 const results = []
@@ -64,10 +64,10 @@ if (!skipInstall) {
   for (const id of ids) {
     console.log(`\n== 安装 ${id}`)
     const t0 = Date.now()
-    const { done } = manager.install(id)
+    const { done } = await manager.install(id)
     let lastStep = ''
-    const tick = () => {
-      for (const c of manager.list()) {
+    const tick = async () => {
+      for (const c of await manager.list()) {
         const log = manager.installLog(c.id)
         let n = seen.get(c.id) ?? 0
         if (n > log.length) n = 0
@@ -79,18 +79,18 @@ if (!skipInstall) {
         }
       }
     }
-    const timer = setInterval(tick, 500)
+    const timer = setInterval(() => { void tick() }, 500)
     await done
     clearInterval(timer)
     tick()
-    const job = manager.list().find((c) => c.id === id)
+    const job = (await manager.list()).find((c) => c.id === id)
     const ms = Date.now() - t0
     console.log(`  => ${id}: ${job.install.state}${job.install.error ? ' ' + job.install.error : ''}，用时 ${secs(ms)}`)
     results.push({ id, state: job.install.state, ms })
   }
 }
 
-printList('安装后（组件已自动重挂）')
+await printList('安装后（组件已自动重挂）')
 
 const m = managedPaths()
 console.log('\n== tools 目录大小')
@@ -120,7 +120,7 @@ function summarize(result) {
   return (result.content ?? []).map((c) => c.type === 'text' ? c.text.replace(/\s+/g, ' ').slice(0, 160) : `[${c.type} ${c.mimeType ?? ''} ${c.data ? Math.round(c.data.length * 3 / 4 / 1024) + ' KB' : ''}]`).join(' | ')
 }
 
-function probe(id) {
+async function probe(id) {
   return new Promise((resolve) => {
     const plan = componentById(id).launch(cfg)
     if (!plan.ok) return resolve({ id, ok: false, error: plan.reason })
@@ -197,7 +197,7 @@ if (ids.includes('godot')) {
   try {
     const mk = JSON.parse(readFileSync(join(m.dir('godot'), '.dsh-install.json'), 'utf8'))
     console.log(`\n== godot 安装记录：godot-ai ${mk.version}，插件包 ${mk.addon ? `${mk.addon.version}（${mk.addon.files} 个文件，sha256 ${mk.addon.sha256.slice(0, 12)}…，签名已校验）` : '没有下载'}`)
-    const note = manager.list().find((c) => c.id === 'godot').note
+    const note = (await manager.list()).find((c) => c.id === 'godot').note
     console.log(`  note: ${note}`)
     if (!mk.addon || mk.addon.version !== mk.version) failed = true
   } catch (e) { console.log(`  （读不到 tools/godot 的安装记录：${e.message}）`); failed = true }

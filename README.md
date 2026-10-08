@@ -26,7 +26,7 @@
 
 组件依赖的运行时（uv + Python，或 Node.js）与各上游 MCP 包，都可以在设置页「下载安装」到插件自己的 `tools/` 目录。**新鲜安装时所有工作组件 MCP 与会话控制均默认关闭**（`*Enabled: false`），装好后在管理页逐个打开「启用」才会挂载对应 MCP。具体安装、桥接、端口与项目侧配置都在设置 UI 里完成，本 README 不重复操作步骤。
 
-计划加入：TRIX-GAMEBOT。
+已内嵌：GameBot（src/components/gamebot/）。
 
 多模态：`mm_send_image`（本地图片 → Host `attachmentId`；render=`text`+`image`；UI：`presentationMeta.mm` → turnTail MmCard，toolview 仅 pending/compact）。
 
@@ -114,7 +114,7 @@ local-components/      用户本地兼容源码（gitignore；可用 DSH_WORKBEN
 
 本机原先在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里用 `@deepseek-ai/dsh-mcp-client` 直接挂的 Windows / Notion / Cloudflare / Cloudflare Docs / GitHub / ComfyUI，已收进本插件的「工作组件」。迁完后请**去掉** profile 里对应的 `mcp-*` 插入项，避免工具双重注册；备份目录示例：`~/.dsh/profiles/desktop/.backup-before-mcp-to-workbench-*`。
 
-**新增组件**：先写 `local-components/<id>/`（设置页「添加工作组件」提示词），再按 [docs/component-module.md](./docs/component-module.md) 合入 `src/components/` 并开 PR。本地模块由 registry 自动发现，与 bundled **同 id 时 bundled 优先**。宿主用 `RuntimeSettingsSchema` 合并本地 `*Enabled`（见 `src/index.mjs`）。运行时下载仍只落在 `tools/`（gitignore），仓库不附带已下载的 MCP 树。本机可有 gitignore 下的示例（如 `local-components/docker/`），文档只记约定，不强制提交该目录。测试可用 `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR` 指向桩目录。
+**新增组件**：先写 `local-components/<id>/`（设置页「添加工作组件」提示词），再按 [docs/component-module.md](./docs/component-module.md) 合入 `src/components/` 并开 PR。本地模块由 registry 自动发现（**fork 子进程加载**，坏模块的 `process.exit` / 挂起不会拖垮宿主；仍勿运行不信任代码），与 bundled **同 id 时 bundled 优先**。宿主用 `RuntimeSettingsSchema` 合并本地 `*Enabled`（见 `src/index.mjs`）。运行时下载仍只落在 `tools/`（gitignore），仓库不附带已下载的 MCP 树。本机可有 gitignore 下的示例（如 `local-components/docker/`），文档只记约定，不强制提交该目录。测试可用 `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR` 指向桩目录。
 
 ## 构建与测试
 
@@ -158,3 +158,23 @@ npm run smoke:local    # 本地兼容发现 / moduleSource / contribute 清单
 - `POST /dsh-workbench/api/session/regenerate` `{ sessionId, userMessageSeq?, messageId? }`
 - `POST /dsh-workbench/api/session/cancel` `{ sessionId, reason? }`
 - `GET /dsh-workbench/api/session/notices`
+
+## 游戏 · GameBot
+
+GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层，不单独出卡片），设置页「游戏」分组**按游戏分卡**：
+
+| 卡片 | 组件 id / MCP serverName | 启用键 |
+|---|---|---|
+| Minecraft | `gamebot-minecraft` | `gamebot-minecraftEnabled` |
+| 文明 VI | `gamebot-civilization` | `gamebot-civilizationEnabled` |
+| 视觉兜底 | `gamebot-vision` | `gamebot-visionEnabled` |
+
+- **每次应用/会话启动全部默认关闭**，需重新启用；共享的 `gamebotUrl` / `gamebotRoot` 会记住。
+- **共享 body**：任一游戏启用 → 自动启动一个 REST body（默认 `http://127.0.0.1:8766`）；全部关闭 → 停止（只停本插件拉起的进程）。
+- **按游戏的 MCP**：每张卡一个 MCP 服务器（工具前缀 `mcp__gamebot-<game>__`），桥带 `GAMEBOT_GAME=<game>`：游戏参数固定、只列该游戏会话、拒绝其他游戏的 session、去掉 `list_games`、`get_game` 结果里的密钥打码。
+- **仓库自带、已验证**：游戏卡没有「下载安装」。首次启用任一游戏时自动创建 / 复用共享 `src/components/gamebot/.venv`（`pip install -e .`，需要本机 Python 3.10–3.12）。
+- **设置页是唯一来源**：每张卡包含该游戏在 GameBot 里的全部配置（驱动、地址、端口、目录、决策 / 聊天模型、服务商、密钥、人设、记忆…，键名 `gb_<game>_<配置键>`）。启用或保存时通过 `PATCH /v1/games/<game>` 下发到 body。密钥字段留空 = 保持 GameBot 已存的该服务商密钥；人设留空 = GameBot 默认。首次加载会从旧 `TRIX-GAMEBOT/data/game-configs.json` 一次性导入。
+- GameBot 自带的网页设置前端（`/ui`）已移除，body 只提供 REST。
+- 改了 `src/components/gamebot/fields.mjs` 后运行 `node scripts/gen-gamebot-fields.mjs` 再 `npm run build`。冒烟：`npm run smoke:gamebot`。
+
+**勿与 DSH 桌面大脑同时驱动同一游戏**（双脑）。

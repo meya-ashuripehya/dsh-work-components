@@ -3,6 +3,7 @@
 // 所以构建不需要安装或解包 DSH Desktop。DSH 升级后可用 `npm run vendor:sync` 重新同步。
 // 客户端 lib/client.js 为手写文件，不参与构建。
 import { build } from 'esbuild'
+import { copyFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
@@ -27,3 +28,10 @@ await build({
   },
   logLevel: 'info',
 })
+
+// Worker must remain a real on-disk file for child_process.fork (not bundled into index.mjs).
+copyFileSync(
+  join(root, 'src', 'components', 'local-loader-worker.mjs'),
+  join(root, 'lib', 'local-loader-worker.mjs'),
+)
+console.log('copied lib/local-loader-worker.mjs')

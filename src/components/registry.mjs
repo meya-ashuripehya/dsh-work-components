@@ -1,11 +1,14 @@
 /**
  * 组件注册表：加载仓库自带（bundled）与本地（local）组件，汇总 COMPONENTS / APPS / PROBES。
  * 本地目录见 localComponentsDir()（默认 <pluginRoot>/local-components/）。
+ *
+ * Local modules are imported in a forked child (see local-sandbox.mjs), not in the
+ * host process — process.exit / hangs / crashes there cannot take down DSH Desktop.
  */
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { localComponentsDir, pluginRoot } from '../tools.mjs'
+import { disposeAllLocalSandboxes, loadLocalComponentSandboxed } from './local-sandbox.mjs'
 import office from './office/index.mjs'
 import blender from './blender/index.mjs'
 import unity from './unity/index.mjs'
@@ -21,6 +24,9 @@ import github from './github/index.mjs'
 import comfyui from './comfyui/index.mjs'
 import ffmpeg from './ffmpeg/index.mjs'
 import obsidian from './obsidian/index.mjs'
+import gamebotMinecraft from './gamebot-minecraft/index.mjs'
+import gamebotCivilization from './gamebot-civilization/index.mjs'
+import gamebotVision from './gamebot-vision/index.mjs'
 import * as officeMod from './office/index.mjs'
 import * as blenderMod from './blender/index.mjs'
 import * as unityMod from './unity/index.mjs'
@@ -36,6 +42,9 @@ import * as githubMod from './github/index.mjs'
 import * as comfyuiMod from './comfyui/index.mjs'
 import * as ffmpegMod from './ffmpeg/index.mjs'
 import * as obsidianMod from './obsidian/index.mjs'
+import * as gamebotMinecraftMod from './gamebot-minecraft/index.mjs'
+import * as gamebotCivilizationMod from './gamebot-civilization/index.mjs'
+import * as gamebotVisionMod from './gamebot-vision/index.mjs'
 
 /** 上游贡献目标仓库（提交 PR / compare 用）。 */
 export const CONTRIBUTE_REPO = 'meya-ashuripehya/dsh-multimodal'
@@ -57,6 +66,9 @@ const BUNDLED_ENTRIES = [
   { component: comfyui, mod: comfyuiMod },
   { component: ffmpeg, mod: ffmpegMod },
   { component: obsidian, mod: obsidianMod },
+  { component: gamebotMinecraft, mod: gamebotMinecraftMod },
+  { component: gamebotCivilization, mod: gamebotCivilizationMod },
+  { component: gamebotVision, mod: gamebotVisionMod },
 ]
 
 function tagBundled(component, mod) {
@@ -69,8 +81,8 @@ function tagBundled(component, mod) {
 }
 
 /**
- * 扫描 local-components/<id>/index.mjs，动态 import。
- * 跳过与 bundled 同 id 的目录（bundled 优先）；加载失败只记 warn，不拖垮宿主。
+ * 扫描 local-components/<id>/index.mjs，在 forked child 中动态 import（带超时）。
+ * 跳过与 bundled 同 id 的目录（bundled 优先）；加载失败 / 超时 / 子进程退出只记 warn，不拖垮宿主。
  * @returns {Promise<Array<{ component: object, mod: object }>>}
  */
 export async function discoverLocalComponents(options = {}) {
@@ -97,21 +109,8 @@ export async function discoverLocalComponents(options = {}) {
       continue
     }
     try {
-      const href = pathToFileURL(entry).href
-      const mod = await import(href)
-      const component = mod.component ?? mod.default
-      if (!component?.id) {
-        log?.(`dsh-workbench: local ${name}/index.mjs 未导出 component/default`)
-        continue
-      }
-      if (component.id !== name) {
-        log?.(`dsh-workbench: local folder "${name}" 与 component.id "${component.id}" 不一致，跳过`)
-        continue
-      }
-      component.moduleSource = 'local'
-      component.moduleDir = dir
-      if (mod.meta) mod.meta.moduleSource = 'local'
-      out.push({ component, mod })
+      const loaded = await loadLocalComponentSandboxed(entry, name, dir, { log })
+      out.push(loaded)
     } catch (error) {
       log?.(`dsh-workbench: failed to load local component ${name}: ${error?.message ?? error}`)
     }
@@ -134,6 +133,8 @@ const bundledIds = new Set(bundledTagged.map((e) => e.component.id))
 const localEntries = (await discoverLocalComponents()).filter((e) => {
   if (bundledIds.has(e.component.id)) {
     console.warn(`dsh-workbench: local component id "${e.component.id}" 与仓库自带冲突，忽略本地副本`)
+    // Drop the sandboxed child for the ignored duplicate.
+    try { e.mod?.__localChild?.dispose?.() } catch { /* ignore */ }
     return false
   }
   return true
@@ -145,6 +146,11 @@ export { COMPONENTS, MODULES, APPS, PROBES }
 
 export function componentById(id) {
   return COMPONENTS.find((c) => c.id === id)
+}
+
+/** Kill forked local-component children (plugin dispose). */
+export function disposeLocalComponents() {
+  disposeAllLocalSandboxes()
 }
 
 /** 贡献 PR 用的说明与文件清单（仅 local；bundled 返回 null）。 */

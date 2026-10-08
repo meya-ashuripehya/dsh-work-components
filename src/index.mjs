@@ -20,6 +20,9 @@
 import z from 'schemastery'
 import { defineTool } from '@dsh/define-tool'
 import { COMPONENTS, componentById, createComponentManager, contributeInfo, localComponentsDir, CONTRIBUTE_COMPARE_URL } from './components.mjs'
+import { stopBody as stopGamebotBody } from './components/gamebot/process.mjs'
+import { gamebotSchemaShape, legacyConfigCandidates, legacyImportPatch } from './components/gamebot/fields.mjs'
+import { resolveRoot as resolveGamebotRoot } from './components/gamebot/index.mjs'
 import { dirSize, killProcessesUnder, managedPaths, pluginRoot, toolsDir } from './tools.mjs'
 import { mountSessionControls, handleSessionApi } from './session-controls/index.mjs'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
@@ -130,6 +133,11 @@ export const SettingsSchema = z.object({
   comfyuiEnabled: z.boolean().default(false).description('启动官方 Comfy MCP（comfy-mcp）；需本机 ComfyUI / comfy-cli。'),
   comfyuiPackage: z.string().default('comfy-mcp').description('Comfy MCP 的 pip 包名（入口 comfy-mcp），下载安装时装进 tools/comfyui。'),
   comfyuiBin: z.string().default('').description('comfy-cli 的 comfy 可执行文件路径，作为 COMFY_BIN 传给服务器；留空时用环境变量 COMFY_BIN。'),
+  'gamebot-minecraftEnabled': z.boolean().default(false).description('启用 GameBot · Minecraft（共享 body + 仅 Minecraft 的 MCP）。每次启动默认关闭。'),
+  'gamebot-civilizationEnabled': z.boolean().default(false).description('启用 GameBot · 文明 VI（共享 body + 仅文明的 MCP）。每次启动默认关闭。'),
+  'gamebot-visionEnabled': z.boolean().default(false).description('启用 GameBot · 视觉兜底（共享 body + 仅视觉桌面的 MCP）。每次启动默认关闭。'),
+  gamebotUrl: z.string().default('http://127.0.0.1:8766').description('GameBot REST 地址（/health、/v1/...）；可跨重启记住。'),
+  gamebotRoot: z.string().default('').description('GameBot 目录（含 pyproject.toml + src/gamebot）；留空用插件内嵌 src/components/gamebot。'),
   nodePath: z.string().default('').description('node 可执行文件（npm 取同目录）。插件 tools/node 里有 Node.js 时优先用它；否则用这里的路径，留空时用 PATH 里的 node，再退回 DSH 自带的运行时。'),
   npmRegistry: z.string().default('').description('npm 镜像地址，例如 https://registry.npmmirror.com；留空用 npm 自己的设置。'),
   sessionControlsEnabled: z.boolean().default(false).description('【实验性】启用会话控制（撤回 / 重试 / 暂停熔断）。默认关闭；此功能尚未开发完毕，启用后可能对对话造成不可逆破坏。设置页保留高级开关；聊天内走消息操作与输入框暂停。'),
@@ -138,6 +146,7 @@ export const SettingsSchema = z.object({
   sessionCircuitMaxSteps: z.natural().min(5).max(500).default(80).description('熔断：单回合 step/start 次数上限。'),
   sessionCircuitMaxReasoningChars: z.natural().min(1000).max(5000000).default(200000).description('熔断：单回合累计思考字符上限。'),
 
+  ...gamebotSchemaShape(z),
 })
 
 /** 兼容旧导出：Office 组件的启动方案（冒烟脚本在用）。 */
@@ -180,6 +189,21 @@ function pickLocalEnabled(from) {
     out[k] = v
   }
   return out
+}
+
+
+/** Game-group enable keys: session-only. URL/root still persist. */
+const EPHEMERAL_ENABLED_KEYS = ['gamebot-minecraftEnabled', 'gamebot-civilizationEnabled', 'gamebot-visionEnabled', 'gamebotEnabled']
+
+function withEphemeralEnabledOff(value) {
+  const out = { ...(value || {}) }
+  for (const k of EPHEMERAL_ENABLED_KEYS) out[k] = false
+  return out
+}
+
+function persistableSettings(value) {
+  // Never sticky-on game features across host restarts.
+  return withEphemeralEnabledOff(value)
 }
 
 export const Config = RuntimeSettingsSchema
@@ -415,11 +439,37 @@ export function apply(ctx, config) {
     }
     filePersist = true
   }
+  // GameBot：一次性从旧 GameBot data/game-configs.json 导入每个游戏的设置（之后卡片是唯一来源）。不记录任何值。
+  if (current.gamebotImported !== true) {
+    try {
+      const got = legacyImportPatch(legacyConfigCandidates(resolveGamebotRoot(current), pluginRoot()))
+      const patch = { ...(got?.patch || {}), gamebotImported: true }
+      current = RuntimeSettingsSchema({ ...current, ...patch })
+      if (scope) { try { void scope.update?.(patch) } catch {} }
+      else if (filePersist) { try { void saveFileSettings(persistableSettings(current)) } catch {} }
+      if (got) ctx.logger?.info?.(`dsh-workbench: imported GameBot settings from ${got.file} (${Object.keys(got.patch).length} fields)`)
+    } catch (error) {
+      ctx.logger?.warn?.('dsh-workbench: GameBot legacy settings import failed', error)
+    }
+  }
+  // Game-group：每次宿主启动强制关闭（不跨重启粘滞）；URL/root 仍可从上面的合并结果保留。
+  {
+    const forced = withEphemeralEnabledOff(current)
+    const changed = EPHEMERAL_ENABLED_KEYS.some((k) => current[k] === true)
+    current = RuntimeSettingsSchema(forced)
+    if (changed) {
+      if (scope) {
+        try { void scope.update?.(Object.fromEntries(EPHEMERAL_ENABLED_KEYS.map((k) => [k, false]))) } catch {}
+      } else if (filePersist) {
+        try { void saveFileSettings(persistableSettings(current)) } catch {}
+      }
+    }
+  }
   const settingsPersisted = () => scope !== null || filePersist
 
   // ── 工作组件：各自 fork 一个 dsh-mcp-client 子插件（不写进 profile，随本插件卸载）──
   components.sync()
-  ctx.effect?.(() => () => components.dispose(), 'dsh-workbench: components')
+  ctx.effect?.(() => () => { try { stopGamebotBody() } catch {} ; components.dispose() }, 'dsh-workbench: components')
 
   const sessionControls = mountSessionControls(ctx, () => current)
   ctx.effect?.(() => () => sessionControls.dispose?.(), 'dsh-workbench: session-controls')
@@ -449,7 +499,7 @@ export function apply(ctx, config) {
               current = { ...next, ...localEnabled }
               if (filePersist) {
                 try {
-                  await saveFileSettings(current)
+                  await saveFileSettings(persistableSettings(current))
                 } catch (error) {
                   ctx.logger?.warn?.('dsh-workbench: failed to write settings file', error)
                   return sendJson(res, 500, { ok: false, error: 'settings file write failed: ' + String(error && error.message || error) })
@@ -467,7 +517,7 @@ export function apply(ctx, config) {
               toolsDir: toolsDir(),
               localComponentsDir: localComponentsDir(),
               contributeCompareUrl: CONTRIBUTE_COMPARE_URL,
-              components: components.list(),
+              components: await components.list(),
             })
           }
           const addon = /^\/components\/([\w-]+)\/addon$/.exec(sub)
@@ -475,14 +525,14 @@ export function apply(ctx, config) {
             if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
             const body = JSON.parse(await readBody(req) || '{}')
             const result = await components.installAddon(addon[1], body.project)
-            return sendJson(res, 200, { ok: true, result, message: result.message, component: components.list().find((c) => c.id === addon[1]) })
+            return sendJson(res, 200, { ok: true, result, message: result.message, component: (await components.list()).find((c) => c.id === addon[1]) })
           }
           const action = /^\/components\/([\w-]+)\/(install|uninstall)$/.exec(sub)
           if (action && req.method === 'POST') {
             if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
             const [, id, verb] = action
             if (verb === 'install') {
-              const { component } = components.install(id)
+              const { component } = await components.install(id)
               return sendJson(res, 202, { ok: true, component })
             }
             return sendJson(res, 200, { ok: true, component: await components.uninstall(id) })
