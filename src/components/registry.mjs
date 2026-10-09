@@ -17,6 +17,7 @@ import photoshop from './photoshop/index.mjs'
 import chrome from './chrome/index.mjs'
 import godot from './godot/index.mjs'
 import windows from './windows/index.mjs'
+import desktop from './desktop/index.mjs'
 import notion from './notion/index.mjs'
 import cloudflare from './cloudflare/index.mjs'
 import cloudflareDocs from './cloudflare-docs/index.mjs'
@@ -35,6 +36,7 @@ import * as photoshopMod from './photoshop/index.mjs'
 import * as chromeMod from './chrome/index.mjs'
 import * as godotMod from './godot/index.mjs'
 import * as windowsMod from './windows/index.mjs'
+import * as desktopMod from './desktop/index.mjs'
 import * as notionMod from './notion/index.mjs'
 import * as cloudflareMod from './cloudflare/index.mjs'
 import * as cloudflareDocsMod from './cloudflare-docs/index.mjs'
@@ -59,6 +61,7 @@ const BUNDLED_ENTRIES = [
   { component: chrome, mod: chromeMod },
   { component: godot, mod: godotMod },
   { component: windows, mod: windowsMod },
+  { component: desktop, mod: desktopMod },
   { component: notion, mod: notionMod },
   { component: cloudflare, mod: cloudflareMod },
   { component: cloudflareDocs, mod: cloudflareDocsMod },

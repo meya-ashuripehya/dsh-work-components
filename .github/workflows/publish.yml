@@ -34,6 +34,13 @@ jobs:
 
       - run: npm ci
 
+      # 桌面控制经纪人（自包含单文件 win-x64，约 73 MB）不进 git，发布前在这里构建并随 npm 包分发。
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - run: npm run build:desktop -- --require
+
       # prepublishOnly runs build + check again during publish; doing it here fails earlier.
       - run: npm run build
 

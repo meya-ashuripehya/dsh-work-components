@@ -20,6 +20,12 @@ src/components/gamebot/data/
 src/components/gamebot/**/__pycache__/
 src/components/gamebot/src/*.egg-info/
 
+src/components/desktop/**/bin/
+src/components/desktop/**/obj/
+src/components/desktop/**/*.old
+# 桌面控制经纪人构建产物（约 73 MB）：npm run build:desktop 生成，发布时由 CI 构建并随 npm 包分发
+src/components/desktop/**/dist/
+
 # Local agent state (session logs, inbox markers, change journals)
 .claude/
 

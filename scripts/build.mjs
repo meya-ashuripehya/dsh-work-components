@@ -4,7 +4,9 @@
 // defineTool 用 vendor/dsh-tools 里从 DSH 2.0.13 拷来的副本（npm 上的版本太旧），
 // 所以构建不需要安装或解包 DSH Desktop。DSH 升级后可用 `npm run vendor:sync` 重新同步。
 // 客户端 lib/client.js 为手写文件，不参与构建。
+// 最后按需构建桌面控制经纪人（scripts/build-desktop.mjs；本机没有 dotnet 时只提示）。
 import { build } from 'esbuild'
+import { execFileSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
@@ -96,3 +98,6 @@ await build({
   },
   logLevel: 'info',
 })
+
+// 桌面控制经纪人：dist 缺失或源码更新时 dotnet publish；没有 dotnet 时提示并跳过（CI 发布用 npm run build:desktop -- --require）。
+execFileSync(process.execPath, [join(root, 'scripts', 'build-desktop.mjs')], { stdio: 'inherit' })

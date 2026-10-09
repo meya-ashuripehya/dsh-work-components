@@ -86,6 +86,11 @@ for (const need of ['locale/*.json', 'icon.svg', 'lib/index.mjs', 'lib/local-loa
 }
 
 
+// 发布（CI）时 npm 包必须带上桌面控制经纪人；本地开发可缺省（未装 dotnet 时 build 会跳过）。
+if (process.env.CI && !existsSync(join(root, 'src', 'components', 'desktop', 'broker', 'dist', 'DSHDesktopBroker.exe'))) {
+  problems.push('src/components/desktop/broker/dist/DSHDesktopBroker.exe missing (run npm run build:desktop -- --require)')
+}
+
 try {
   execFileSync(process.execPath, [join(root, 'scripts', 'test-update.mjs')], { stdio: 'pipe' })
 } catch (error) {

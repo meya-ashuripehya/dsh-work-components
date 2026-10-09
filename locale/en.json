@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Work Components",
-    "description": "Mounts and manages MCP servers that drive other work apps (Office, Blender, Unity, Figma, Photoshop, Chrome, Godot, Windows, Notion, Cloudflare, GitHub, ComfyUI, FFmpeg, Obsidian) from one settings page, plus per-game GameBot cards (Minecraft, Civilization VI, vision fallback), session controls and the mm_send_image tool."
+    "description": "Mounts and manages MCP servers that drive other work apps (Office, Blender, Unity, Figma, Photoshop, Chrome, Godot, Windows, Desktop, Notion, Cloudflare, GitHub, ComfyUI, FFmpeg, Obsidian) from one settings page, plus per-game GameBot cards (Minecraft, Civilization VI, vision fallback), session controls and the mm_send_image tool."
   }
 }

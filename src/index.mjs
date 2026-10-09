@@ -117,6 +117,7 @@ export const SettingsSchema = z.object({
     .description('stdio：由本插件拉起 windows-mcp（推荐）；http：连接已在运行的 Windows-MCP HTTP 服务（如计划任务 127.0.0.1:18765）。'),
   windowsUrl: z.string().default('http://127.0.0.1:18765/mcp').description('HTTP 模式下的 Windows-MCP 地址（streamable-http）。'),
   windowsPackage: z.string().default('windows-mcp').description('Windows-MCP 的 pip 包名（入口 windows-mcp），「下载安装」时安装到 tools/windows。'),
+  desktopEnabled: z.boolean().default(false).description('启动桌面控制（按控件操作键鼠和截图；仅 Windows）。插件自带，打开即可，无需下载。不含文件、注册表和 PowerShell。'),
   notionEnabled: z.boolean().default(false).description('启动官方 Notion MCP（经 mcp-remote OAuth 桥；首次连接会弹出授权页）。'),
   notionUrl: z.string().default('https://mcp.notion.com/mcp').description('Notion MCP 远程地址。'),
   notionPackage: z.string().default('mcp-remote').description('OAuth 桥接用的 npm 包（默认 mcp-remote），「下载安装」时安装到 tools/notion；也可复用 %USERPROFILE%\.dsh\mcp-remote。'),

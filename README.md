@@ -15,6 +15,7 @@
 | Photoshop | [@alisaitteke/photoshop-mcp](https://github.com/alisaitteke/photoshop-mcp)（npm，COM / ExtendScript） | `mcp__photoshop__` | Windows（或 macOS）装有 Photoshop 并开着 |
 | Chrome | [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)（npm） | `mcp__chrome__` | 本机 Google Chrome；可独立启动或连已有实例 |
 | Windows | [Windows-MCP](https://github.com/CursorTouch/Windows-MCP)（PyPI） | `mcp__windows__` | Windows；stdio 由插件拉起，或连已有 HTTP 服务 |
+| 桌面控制 | 插件自带经纪人（UI Automation） | `mcp__desktop__` | Windows；随插件提供，打开「启用」即可，无需下载 |
 | Notion | [Notion MCP](https://developers.notion.com/docs/mcp)（经 [mcp-remote](https://github.com/geelen/mcp-remote) OAuth 桥） | `mcp__notion__` | 首次 OAuth；token 在 `%USERPROFILE%\.mcp-auth` |
 | Cloudflare | [Cloudflare API MCP](https://github.com/cloudflare/mcp-server-cloudflare)（经 mcp-remote） | `mcp__cloudflare__` | 首次 OAuth（scope=offline_access） |
 | Cloudflare Docs | [Cloudflare Docs MCP](https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-catalog/)（公开 HTTP） | `mcp__cloudflare-docs__` | 无需登录 |
@@ -26,7 +27,7 @@
 
 组件依赖的运行时（uv + Python，或 Node.js）与各上游 MCP 包，都可以在设置页「下载安装」到插件数据目录的 `tools/`（见下文「数据目录」）。**新鲜安装时所有工作组件 MCP 与会话控制均默认关闭**（`*Enabled: false`），装好后在管理页逐个打开「启用」才会挂载对应 MCP。具体安装、桥接、端口与项目侧配置都在设置 UI 里完成，本 README 不重复操作步骤。
 
-已内嵌：GameBot（src/components/gamebot/）。
+已内嵌：GameBot（src/components/gamebot/）、桌面控制（`src/components/desktop/broker/dist/DSHDesktopBroker.exe`，设置页「通用」分组，打开「启用」即可；npm 包内已含，git 检出需 `npm run build:desktop` 构建，要求 .NET SDK 8+）。
 
 ## 安装
 
@@ -39,7 +40,7 @@
 
 卸载：`plugin_manager` 的 `remove_bundle`。数据目录（设置、已下载的工具、GameBot 数据）不随包删除，需要时手动删掉。
 
-要求：DSH Desktop（Node ≥ 22.15 运行时，会话控制要用 zstd）；Office / Photoshop / Windows 等组件只在 Windows 上可用。
+要求：DSH Desktop（Node ≥ 22.15 运行时，会话控制要用 zstd）；Office / Photoshop / Windows / 桌面控制等组件只在 Windows 上可用。桌面控制随插件提供，不需要单独下载或安装 .NET。
 
 ## 数据目录
 
@@ -72,7 +73,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / FFmpeg / Obsidian（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
 | 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
-| 通用 | 会话控制 / uv / Node.js / 下载代理 | 可用 / 未安装 / 已设置… | 会话能力、运行时安装与代理等共用项 |
+| 通用 | 桌面控制 / 会话控制 / uv / Node.js / 下载代理 | 已连接 / 可用 / 未安装 / 已设置… | 桌面控制随插件提供，打开「启用」即可；其余为会话能力、运行时与代理 |
 | 基础工具 | 添加工作组件 | 提示词工具 | Token 声明 + 可复制 AI 提示词：写成**本地**模块（不装进 `tools/`）。选型**功能最全优先**；应补可配置/必填参数（中文 label）；本地阶段 `keys` + `launch`/`spec` 硬编码默认，拟议 schema 写注释；自定义键未进 schema 前不持久化。模块就位后重启 DSH，再在设置页下载安装。 |
 
 有上游仓库的功能在标题旁显示蓝色网址文字（新标签打开）。管理页「‹ 返回」或 Esc 回列表；每页各自「保存」；「启用」拨动后立即单独保存（本地组件同样有启用开关，键 `<id>Enabled`，**缺省关**）。安装进行中列表与管理页约每 1.5 秒刷新；有组件已启动时约每 5 秒刷新以跟上「已连接」。设置命名空间：`dsh-workbench`。
@@ -100,6 +101,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | Godot | 进程名以 Godot 开头（不含 venv 里的 `godot-ai`） | 已注册工具 + `session_manage(op=list)` 有会话 + `editor_state` 成功 |
 | FFmpeg | 本机能解析到 ffmpeg（PATH 或 `ffmpegPath`） | MCP 已就绪（Kinocut 不依赖常驻 GUI） |
 | Obsidian | 进程 Obsidian | 已注册工具 + TCP 连 Local REST API（`obsidianBaseUrl`，默认 `127.0.0.1:27123`） |
+| 桌面控制 | 不要求单独的业务进程（本机桌面） | 已注册工具 + `status` 成功 |
 
 ## 架构（给开发者）
 
@@ -160,6 +162,7 @@ npm run smoke:local    # 本地兼容发现 / moduleSource / contribute 清单
 npm run smoke:gamebot  # GameBot 设置下发冒烟（SMOKE_GAMEBOT_URL，默认 http://127.0.0.1:8767；临时配置 / 记忆目录）
 npm run check          # 语法检查 + GameBot 字段与 lib/client.js 一致性 + vendor/wsz987 与补丁一致（prepublishOnly 会先 build 再跑它）
 npm run vendor:channels  # 由 npm 上的 @wsz987/channel-* 0.5.1 + vendor/wsz987/patches 重新生成 vendor/wsz987（加 -- --check 只校验）
+npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/desktop/broker/dist（不进 git；npm run build 会在需要时自动调用）
 ```
 
 发布走 GitHub Actions（`.github/workflows/publish.yml`，npm trusted publishing / OIDC，自动带 provenance）：推送 `v*` 标签触发；本地不要 `npm publish`。
