@@ -34,7 +34,7 @@ MOD_CREATE = "minecraft.mod.create"
 MOD_AE2 = "minecraft.mod.ae2"
 MOD_BOTANIA = "minecraft.mod.botania"
 
-# 视觉兜底
+# 视觉
 VISION_OBSERVE = "vision.desktop.observe"
 VISION_CLICK = "vision.desktop.click"
 VISION_TYPE = "vision.desktop.type"

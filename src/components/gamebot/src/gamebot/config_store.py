@@ -184,7 +184,7 @@ DEFAULT_GAME_CONFIGS: Dict[str, GameConfig] = {
     ),
     "vision": GameConfig(
         game="vision",
-        title="视觉兜底",
+        title="视觉",
         description="只处理启动器、菜单、设置页；不用于战斗或路径主循环。",
         driver="vision_desktop",
         config={

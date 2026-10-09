@@ -273,7 +273,7 @@ export function createComponentManager(ctx, getConfig, options = {}) {
     } finally {
       for (const u of users) await resume(u)
     }
-    // uv / Node 到位后，之前「未安装」的组件可以用 uvx / npx 兜底启动了。
+    // uv / Node 到位后，之前「未安装」的组件可以用 uvx / npx 回退启动了。
     for (const c of COMPONENTS) if (state.get(c.id).status === 'missing') await resume(c.id)
   }
 

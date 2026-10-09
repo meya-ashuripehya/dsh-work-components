@@ -61,7 +61,7 @@ export const component = {
       if (!cfg.godotEnabled) return OFF
       const spec = this.spec(cfg)
       const exe = managedEntry('godot', spec, 'godot-ai')
-      // 不用 uvx 兜底：临时运行的版本不固定，Godot 里的插件版本对不上会被拒绝。
+      // 不用 uvx 回退：临时运行的版本不固定，Godot 里的插件版本对不上会被拒绝。
       if (!exe) return { ok: false, missing: true, reason: `${NOT_INSTALLED(spec)}（固定版本，Godot 项目中的插件须为同一版本）` }
       // v4 只接受 attach（stdio 桥，带鉴权）；裸的 http://127.0.0.1:8000/mcp 连不上。关闭匿名统计（attach 起的后端继承这个环境变量）。
       return { ok: true, source: 'managed', config: stdio('godot', exe, godotArgs(cfg), { env: { GODOT_AI_DISABLE_TELEMETRY: 'true', PYTHONIOENCODING: 'utf-8' } }) }

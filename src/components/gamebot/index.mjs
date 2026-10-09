@@ -37,7 +37,7 @@ export const GAMES = {
     summary: 'Civilization VI 陪玩：经 civ6-mcp 读取局面、TRIXCompanion 模组（玩家操作后评论）。',
   },
   vision: {
-    title: '视觉兜底',
+    title: '视觉',
     summary: '视觉桌面驱动（截图 + 键鼠）：只处理启动器、菜单、设置页，不用于主循环。',
   },
 }
@@ -95,7 +95,7 @@ function gameUrl(cfg) {
   return String(cfg.gamebotUrl || DEFAULT_URL).trim() || DEFAULT_URL
 }
 
-/** pyproject.toml 里 [project].dependencies 与 optional vision（pip 兜底路径用；uv 路径直接读 pyproject）。 */
+/** pyproject.toml 里 [project].dependencies 与 optional vision（pip 回退路径用；uv 路径直接读 pyproject）。 */
 function pyprojectDeps(root, extras = ['vision']) {
   const text = readFileSync(join(root, 'pyproject.toml'), 'utf8')
   const list = (block) => [...String(block || '').matchAll(/"([^"]+)"/g)].map((m) => m[1])

@@ -23,7 +23,7 @@ def describe_mod(game: str) -> Dict[str, Any]:
             "path": "",
             "examples": [],
             "detected": [],
-            "message": "视觉兜底不使用游戏模组。",
+            "message": "视觉不使用游戏模组。",
         }
     if cfg.game == "civilization":
         status = inspect_civ_mod(cfg.config)
@@ -43,7 +43,7 @@ def install_for_game(game: str, mods_dir: str = "") -> Dict[str, Any]:
     cfg = get_game_config(game)
     chosen = (mods_dir or "").strip()
     if cfg.game == "vision":
-        raise ValueError("视觉兜底不需要植入模组")
+        raise ValueError("视觉不需要植入模组")
     if cfg.game == "civilization":
         overlay = dict(cfg.config)
         if chosen:

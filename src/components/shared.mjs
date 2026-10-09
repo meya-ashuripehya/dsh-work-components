@@ -117,7 +117,7 @@ export function stdio(serverName, command, args, extra = {}) {
     failOnStartupError: false,
     reconnect: RECONNECT,
     ...extra,
-    // 代理慢时 uv 默认 30 秒的下载超时不够，首次拉依赖会反复失败（uvx 兜底时有用）。
+    // 代理慢时 uv 默认 30 秒的下载超时不够，首次拉依赖会反复失败（uvx 回退时有用）。
     env: { UV_HTTP_TIMEOUT: '600', ...(extra.env ?? {}) },
   }
 }
