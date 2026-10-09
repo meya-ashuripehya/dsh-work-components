@@ -38,6 +38,29 @@ sources. If a future sync comes from a package whose own LICENSE file is
 different, replace vendor/dsh-tools/LICENSE with that file and update this
 notice. Do not drop the upstream copyright line.
 
+vendor/wsz987/ holds patched copies of three packages from wsz987/dsh-channels,
+not a work of the dsh-workbench contributors. They are bundled into
+lib/channel-telegram.mjs (the 通道 › Telegram runtime).
+
+  Copyright (c) 2026 wsz987
+  License: MIT (vendor/wsz987/<package>/LICENSE)
+  Upstream: https://github.com/wsz987/dsh-channels
+
+    channel-core, channel-harness, channel-telegram
+      @wsz987/channel-core, @wsz987/channel-harness, @wsz987/channel-telegram 0.5.1
+
+  Local edits are exactly the patch files in vendor/wsz987/patches (long-poll
+  stall guard and watchdog, streamed-text dedupe, inbound preemption, and
+  forwarding tool-result images to the channel). npm run vendor:channels
+  regenerates the copies from the npm tarballs plus those patches, and
+  npm run check verifies them. The wsz987 copyright notice and MIT permission
+  text must stay with these files.
+
+lib/channel-telegram.mjs also bundles DeepSeek Harness packages
+(@deepseek-ai/dsh-*, Copyright (c) 2026 DeepSeek, MIT) and undici
+(Copyright (c) Matteo Collina and Undici contributors, MIT), as resolved from
+the exact devDependencies versions in package.json.
+
 ## Names
 
 DeepSeek, DSH, and the names of the applications this plugin can launch are

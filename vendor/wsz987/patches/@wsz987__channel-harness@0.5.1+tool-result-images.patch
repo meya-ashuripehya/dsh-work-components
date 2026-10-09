@@ -1,0 +1,149 @@
+diff --git a/lib/reply-router.js b/lib/reply-router.js
+--- a/lib/reply-router.js
++++ b/lib/reply-router.js
+@@ -4,11 +4,16 @@
+     options;
+     active = new Map();
+     streamTurns = new Map();
++    // [dsh-telegram-temp patch] tool-result images collected for channel-originated turns.
++    pendingImages = new Map();
++    currentTurns = new Map();
++    attachCtx = undefined;
+     constructor(options) {
+         this.options = options;
+     }
+     /** Register the `session/event` listener; returns a disposer. */
+     attach(ctx) {
++        this.attachCtx = ctx; // [dsh-telegram-temp patch] for ctx.get('attachments')
+         const stopSessionEvents = ctx.on('session/event', (session, event) => {
+             this.onSessionEvent(session, event);
+         });
+@@ -56,6 +61,12 @@
+     onSessionEvent(session, event) {
+         switch (event.type) {
+             case 'turn/start':
++                // [dsh-telegram-temp patch] remember the running turn for tool/result events.
++                try {
++                    if (event.data && event.data.turn !== undefined)
++                        this.currentTurns.set(String(session.id), event.data.turn);
++                }
++                catch { }
+                 // Turn existence only — no active reply is established here. Outbound
+                 // delivery requires a Channel ReplyContext (message-id → claimed →
+                 // turn), which is only authoritative once chunks flow. A non-channel
+@@ -82,6 +93,15 @@
+                 }
+                 break;
+             }
++            case 'tool/result':
++                // [dsh-telegram-temp patch] collect image blocks (e.g. mm_send_image) for channel turns.
++                try {
++                    this.collectToolResultImages(session, event);
++                }
++                catch (error) {
++                    this.options.logger.warn('[channel-harness] [dsh-telegram-temp patch] image collect failed', error);
++                }
++                break;
+             case 'turn/end':
+                 void this.finishTurn(session, event.data.turn, event.data.reason);
+                 break;
+@@ -188,6 +208,85 @@
+         }
+         this.active.clear();
+         this.streamTurns.clear();
++        this.pendingImages.clear(); // [dsh-telegram-temp patch]
++        this.currentTurns.clear();
++    }
++    /** [dsh-telegram-temp patch] Collect `{type:'image', attachment}` blocks of a channel-originated turn. */
++    collectToolResultImages(session, event) {
++        const sessionId = String(session.id);
++        const data = event && event.data ? event.data : {};
++        const message = data.message;
++        if (!message || message.isError === true || !Array.isArray(message.content))
++            return;
++        const active = this.active.get(sessionId);
++        let turn = data.turn;
++        if (turn === undefined)
++            turn = this.currentTurns.has(sessionId) ? this.currentTurns.get(sessionId) : active?.turn;
++        if (turn === undefined)
++            return;
++        // Same outbound gate as text: only turns with a live channel ReplyContext.
++        if (!this.options.replyContexts.getTurn(sessionId, turn))
++            return;
++        const key = `${sessionId}:${String(turn)}`;
++        for (const block of message.content) {
++            const ref = block && block.type === 'image' ? block.attachment : undefined;
++            if (!ref || typeof ref.attachmentId !== 'string' || typeof ref.mediaType !== 'string')
++                continue;
++            let list = this.pendingImages.get(key);
++            if (!list) {
++                list = [];
++                this.pendingImages.set(key, list);
++            }
++            if (list.length >= 10 || list.some((r) => r.attachmentId === ref.attachmentId))
++                continue;
++            list.push(ref);
++        }
++    }
++    /** [dsh-telegram-temp patch] Send collected images via adapter media parts; warn on failure, never throw. */
++    async deliverTurnImages(sessionId, turn, terminalTarget) {
++        const key = `${sessionId}:${String(turn)}`;
++        const refs = this.pendingImages.get(key);
++        this.pendingImages.delete(key);
++        if (this.currentTurns.get(sessionId) === turn)
++            this.currentTurns.delete(sessionId);
++        if (!refs || refs.length === 0)
++            return;
++        if (!terminalTarget) {
++            this.options.logger.warn(`[channel-harness] [dsh-telegram-temp patch] ${refs.length} image(s) dropped: no channel target for session '${sessionId}'`);
++            return;
++        }
++        const { adapter, target } = terminalTarget;
++        if (adapter.capabilities && adapter.capabilities.image === false) {
++            this.options.logger.warn(`[channel-harness] [dsh-telegram-temp patch] adapter '${terminalTarget.binding.channelId}' has no image capability`);
++            return;
++        }
++        let attachments;
++        try {
++            attachments = this.attachCtx ? this.attachCtx.get('attachments') : undefined;
++        }
++        catch {
++            attachments = undefined;
++        }
++        if (!attachments || typeof attachments.readImage !== 'function') {
++            this.options.logger.warn('[channel-harness] [dsh-telegram-temp patch] attachments service unavailable; images not forwarded');
++            return;
++        }
++        for (const ref of refs) {
++            try {
++                const read = await attachments.readImage(ref);
++                const bytes = read && read.data ? read.data : undefined;
++                if (!bytes || bytes.length === 0)
++                    throw new Error('empty image data');
++                const ext = String(ref.mediaType).split('/')[1] || 'png';
++                const name = typeof ref.name === 'string' && ref.name ? ref.name : `image.${ext === 'jpeg' ? 'jpg' : ext}`;
++                await adapter.send(target, {
++                    parts: [{ type: 'image', localData: bytes, mimeType: ref.mediaType, name }],
++                });
++            }
++            catch (error) {
++                this.options.logger.warn(`[channel-harness] [dsh-telegram-temp patch] failed to forward image '${ref.attachmentId}' (${ref.mediaType})`, error);
++            }
++        }
+     }
+     ensureActive(session, turn) {
+         const sessionId = String(session.id);
+@@ -401,6 +500,13 @@
+             // Existing assistant content retains its normal finalization path.
+             if (active)
+                 await this.finalize(active, turn);
++            // [dsh-telegram-temp patch] forward tool-result images after the text reply. Never throws.
++            try {
++                await this.deliverTurnImages(sessionId, turn, terminalTarget);
++            }
++            catch (error) {
++                this.options.logger.warn(`[channel-harness] [dsh-telegram-temp patch] image delivery failed for session '${sessionId}'`, error);
++            }
+             // A terminal failure is a separate system notice, never part of model
+             // output. The ReplyContext gate prevents Web/CLI turns from leaking to a
+             // channel-bound conversation.

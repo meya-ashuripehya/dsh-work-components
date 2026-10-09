@@ -1,0 +1,1101 @@
+diff -ruN /tmp/tgvend/t_base/lib/adapter.js vendor/wsz987/channel-telegram/lib/adapter.js
+--- a/lib/adapter.js
++++ b/lib/adapter.js
+@@ -243,26 +243,30 @@
+         const rich = this.formattingMode === 'rich-markdown';
+         if (rich && target.conversationType === 'dm')
+             return 'native';
+-        // Everything else edits one message in place.
++        // [dsh-workbench patch] html/auto/plain and draft mode still use createReply (edit or sendMessageDraft).
+         return 'edit';
+     }
+-    async createReply(target, _options) {
++    async createReply(target, options = {}) {
+         if (!this.started || !this.ctx) {
+             throw new ChannelError('CHANNEL_NOT_STARTED', 'telegram adapter is not started');
+         }
+         const mode = this.formattingMode;
+         const rich = mode === 'rich-markdown';
+-        // Native rich draft streaming for private DMs (plan §6.1).
+-        if (rich && target.conversationType === 'dm') {
+-            const reply = new TelegramRichStreamingReply(this.upstream, target, this.config.streaming.placeholder, { formatting: { mode } });
++        const kind = options.kind === 'process' ? 'process' : 'text';
++        const streamMode = this.config.streaming.mode || 'auto';
++        // Native rich draft streaming for private DMs (plan §6.1) — text segments only.
++        if (rich && target.conversationType === 'dm' && kind === 'text') {
++            const reply = new TelegramRichStreamingReply(this.upstream, target, this.config.streaming.placeholder, { formatting: { mode }, kind });
+             await reply.start();
+             return reply;
+         }
+-        // Group (or plain config): plain edit preview; finish upgrades the same
+-        // message to a Rich Message when rich output is active (plan §6.2).
+-        const reply = new TelegramStreamingReply(this.upstream, target, this.config.streaming.placeholder, { formatting: { mode }, richFinal: rich && target.conversationType !== 'dm' });
+-        // Send the placeholder immediately so the user sees the bot is working;
+-        // subsequent full-text previews edit this same message in place.
++        // [dsh-workbench patch] edit / sendMessageDraft with HTML incremental rendering and rate limits.
++        const reply = new TelegramStreamingReply(this.upstream, target, this.config.streaming.placeholder, {
++            formatting: { mode },
++            richFinal: rich && target.conversationType !== 'dm',
++            kind,
++            streamMode,
++        });
+         await reply.start();
+         return reply;
+     }
+diff -ruN /tmp/tgvend/t_base/lib/config.js vendor/wsz987/channel-telegram/lib/config.js
+--- a/lib/config.js
++++ b/lib/config.js
+@@ -50,6 +50,8 @@
+     streaming: Schema.object({
+         enabled: Schema.boolean().default(true),
+         placeholder: Schema.string().default('…'),
++        // [dsh-workbench patch] auto = draft in DMs / edit elsewhere; draft = force sendMessageDraft; edit = force editMessageText.
++        mode: Schema.union([Schema.const('auto'), Schema.const('draft'), Schema.const('edit')]).default('auto'),
+     }),
+     typing: Schema.object({
+         enabled: Schema.boolean().default(true),
+diff -ruN /tmp/tgvend/t_base/lib/incremental-html.js vendor/wsz987/channel-telegram/lib/incremental-html.js
+--- a/lib/incremental-html.js
++++ b/lib/incremental-html.js
+@@ -0,0 +1,115 @@
++/**
++ * Incremental HTML preview for streaming drafts/edits (channel-telegram draft-stream patch).
++ * Closed markdown blocks → renderHtml; open tail escaped; unfinished ``` fences temp-closed.
++ */
++import { escapeHtml, renderHtml } from './render/html.js';
++
++const HARD = 3800;
++
++/** Count unpaired ``` fences (odd = currently inside a fence). */
++export function openFenceCount(text) {
++    const all = String(text).match(/```/g);
++    return all ? all.length % 2 : 0;
++}
++
++/**
++ * Split source into { closed, tail } where closed is safe to fully render.
++ * Prefer last double-newline before HARD; else last single newline; else HARD chars.
++ */
++export function splitClosedTail(source, limit = HARD) {
++    const text = String(source ?? '');
++    if (text.length <= limit) return { closed: text, tail: '', overflow: false };
++    // Find a split point near limit so the "current" message stays under HARD.
++    let cut = limit;
++    const window = text.slice(0, limit);
++    const para = window.lastIndexOf('\n\n');
++    const line = window.lastIndexOf('\n');
++    if (para >= limit * 0.5) cut = para + 2;
++    else if (line >= limit * 0.5) cut = line + 1;
++    let closed = text.slice(0, cut);
++    let tail = text.slice(cut);
++    // Balance fences across the cut: if closed has an open fence, pull until next fence into closed or temp-close.
++    if (openFenceCount(closed) === 1) {
++        const next = tail.indexOf('```');
++        if (next >= 0 && next < 800) {
++            const end = next + 3;
++            // include rest of fence line
++            const nl = tail.indexOf('\n', end);
++            const take = nl >= 0 ? nl + 1 : end;
++            closed += tail.slice(0, take);
++            tail = tail.slice(take);
++        }
++    }
++    return { closed, tail, overflow: true };
++}
++
++/**
++ * Build Telegram HTML for a streaming preview. Never throws; on render failure returns escaped plain.
++ * @returns {{ html: string, plain: string, overflow: boolean, closedLength: number }}
++ */
++/**
++ * [dsh-workbench patch] A GFM table at the live edge is still being written:
++ * hold it back (shown as escaped plain text) until a following non-table line closes it.
++ */
++export function splitPendingTable(text) {
++    const src = String(text ?? '');
++    if (/\n\s*\n$/.test(src)) return { body: src, pending: '' };
++    const lines = src.split('\n');
++    let k = lines.length;
++    while (k > 0 && /^\s*\|/.test(lines[k - 1])) k--;
++    if (k === lines.length) return { body: src, pending: '' };
++    // Not inside an open fence.
++    const before = lines.slice(0, k).join('\n');
++    if (openFenceCount(before) === 1) return { body: src, pending: '' };
++    return { body: before + (k > 0 ? '\n' : ''), pending: lines.slice(k).join('\n') };
++}
++export function buildIncrementalHtml(source, limit = HARD) {
++    const plain = String(source ?? '');
++    const split = splitClosedTail(plain, limit);
++    const { overflow } = split;
++    let { closed, tail } = split;
++    if (!tail) {
++        const pend = splitPendingTable(closed);
++        closed = pend.body;
++        tail = pend.pending;
++    }
++    let body = closed;
++    // Temp-close an open fence so renderHtml sees valid markdown.
++    const tempClose = openFenceCount(body) === 1;
++    if (tempClose) body += '\n```';
++    let html;
++    try {
++        const chunks = renderHtml(body);
++        html = chunks.join('\n\n');
++        // If renderHtml split further, join only first chunk for preview; overflow handled by caller via closedLength.
++    }
++    catch {
++        html = escapeHtml(body);
++    }
++    if (tempClose) {
++        // Drop the synthetic closing fence display if render added it as a code fence end — keep as-is;
++        // the next delta will re-render with more content.
++    }
++    if (tail) {
++        // Append unparsed tail as escaped plain so tags never stay open across the live edge.
++        html += (html ? '\n\n' : '') + escapeHtml(tail.length > 1500 ? tail.slice(-1500) : tail);
++        // Cap total preview size roughly
++        if (html.length > 4090) html = html.slice(0, 4090);
++    }
++    return { html, plain, overflow, closedLength: closed.length };
++}
++
++/**
++ * Finalize full text as HTML chunks (each independently valid). Falls back to escaped plain on failure.
++ */
++export function buildFinalHtmlChunks(source) {
++    try {
++        return renderHtml(String(source ?? ''));
++    }
++    catch {
++        const text = escapeHtml(String(source ?? ''));
++        const out = [];
++        for (let i = 0; i < text.length; i += 4096) out.push(text.slice(i, i + 4096));
++        return out.length ? out : [''];
++    }
++}
+diff -ruN /tmp/tgvend/t_base/lib/render/html.js vendor/wsz987/channel-telegram/lib/render/html.js
+--- a/lib/render/html.js
++++ b/lib/render/html.js
+@@ -11,6 +11,82 @@
+ function childrenToHtml(node) {
+     return node.children.map(nodeToHtml).join('');
+ }
++// [dsh-workbench patch] Telegram-friendly rendering of block markdown: tables, nested lists,
++// fenced code language classes, rules. Telegram has no table entity.
++const TABLE_MAX_COLS = 46;
++const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
++/** Display width: CJK / full-width / emoji = 2, combining marks = 0, else 1. */
++export function displayWidth(text) {
++    let width = 0;
++    for (const { segment } of GRAPHEMES.segment(String(text ?? ''))) {
++        const cp = segment.codePointAt(0) ?? 0;
++        if (/\p{Extended_Pictographic}/u.test(segment) || /\p{Regional_Indicator}/u.test(segment)) { width += 2; continue; }
++        if (/^\p{M}+$/u.test(segment)) continue;
++        if ((cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3)
++            || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60)
++            || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x20000 && cp <= 0x3fffd)) { width += 2; continue; }
++        width += 1;
++    }
++    return width;
++}
++function padTo(text, width, align) {
++    const gap = Math.max(0, width - displayWidth(text));
++    if (align === 'right') return ' '.repeat(gap) + text;
++    if (align === 'center') return ' '.repeat(Math.floor(gap / 2)) + text + ' '.repeat(gap - Math.floor(gap / 2));
++    return text + ' '.repeat(gap);
++}
++/** Plain text of a table cell: inline markdown stripped (code, emphasis, links → text). */
++function cellText(cell) {
++    return toString(cell).replace(/\s+/g, ' ').trim();
++}
++export function tableToHtml(node) {
++    const rows = node.children.map((row) => row.children.map(cellText));
++    if (!rows.length) return '';
++    const cols = Math.max(...rows.map((r) => r.length));
++    for (const r of rows) while (r.length < cols) r.push('');
++    const align = node.align || [];
++    const widths = Array.from({ length: cols }, (_, c) => Math.max(1, ...rows.map((r) => displayWidth(r[c]))));
++    const total = widths.reduce((a, b) => a + b, 0) + 3 * (cols - 1);
++    if (total <= TABLE_MAX_COLS) {
++        const line = (r) => r.map((v, c) => padTo(v, widths[c], align[c])).join(' │ ').replace(/\s+$/, '');
++        const sep = widths.map((w) => '─'.repeat(w)).join('─┼─');
++        const out = [line(rows[0]), sep, ...rows.slice(1).map(line)];
++        return `<pre>${escapeHtml(out.join('\n'))}</pre>`;
++    }
++    // Too wide: one record per row — bold first column, then 「列名：值」 lines.
++    const header = rows[0];
++    const records = rows.slice(1).map((r) => {
++        const lines = [`<b>${escapeHtml(r[0] || header[0] || '')}</b>`];
++        for (let c = 1; c < cols; c++) {
++            if (!r[c]) continue;
++            lines.push(`${escapeHtml(header[c] || `第${c + 1}列`)}：${escapeHtml(r[c])}`);
++        }
++        return lines.join('\n');
++    });
++    return records.join('\n\n');
++}
++function listToHtml(node, depth = 0) {
++    const indent = '  '.repeat(depth);
++    return node.children.map((item, index) => {
++        const marker = node.ordered ? `${(node.start ?? 1) + index}.` : (depth % 2 ? '◦' : '•');
++        const check = item.checked === true ? '☑ ' : item.checked === false ? '☐ ' : '';
++        const parts = [];
++        let first = true;
++        for (const child of item.children) {
++            if (child.type === 'list') { parts.push(listToHtml(child, depth + 1)); continue; }
++            const html = nodeToHtml(child);
++            if (first) { parts.push(`${indent}${marker} ${check}${html}`); first = false; }
++            else parts.push(`${indent}  ${html}`);
++        }
++        if (first) parts.unshift(`${indent}${marker} ${check}`.trimEnd());
++        return parts.join('\n');
++    }).join('\n');
++}
++function codeLanguage(lang) {
++    // Only the first token of the info string, and only a sane identifier (fixes stray labels).
++    const first = String(lang ?? '').trim().split(/\s+/)[0] || '';
++    return /^[A-Za-z0-9_+#.-]{1,32}$/.test(first) ? first.toLowerCase() : '';
++}
+ function nodeToHtml(node) {
+     switch (node.type) {
+         case 'text': return escapeHtml(node.value);
+@@ -18,31 +94,33 @@
+         case 'emphasis': return `<i>${childrenToHtml(node)}</i>`;
+         case 'delete': return `<s>${childrenToHtml(node)}</s>`;
+         case 'inlineCode': return `<code>${escapeHtml(node.value)}</code>`;
+-        case 'code': return `<pre><code>${escapeHtml(node.value)}</code></pre>`;
++        case 'code': {
++            const lang = codeLanguage(node.lang);
++            return lang
++                ? `<pre><code class="language-${escapeAttr(lang)}">${escapeHtml(node.value)}</code></pre>`
++                : `<pre>${escapeHtml(node.value)}</pre>`;
++        }
+         case 'link': return `<a href="${escapeAttr(node.url)}">${childrenToHtml(node)}</a>`;
+         case 'image': return escapeHtml(node.alt ?? node.url);
+         case 'break': return '\n';
+         case 'heading': return `<b>${childrenToHtml(node)}</b>`;
+-        case 'blockquote': return `<blockquote>${childrenToHtml(node)}</blockquote>`;
++        case 'blockquote': return `<blockquote>${node.children.map(nodeToHtml).join('\n')}</blockquote>`;
+         case 'paragraph': return childrenToHtml(node);
+-        case 'list':
+-            return node.children.map((item, index) => {
+-                const marker = node.ordered ? `${(node.start ?? 1) + index}.` : '-';
+-                return `${marker} ${childrenToHtml(item)}`;
+-            }).join('\n');
+-        case 'listItem': return childrenToHtml(node);
+-        case 'table': return `<pre>${escapeHtml(toString(node))}</pre>`;
+-        case 'tableRow': return node.children.map((cell) => toString(cell)).join(' | ');
+-        case 'tableCell': return childrenToHtml(node);
++        case 'list': return listToHtml(node, 0);
++        case 'listItem': return node.children.map(nodeToHtml).join('\n');
++        case 'table': return tableToHtml(node);
++        case 'tableRow': return node.children.map((cell) => cellText(cell)).join(' | ');
++        case 'tableCell': return escapeHtml(cellText(node));
+         case 'html': return escapeHtml(node.value);
+-        case 'thematicBreak': return '---';
++        case 'thematicBreak': return '──────────';
+         case 'footnoteDefinition': return childrenToHtml(node);
+         case 'footnoteReference': return escapeHtml(node.label ?? node.identifier);
+         case 'linkReference': return childrenToHtml(node);
+         case 'imageReference': return escapeHtml(node.alt ?? node.label ?? node.identifier);
+         case 'definition': return '';
+         case 'yaml': return escapeHtml(node.value);
+-        case 'root': return childrenToHtml(node);
++        case 'root': return node.children.map(nodeToHtml).join('\n\n');
++        default: return node.children ? childrenToHtml(node) : escapeHtml(node.value ?? '');
+     }
+ }
+ /** Kept as a public helper; parsing now happens through mdast rather than regex. */
+@@ -100,9 +178,9 @@
+             messages.push(...splitByGraphemes(blockToPlain(block), limit).map(escapeHtml));
+             continue;
+         }
+-        if (buffer && buffer.length + html.length + 1 > limit)
++        if (buffer && buffer.length + html.length + 2 > limit)
+             flush();
+-        buffer += `${buffer ? '\n' : ''}${html}`;
++        buffer += `${buffer ? '\n\n' : ''}${html}`;
+     }
+     flush();
+     return messages;
+diff -ruN /tmp/tgvend/t_base/lib/stream-throttle.js vendor/wsz987/channel-telegram/lib/stream-throttle.js
+--- a/lib/stream-throttle.js
++++ b/lib/stream-throttle.js
+@@ -0,0 +1,46 @@
++/**
++ * Per-chat edit/draft throttle and 429 cooldown (channel-telegram draft-stream patch).
++ * Token bucket: ~1 update/s per chat; groups also capped at 18/min.
++ */
++export class StreamThrottle {
++    constructor({ isGroup = false, minIntervalMs = 1200, groupPerMinute = 18 } = {}) {
++        this.minIntervalMs = Math.max(200, minIntervalMs);
++        this.groupPerMinute = groupPerMinute;
++        this.isGroup = isGroup;
++        this.nextAt = 0;
++        this.minuteWindow = [];
++        this.cooldownUntil = 0;
++        this.backoffMs = 0;
++    }
++    /** Milliseconds until the next update is allowed (0 = now). */
++    waitMs(now = Date.now()) {
++        this.prune(now);
++        const until = Math.max(this.nextAt, this.cooldownUntil);
++        return Math.max(0, until - now);
++    }
++    /** Record a successful update. */
++    mark(now = Date.now()) {
++        this.prune(now);
++        this.nextAt = now + this.minIntervalMs;
++        if (this.isGroup) this.minuteWindow.push(now);
++        this.backoffMs = 0;
++    }
++    /** Honor Telegram 429 retry_after (seconds) with 10% jitter; escalate backoff up to 5s. */
++    onRateLimit(retryAfterSec, now = Date.now()) {
++        const hinted = Number.isFinite(retryAfterSec) ? Math.max(1, Math.ceil(retryAfterSec)) * 1000 : 1000;
++        this.backoffMs = Math.min(5000, Math.max(this.backoffMs * 2 || hinted, hinted));
++        const jitter = Math.floor(this.backoffMs * 0.1 * Math.random());
++        this.cooldownUntil = Math.max(this.cooldownUntil, now + this.backoffMs + jitter);
++        this.nextAt = Math.max(this.nextAt, this.cooldownUntil);
++        return this.cooldownUntil - now;
++    }
++    prune(now) {
++        if (!this.isGroup) return;
++        const cut = now - 60_000;
++        this.minuteWindow = this.minuteWindow.filter((t) => t >= cut);
++        if (this.minuteWindow.length >= this.groupPerMinute) {
++            const oldest = this.minuteWindow[0];
++            this.nextAt = Math.max(this.nextAt, oldest + 60_000);
++        }
++    }
++}
+diff -ruN /tmp/tgvend/t_base/lib/streaming-reply.js vendor/wsz987/channel-telegram/lib/streaming-reply.js
+--- a/lib/streaming-reply.js
++++ b/lib/streaming-reply.js
+@@ -1,7 +1,38 @@
++/**
++ * Telegram streaming reply (edit + sendMessageDraft) with rate limits and incremental HTML.
++ * [dsh-workbench patch] draft-stream + process-HTML + finalize-in-place.
++ *
++ * Finalize contract (one visible bubble):
++ * 1. Cancel timers when finish starts; mark finalized early.
++ * 2. Await in-flight draft/edit before sendFinal.
++ * 3. Never sendMessageDraft after the final send/edit.
++ * 4. If a real preview messageId exists, ALWAYS edit it into the final (never send a second message).
++ * 5. Draft mode never creates a real preview; only sendMessage at the end (Bot API dismisses the draft).
++ * 6. Empty draft text shows "Thinking…" — do not use it as a clear.
++ * 7. kind=process text is already Telegram HTML — send/edit with parse_mode=HTML, do not re-escape.
++ */
+ import { TelegramApiError } from './api-error.js';
+ import { REGULAR_MESSAGE_MAX } from './rich-message.js';
+-import { truncateGraphemes, tailGraphemes, visibleLength, splitByGraphemes } from './render/segment.js';
++import { truncateGraphemes, visibleLength, splitByGraphemes } from './render/segment.js';
+ import { sendWithFallback } from './render/index.js';
++import { StreamThrottle } from './stream-throttle.js';
++import { buildIncrementalHtml, buildFinalHtmlChunks, splitClosedTail } from './incremental-html.js';
++import { escapeHtml } from './render/html.js';
++
++const PREVIEW_LIMIT = 3800;
++const MIN_DELTA_CHARS = 12;
++/** [dsh-workbench patch] live-stream pacing: first bubble early, then ~0.6s edits (DM), 1s+18/min (groups). */
++const FIRST_SEND_CHARS = 20;
++const FIRST_SEND_DELAY_MS = 350;
++const STALE_FLUSH_MS = 1500;
++/** Strip streaming placeholders / cursors from finals only. */
++const TRAILING_CURSOR = /(?:\s*(?:…|\.\.\.))+\s*$/u; // only our placeholder / streaming ellipsis, not legitimate '..'
++let draftSeq = (Date.now() % 1_000_000) * 1000;
++function nextDraftId() {
++    draftSeq = (draftSeq + 1) % 2_000_000_000;
++    return draftSeq || 1;
++}
++
+ export class TelegramStreamingReply {
+     upstream;
+     target;
+@@ -10,265 +41,498 @@
+     text = '';
+     sentPreview;
+     messageId;
++    draftId;
++    useDraft;
++    draftFailed = false;
+     finalized = false;
+     queue = Promise.resolve();
+-    /** Latest desired preview; deliberately not an edit queue. */
+     pendingPreview;
+-    cooldownUntil = 0;
+-    cooldownTimer;
+     finishing = false;
++    throttle;
++    lastHtml = '';
++    kind;
++    _timer;
++    _inflight = Promise.resolve();
+     constructor(upstream, target, placeholder = '…', options = {}) {
+         this.upstream = upstream;
+         this.target = target;
+         this.placeholder = placeholder;
+         this.options = options;
++        this.kind = options.kind === 'process' ? 'process' : 'text';
++        // 'auto' and 'edit' → editMessageText (one bubble). Draft is opt-in only.
++        const preferDraft = options.streamMode === 'draft'
++            && this.kind === 'text'
++            && typeof upstream.sendMessageDraft === 'function';
++        this.useDraft = preferDraft;
++        const isDm = target.conversationType === 'dm';
++        const minInterval = this.kind === 'process' ? 1000 : (isDm ? 600 : 1000);
++        this.throttle = new StreamThrottle({
++            isGroup: target.conversationType !== 'dm',
++            minIntervalMs: minInterval,
++        });
++        if (this.useDraft) this.draftId = options.draftId ?? nextDraftId();
+     }
+-    /** Send the initial placeholder message (called once by the adapter). */
+     async start() {
+-        if (this.messageId)
+-            return;
+-        const preview = makePreview(this.placeholder, REGULAR_MESSAGE_MAX);
+-        const sent = await this.upstream.sendMessage(this.target.conversationId, preview, targetOptions(this.target));
+-        this.messageId = sent.messageId;
+-        this.sentPreview = preview;
++        if (this.messageId || this.finalized || this.finishing) return;
++        if (this.useDraft && !this.draftFailed) {
++            try {
++                await this.trackInflight(this.upstream.sendMessageDraft(
++                    this.target.conversationId, this.draftId, this.placeholder || '…', targetOptions(this.target)));
++                if (this.finalized || this.finishing) return;
++                this.sentPreview = this.placeholder || '…';
++                this.throttle.mark();
++                return;
++            }
++            catch (error) {
++                this.useDraft = false;
++                this.draftFailed = true;
++                this.options.onDraftFallback?.(error);
++            }
++        }
++        // Edit path: no "…" placeholder. The first real content is sent as the bubble
++        // (within ~350ms / 20 chars of the first delta), then edited in place.
+     }
+     append(delta) {
+         return this.replace({ text: this.text + delta });
+     }
+     replace(message) {
+         return this.enqueue(async () => {
+-            if (this.finalized || this.finishing)
+-                return;
+-            if (message.text === undefined)
+-                return;
++            if (this.finalized || this.finishing) return;
++            if (message.text === undefined) return;
+             this.text = message.text;
+-            this.pendingPreview = makePreview(this.text, REGULAR_MESSAGE_MAX);
++            this.pendingPreview = this.text;
+             await this.sync(false);
+         });
+     }
+     finish(message) {
+-        // Suppress a deferred preview immediately. `finish` itself may wait in the
+-        // operation queue behind one in-flight edit, but no newer preview should
+-        // be sent once the turn has ended.
+         this.finishing = true;
+-        this.clearCooldownTimer();
++        this.cancelTimer();
++        this.pendingPreview = undefined;
+         return this.enqueue(async () => {
+-            if (this.finalized)
+-                return;
+-            if (message?.text !== undefined)
+-                this.text = message.text;
+-            this.pendingPreview = undefined;
+-            await this.sync(true);
++            if (this.finalized) return;
+             this.finalized = true;
++            if (message?.text !== undefined) this.text = message.text;
++            await this._inflight.catch(() => { });
++            await this.waitReady();
++            await this.sendFinal();
+         });
+     }
+     fail(error) {
++        this.finishing = true;
++        this.cancelTimer();
+         return this.enqueue(async () => {
+-            if (this.finalized)
+-                return;
+-            if (isRateLimitError(error))
+-                return;
++            if (this.finalized) return;
+             this.finalized = true;
+-            if (!this.messageId)
+-                return;
++            await this._inflight.catch(() => { });
++            if (isRateLimitError(error)) return;
++            if (!this.messageId) return;
+             const text = truncateGraphemes(`Warning: ${messageOf(error)}`, REGULAR_MESSAGE_MAX);
+             try {
+                 await this.upstream.editMessageText(this.target.conversationId, this.messageId, text);
+             }
+-            catch {
+-                // Marking the message failed must not mask the original error.
+-            }
++            catch { /* ignore */ }
+         });
+     }
+-    /** Edit the rolling preview now; on `final` render + send the complete result. */
++    /** Build preview/final payload. Process kind is already Telegram HTML. */
++    buildPayload(plain, { final }) {
++        if (this.kind === 'process') {
++            return { payloadText: String(plain ?? ''), parseMode: 'HTML', plain: String(plain ?? '') };
++        }
++        const mode = this.options.formatting?.mode ?? 'auto';
++        let source = String(plain ?? '');
++        if (final) source = source.replace(TRAILING_CURSOR, '');
++        if (mode === 'html' || mode === 'auto') {
++            if (final) {
++                const chunks = buildFinalHtmlChunks(source);
++                return { payloadText: chunks[0] ?? '', parseMode: 'HTML', plain: source, chunks };
++            }
++            const built = buildIncrementalHtml(source, PREVIEW_LIMIT);
++            return { payloadText: built.html, parseMode: 'HTML', plain: source, built };
++        }
++        if (final) {
++            const chunks = splitByGraphemes(source, REGULAR_MESSAGE_MAX);
++            return { payloadText: chunks[0] ?? '', plain: source, chunks };
++        }
++        let payloadText = source;
++        if (visibleLength(source) > PREVIEW_LIMIT)
++            payloadText = `…${source.slice(-(PREVIEW_LIMIT - 1))}`;
++        return { payloadText, plain: source };
++    }
+     async sync(final) {
+-        if (!this.text)
+-            return;
++        if (!final && (this.finishing || this.finalized)) return;
++        if (!this.text && !final) return;
+         if (final) {
+-            await this.waitForCooldown();
+             await this.sendFinal();
+             return;
+         }
+-        if (!this.messageId)
+-            return;
+-        const preview = this.pendingPreview ?? makePreview(this.text, REGULAR_MESSAGE_MAX);
+-        if (this.finishing || this.isCoolingDown()) {
+-            this.pendingPreview = preview;
+-            if (!this.finishing)
+-                this.scheduleCooldownFlush();
++        const wait = this.throttle.waitMs();
++        if (wait > 0) {
++            this.schedule(wait);
+             return;
+         }
+-        if (this.sentPreview !== preview) {
++        const plain = this.pendingPreview ?? this.text;
++        if (!plain) return;
++        if (this.kind === 'text' && !this.messageId && !this.useDraft) {
++            this.firstTextAt ??= Date.now();
++            const age = Date.now() - this.firstTextAt;
++            if (plain.length < FIRST_SEND_CHARS && age < FIRST_SEND_DELAY_MS) {
++                this.pendingPreview = plain;
++                this.schedule(FIRST_SEND_DELAY_MS - age);
++                return;
++            }
++        }
++        else if (this.kind === 'text' && this.sentPreviewPlain != null) {
++            const grew = plain.length - String(this.sentPreviewPlain ?? '').length;
++            const stale = Date.now() - (this.lastSentAt || 0) >= STALE_FLUSH_MS;
++            if (grew >= 0 && grew < MIN_DELTA_CHARS && !/\n$/.test(plain) && !stale) {
++                this.pendingPreview = plain;
++                this.schedule(this.throttle.minIntervalMs);
++                return;
++            }
++        }
++        const built = this.buildPayload(plain, { final: false });
++        if (this.kind !== 'process' && built.built && built.payloadText === this.lastHtml) return;
++        if (built.payloadText === this.sentPreview) return;
++        if (this.finishing || this.finalized) return;
++        const { payloadText, parseMode } = built;
++        if (this.kind !== 'process' && built.built) this.lastHtml = built.payloadText;
++        try {
++            if (this.useDraft && !this.draftFailed) {
++                await this.trackInflight(this.upstream.sendMessageDraft(
++                    this.target.conversationId, this.draftId, payloadText.slice(0, 4096), {
++                        ...targetOptions(this.target),
++                        ...(parseMode ? { parseMode } : {}),
++                    }));
++            }
++            else {
++                if (!this.messageId) {
++                    // First bubble carries real content (and the reply quote); record its id even if
++                    // finish started meanwhile so the final edits it instead of sending a second one.
++                    const sent = await this.trackInflight(this.upstream.sendMessage(
++                        this.target.conversationId, payloadText.slice(0, 4096), targetOptions(this.target),
++                        parseMode ? { parseMode } : undefined));
++                    this.messageId = sent.messageId;
++                }
++                else {
++                    await this.trackInflight(this.upstream.editMessageText(
++                        this.target.conversationId, this.messageId, payloadText.slice(0, 4096),
++                        parseMode ? { parseMode } : undefined));
++                }
++            }
++            if (this.finishing || this.finalized) return;
++            this.sentPreview = payloadText;
++            this.sentPreviewPlain = plain;
++            this.lastSentAt = Date.now();
+             this.pendingPreview = undefined;
++            this.throttle.mark();
++            // More text arrived while the request was in flight: keep the stream moving.
++            if (this.text && this.text !== plain) {
++                this.pendingPreview = this.text;
++                this.schedule(this.throttle.waitMs());
++            }
++        }
++        catch (error) {
++            if (this.finishing || this.finalized) return;
++            if (this.useDraft && !this.draftFailed) {
++                this.useDraft = false;
++                this.draftFailed = true;
++                this.options.onDraftFallback?.(error);
++                if (this.finishing || this.finalized) return;
++                this.pendingPreview = plain;
++                await this.sync(false);
++                return;
++            }
++            if (isRateLimitError(error)) {
++                this.pendingPreview = plain;
++                this.throttle.onRateLimit(error.parameters?.retryAfter);
++                this.schedule(this.throttle.waitMs());
++                return;
++            }
++            if (isFormatError(error) && parseMode && this.kind !== 'process') {
++                try {
++                    const escaped = escapeHtml(plain).slice(0, 4096);
++                    if (this.messageId && !(this.finishing || this.finalized)) {
++                        await this.trackInflight(this.upstream.editMessageText(
++                            this.target.conversationId, this.messageId, escaped));
++                    }
++                    else if (!this.messageId && !this.useDraft) {
++                        const sent = await this.trackInflight(this.upstream.sendMessage(
++                            this.target.conversationId, escaped, targetOptions(this.target)));
++                        this.messageId = sent.messageId;
++                    }
++                    if (this.finishing || this.finalized) return;
++                    this.sentPreview = escaped;
++                    this.sentPreviewPlain = plain;
++                    this.pendingPreview = undefined;
++                    this.throttle.mark();
++                    return;
++                }
++                catch (inner) {
++                    if (isRateLimitError(inner)) {
++                        this.pendingPreview = plain;
++                        this.throttle.onRateLimit(inner.parameters?.retryAfter);
++                        this.schedule(this.throttle.waitMs());
++                        return;
++                    }
++                    throw inner;
++                }
++            }
++            throw error;
++        }
++        if (this.finishing || this.finalized) return;
++        if (this.kind === 'text' && plain.length >= PREVIEW_LIMIT) {
++            const { closed, tail, overflow } = splitClosedTail(plain, PREVIEW_LIMIT);
++            if (overflow && tail) await this.sealAndContinue(closed, tail);
++        }
++    }
++    async sealAndContinue(closed, tail) {
++        if (this.finishing || this.finalized) return;
++        // Finalize current preview in place (edit) or as a committed message (draft→send).
++        this.text = closed;
++        await this.sendFinalChunkOnly();
++        if (this.finishing || this.finalized) return;
++        this.messageId = undefined;
++        this.draftId = this.useDraft ? nextDraftId() : undefined;
++        this.sentPreview = undefined;
++        this.sentPreviewPlain = undefined;
++        this.lastHtml = '';
++        this.text = tail;
++        this.pendingPreview = tail;
++        if (this.useDraft && !this.draftFailed) {
+             try {
+-                await this.upstream.editMessageText(this.target.conversationId, this.messageId, preview);
+-                this.sentPreview = preview;
++                await this.trackInflight(this.upstream.sendMessageDraft(
++                    this.target.conversationId, this.draftId, '…', targetOptions(this.target)));
+             }
+-            catch (error) {
+-                if (!isRateLimitError(error))
+-                    throw error;
+-                if (this.pendingPreview === undefined)
+-                    this.pendingPreview = preview;
+-                this.startCooldown(error);
++            catch {
++                this.useDraft = false;
++                this.draftFailed = true;
+             }
+         }
++        this.firstTextAt = undefined;
++        if (this.finishing || this.finalized) return;
++        await this.sync(false);
++    }
++    async startAsEdit() {
++        if (this.messageId || this.finalized || this.finishing) return;
++        const sent = await this.trackInflight(this.upstream.sendMessage(
++            this.target.conversationId, this.placeholder || '…', targetOptions(this.target)));
++        this.messageId = sent.messageId;
++        if (this.finalized || this.finishing) return;
++        this.sentPreview = this.placeholder || '…';
++        this.throttle.mark();
+     }
+-    /**
+-     * Send the final message. Plain mode: first chunk edits the existing message,
+-     * overflow chunks are sent as new messages. Rich mode (richFinal + rich
+-     * formatting): upgrade the same message to a Rich Message; fall back to plain
+-     * once on a format error.
+-     */
+     async sendFinal() {
+-        const mode = this.options.formatting?.mode ?? 'auto';
++        const source = this.text || '';
++        if (!source) {
++            // Empty process/text: leave or drop the placeholder quietly (no second bubble).
++            return;
++        }
++        if (this.kind === 'process') {
++            await this.deliverHtml(source);
++            return;
++        }
++        const mode = this.options.formatting?.mode ?? 'html';
++        if (mode === 'html' || mode === 'auto') {
++            const cleaned = source.replace(TRAILING_CURSOR, '');
++            const chunks = buildFinalHtmlChunks(cleaned);
++            await this.deliverHtmlChunks(chunks, cleaned);
++            return;
++        }
+         if (this.options.richFinal && mode !== 'plain') {
+             await this.sendRichFinal();
+             return;
+         }
+-        const chunks = splitByGraphemes(this.text, REGULAR_MESSAGE_MAX);
+-        if (this.messageId && this.sentPreview !== chunks[0]) {
+-            await this.editFinalText(chunks[0] ?? '');
+-            this.sentPreview = chunks[0];
++        const cleaned = source.replace(TRAILING_CURSOR, '');
++        const chunks = splitByGraphemes(cleaned, REGULAR_MESSAGE_MAX);
++        await this.deliverPlainChunks(chunks);
++    }
++    /** Used by sealAndContinue: commit current text without flipping finalized flags. */
++    async sendFinalChunkOnly() {
++        const source = this.text || '';
++        if (!source) return;
++        if (this.kind === 'process') {
++            await this.deliverHtml(source);
++            return;
+         }
+-        else if (!this.messageId) {
+-            const sent = await this.upstream.sendMessage(this.target.conversationId, chunks[0] ?? '', targetOptions(this.target));
++        const mode = this.options.formatting?.mode ?? 'html';
++        if (mode === 'html' || mode === 'auto') {
++            const chunks = buildFinalHtmlChunks(source.replace(TRAILING_CURSOR, ''));
++            await this.deliverHtmlChunks(chunks, source, { allowContinue: true });
++            return;
++        }
++        const chunks = splitByGraphemes(source.replace(TRAILING_CURSOR, ''), REGULAR_MESSAGE_MAX);
++        await this.deliverPlainChunks(chunks, { allowContinue: true });
++    }
++    /**
++     * Deliver HTML: edit preview in place when messageId exists; otherwise one sendMessage.
++     * Never send a second top-level message when a preview bubble already exists.
++     */
++    async deliverHtml(html) {
++        if (this.messageId) {
++            try {
++                await this.editFinal(html, 'HTML');
++            }
++            catch (error) {
++                if (isFormatError(error)) {
++                    await this.editFinal(escapeHtml(html).slice(0, 4096));
++                    return;
++                }
++                throw error;
++            }
++            this.useDraft = false;
++            return;
++        }
++        // Pure draft path (or no preview yet): one real message dismisses the draft.
++        const sent = await this.upstream.sendMessage(
++            this.target.conversationId, html, targetOptions(this.target), { parseMode: 'HTML' });
++        this.messageId = sent.messageId;
++        this.useDraft = false;
++    }
++    async deliverHtmlChunks(chunks, source, { allowContinue = false } = {}) {
++        const first = chunks[0] ?? '';
++        if (this.messageId) {
++            try {
++                await this.editFinal(first, 'HTML');
++            }
++            catch (error) {
++                if (isFormatError(error)) {
++                    await this.editFinal(escapeHtml(source).slice(0, 4096));
++                    this.useDraft = false;
++                    return;
++                }
++                throw error;
++            }
++            this.useDraft = false;
++        }
++        else {
++            const sent = await this.upstream.sendMessage(
++                this.target.conversationId, first, targetOptions(this.target), { parseMode: 'HTML' });
++            this.messageId = sent.messageId;
++            this.useDraft = false;
++        }
++        // Overflow chunks are additional messages (no reply_to) — only for true length overflow.
++        for (const chunk of chunks.slice(1)) {
++            await this.upstream.sendMessage(
++                this.target.conversationId, chunk, { messageThreadId: this.target.threadId }, { parseMode: 'HTML' });
++        }
++        if (allowContinue) {
++            // Caller will start a fresh preview for the tail; clear id so the next bubble is new.
++            this.messageId = undefined;
++        }
++    }
++    async deliverPlainChunks(chunks, { allowContinue = false } = {}) {
++        if (this.messageId) {
++            if (this.sentPreview !== chunks[0]) await this.editFinal(chunks[0] ?? '');
++            this.useDraft = false;
++        }
++        else {
++            const sent = await this.upstream.sendMessage(
++                this.target.conversationId, chunks[0] ?? '', targetOptions(this.target));
+             this.messageId = sent.messageId;
++            this.useDraft = false;
+         }
+         for (const chunk of chunks.slice(1)) {
+-            await this.upstream.sendMessage(this.target.conversationId, chunk, {
+-                messageThreadId: this.target.threadId,
+-            });
++            await this.upstream.sendMessage(
++                this.target.conversationId, chunk, { messageThreadId: this.target.threadId });
+         }
++        if (allowContinue) this.messageId = undefined;
+     }
+-    /** Upgrade the in-place message to a Rich Message with plain-once fallback. */
+     async sendRichFinal() {
+-        const source = this.text;
+-        if (!source)
+-            return;
++        const source = (this.text || '').replace(TRAILING_CURSOR, '');
++        if (!source) return;
+         await sendWithFallback(source, { mode: 'rich-markdown' }, async (plan) => {
+             if (plan.kind === 'rich') {
+-                // Edit the same message into the first rich segment; overflow as new
+-                // rich messages.
+-                if (this.messageId) {
+-                    await this.editFinalRich({ markdown: plan.texts[0] ?? '' });
++                if (this.messageId) await this.editFinalRich({ markdown: plan.texts[0] ?? '' });
++                else {
++                    // No rich-send without messageId in this patch path — fall through plain.
++                    const sent = await this.upstream.sendMessage(this.target.conversationId, plan.texts[0] ?? '', targetOptions(this.target));
++                    this.messageId = sent.messageId;
+                 }
+                 for (const text of plan.texts.slice(1)) {
+                     await this.upstream.sendRichMessage(this.target.conversationId, { markdown: text });
+                 }
+                 return;
+             }
+-            // Plain fallback on the same message + new overflow messages.
+-            if (this.messageId) {
+-                await this.editFinalText(plan.chunks[0] ?? '');
+-            }
+-            else {
+-                const sent = await this.upstream.sendMessage(this.target.conversationId, plan.chunks[0] ?? '', targetOptions(this.target));
+-                this.messageId = sent.messageId;
+-            }
+-            for (const chunk of plan.chunks.slice(1)) {
+-                await this.upstream.sendMessage(this.target.conversationId, chunk, {
+-                    messageThreadId: this.target.threadId,
+-                });
+-            }
++            await this.deliverPlainChunks(plan.chunks);
+         });
+     }
+-    /** Retry only the in-place final edit after a Telegram-requested cooldown. */
+-    async editFinalText(text) {
++    async editFinal(text, parseMode) {
+         while (true) {
+-            await this.waitForCooldown();
++            await this.waitReady();
+             try {
+-                await this.upstream.editMessageText(this.target.conversationId, this.messageId, text);
++                await this.upstream.editMessageText(this.target.conversationId, this.messageId, text, parseMode ? { parseMode } : undefined);
+                 return;
+             }
+             catch (error) {
+-                if (!isRateLimitError(error))
+-                    throw error;
+-                this.startCooldown(error);
++                if (!isRateLimitError(error)) throw error;
++                this.throttle.onRateLimit(error.parameters?.retryAfter);
+             }
+         }
+     }
+-    /** The rich final path uses Telegram's edit endpoint too, so it shares 429 recovery. */
+     async editFinalRich(message) {
+         while (true) {
+-            await this.waitForCooldown();
++            await this.waitReady();
+             try {
+                 await this.upstream.editMessageRich(this.target.conversationId, this.messageId, message);
+                 return;
+             }
+             catch (error) {
+-                if (!isRateLimitError(error))
+-                    throw error;
+-                this.startCooldown(error);
++                if (!isRateLimitError(error)) throw error;
++                this.throttle.onRateLimit(error.parameters?.retryAfter);
+             }
+         }
+     }
+-    isCoolingDown() {
+-        return Date.now() < this.cooldownUntil;
+-    }
+-    /** Honor the server's retry hint, extending (never shortening) cooldown. */
+-    startCooldown(error) {
+-        const retryAfter = error.parameters?.retryAfter;
+-        const delayMs = Number.isFinite(retryAfter)
+-            ? Math.max(1, Math.ceil(retryAfter)) * 1000
+-            : 1000;
+-        this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + delayMs);
+-        this.scheduleCooldownFlush();
+-    }
+-    /** One timer, one latest-value flush. It never replays a sequence of edits. */
+-    scheduleCooldownFlush() {
+-        if (this.finishing || this.finalized || this.cooldownTimer || !this.pendingPreview)
+-            return;
+-        this.cooldownTimer = setTimeout(() => {
+-            this.cooldownTimer = undefined;
++    cancelTimer() {
++        if (this._timer) {
++            clearTimeout(this._timer);
++            this._timer = undefined;
++        }
++    }
++    schedule(waitMs) {
++        if (this.finishing || this.finalized || this._timer) return;
++        this._timer = setTimeout(() => {
++            this._timer = undefined;
++            if (this.finishing || this.finalized) return;
+             void this.enqueue(() => this.sync(false)).catch(() => { });
+-        }, Math.max(1, this.cooldownUntil - Date.now()));
++        }, Math.max(1, waitMs));
+     }
+-    clearCooldownTimer() {
+-        if (this.cooldownTimer)
+-            clearTimeout(this.cooldownTimer);
+-        this.cooldownTimer = undefined;
+-    }
+-    async waitForCooldown() {
+-        while (this.isCoolingDown()) {
+-            await new Promise((resolve) => {
+-                setTimeout(resolve, Math.max(1, this.cooldownUntil - Date.now()));
+-            });
++    async waitReady() {
++        for (;;) {
++            const w = this.throttle.waitMs();
++            if (w <= 0) return;
++            await new Promise((r) => setTimeout(r, w));
+         }
+     }
++    trackInflight(promise) {
++        const p = Promise.resolve(promise);
++        this._inflight = p.then(() => undefined, () => undefined);
++        return p;
++    }
+     enqueue(task) {
+         const next = this.queue.then(task, task);
+         this.queue = next.then(() => undefined, () => undefined);
+         return next;
+     }
+ }
++
++export function makePreview(text, limit) {
++    if (visibleLength(text) <= limit) return text;
++    return `…${text.slice(-(limit - 1))}`;
++}
++
+ function messageOf(error) {
+-    if (error instanceof Error)
+-        return error.message;
++    if (error instanceof Error) return error.message;
+     return String(error);
+ }
+ function isRateLimitError(error) {
+     return error instanceof TelegramApiError && error.kind === 'rate-limit';
+ }
++function isFormatError(error) {
++    return error instanceof TelegramApiError && error.kind === 'format';
++}
+ function targetOptions(target) {
+     return {
+         replyToMessageId: target.replyToMessageId,
+         messageThreadId: target.threadId,
+     };
+-}
+-/**
+- * Build a rolling preview for an in-progress stream: show the whole text up to
+- * `limit`, otherwise `…` + the newest `limit - 1` graphemes. This keeps the
+- * preview visibly changing once the model exceeds the single-message limit
+- * (plan §6.3), fixing the frozen `chunks[0]` behaviour.
+- */
+-export function makePreview(text, limit) {
+-    return makeRollingPreview(text, limit);
+-}
+-/** Internal: rolling head/tail preview implementation. */
+-function makeRollingPreview(text, limit) {
+-    if (visibleLength(text) <= limit)
+-        return text;
+-    // Show `…` + the newest (limit-1) graphemes so the user sees output continue.
+-    return `…${tailGraphemes(text, limit - 1)}`;
+-}
+-//# sourceMappingURL=streaming-reply.js.map
+\ No newline at end of file
++}
+\ No newline at end of file
+diff -ruN /tmp/tgvend/t_base/lib/upstream.js vendor/wsz987/channel-telegram/lib/upstream.js
+--- a/lib/upstream.js
++++ b/lib/upstream.js
+@@ -142,6 +142,31 @@
+         const envelope = await this.sendMessageRaw(chatId, text, options, format);
+         return this.sentMessage('sendMessage', envelope.data);
+     }
++    /**
++     * [dsh-workbench patch] Bot API sendMessageDraft — stream a partial message in a private chat.
++     * Same draft_id updates animate; does not create a permanent message until sendMessage.
++     */
++    async sendMessageDraft(chatId, draftId, text, options) {
++        const numericChatId = Number(chatId);
++        if (!Number.isSafeInteger(numericChatId)) {
++            throw new ChannelError('CHANNEL_ERROR', 'telegram message drafts require a numeric private chat id');
++        }
++        const body = {
++            chat_id: numericChatId,
++            draft_id: Number(draftId),
++            text: String(text ?? ''),
++        };
++        if (options?.messageThreadId !== undefined)
++            body.message_thread_id = Number(options.messageThreadId);
++        if (options?.parseMode !== undefined)
++            body.parse_mode = options.parseMode;
++        const raw = await this.post('sendMessageDraft', body);
++        const envelope = this.parseEnvelope('sendMessageDraft', raw);
++        if (!envelope.data.ok) {
++            throw this.apiError('sendMessageDraft', envelope.data);
++        }
++        return envelope.data.result;
++    }
+     /** Send a formatted text message; returns the parsed, ok-checked envelope. */
+     async sendMessageRaw(chatId, text, options, format) {
+         const raw = await this.post('sendMessage', this.messageBody(chatId, { text }, options, format));

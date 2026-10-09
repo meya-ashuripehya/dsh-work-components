@@ -1,7 +1,7 @@
 {
   "name": "dsh-work-components",
   "version": "0.3.0",
-  "description": "DSH 工作组件插件：在「工作组件」设置页统一挂载并管理控制其他工作软件的 MCP 服务器（Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Cloudflare / GitHub / ComfyUI / FFmpeg / Obsidian），另含按游戏分卡的 GameBot（Minecraft / 文明 VI / 视觉兜底）、会话控制和多模态工具 mm_send_image。",
+  "description": "DSH 工作组件插件：在「工作组件」设置页统一挂载并管理控制其他工作软件的 MCP 服务器（Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Cloudflare / GitHub / ComfyUI / FFmpeg / Obsidian），另含按游戏分卡的 GameBot（Minecraft / 文明 VI / 视觉）、会话控制、「通道」分组的 Telegram 和多模态工具 mm_send_image。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -36,10 +36,12 @@
     "lib/index.mjs",
     "lib/local-loader-worker.mjs",
     "lib/component-sdk.mjs",
+    "lib/channel-telegram.mjs",
     "lib/client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
+    "assets/**",
     "office/launch.py",
     "src/components/gamebot/pyproject.toml",
     "src/components/gamebot/README.md",
@@ -49,7 +51,8 @@
     "src/components/gamebot/src/gamebot/adapters/civilization/mod/TRIXCompanion/**",
     "LICENSE",
     "NOTICE",
-    "vendor/dsh-tools/LICENSE"
+    "vendor/dsh-tools/LICENSE",
+    "vendor/wsz987/*/LICENSE"
   ],
   "dsh": {
     "bundle": {
@@ -69,6 +72,7 @@
     "prepublishOnly": "npm run build && npm run check",
     "smoke": "node scripts/smoke.mjs",
     "vendor:sync": "node scripts/vendor-sync.mjs",
+    "vendor:channels": "node scripts/vendor-channels.mjs",
     "smoke:office": "node scripts/office-smoke.mjs",
     "smoke:tools": "node scripts/tools-smoke.mjs",
     "smoke:connect": "node scripts/connect-smoke.mjs",
@@ -76,15 +80,40 @@
     "smoke:gamebot": "node scripts/smoke-gamebot.mjs"
   },
   "engines": {
-    "node": ">=22.15"
+    "node": "^22.19 || >=24"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/cordis-plugin-include": "1.0.9",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.5",
+    "@deepseek-ai/dsh-agent": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-agent-presets": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-atomic-write": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-attachment": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-commands": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-credentials": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-home-paths": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-invariants": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-scope": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-session": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-user-questions": "0.1.5-rc.2",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@wsz987/channel-control": "0.5.1",
+    "@wsz987/channel-core": "0.5.1",
+    "@wsz987/channel-harness": "0.5.1",
+    "@wsz987/channel-telegram": "0.5.1",
     "esbuild": "^0.25.0",
-    "schemastery": "^3.18.0"
+    "schemastery": "^3.18.0",
+    "undici": "7.30.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "image-size": "^2.0.4"
+  }
 }

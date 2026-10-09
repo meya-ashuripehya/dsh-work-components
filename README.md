@@ -71,7 +71,8 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | 多模态 | 媒体卡片 | mm_send_image · 可用 | `mm_send_image` 发图（API text+image；settled MmCard 在 turnTail，toolview 折叠后仍可见） |
 | 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / FFmpeg / Obsidian（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
-| 通用 | uv / Node.js / 下载代理 | 可用 / 未安装 / 已设置… | 运行时安装与代理等共用项 |
+| 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
+| 通用 | 会话控制 / uv / Node.js / 下载代理 | 可用 / 未安装 / 已设置… | 会话能力、运行时安装与代理等共用项 |
 | 基础工具 | 添加工作组件 | 提示词工具 | Token 声明 + 可复制 AI 提示词：写成**本地**模块（不装进 `tools/`）。选型**功能最全优先**；应补可配置/必填参数（中文 label）；本地阶段 `keys` + `launch`/`spec` 硬编码默认，拟议 schema 写注释；自定义键未进 schema 前不持久化。模块就位后重启 DSH，再在设置页下载安装。 |
 
 有上游仓库的功能在标题旁显示蓝色网址文字（新标签打开）。管理页「‹ 返回」或 Esc 回列表；每页各自「保存」；「启用」拨动后立即单独保存（本地组件同样有启用开关，键 `<id>Enabled`，**缺省关**）。安装进行中列表与管理页约每 1.5 秒刷新；有组件已启动时约每 5 秒刷新以跟上「已连接」。设置命名空间：`dsh-workbench`。
@@ -125,7 +126,7 @@ scripts/               build、vendor:sync、各类 smoke
 locale/ icon.svg       插件管理器里的标题 / 简介 / 图标
 ```
 
-**托管安装**：设置页可把 uv、Node.js 与各组件装进数据目录的 `tools/`（`.dsh-install.json` 记版本）。启动查找顺序一般为：托管 `tools/` → 设置路径 → 系统 / 旁路兜底（如 uvx、`npx`、旁边的 `../officemcp`）。Figma「官方桌面版 MCP」模式走 streamable-http，不需本地包。测试可用环境变量 `DSH_WORKBENCH_TOOLS_DIR` 改落地目录。
+**托管安装**：设置页可把 uv、Node.js 与各组件装进数据目录的 `tools/`（`.dsh-install.json` 记版本）。启动查找顺序一般为：托管 `tools/` → 设置路径 → 系统 / 旁路回退（如 uvx、`npx`、旁边的 `../officemcp`）。Figma「官方桌面版 MCP」模式走 streamable-http，不需本地包。测试可用环境变量 `DSH_WORKBENCH_TOOLS_DIR` 改落地目录。
 
 **同源 API**（前缀 `/dsh-workbench/api`）：
 
@@ -157,7 +158,8 @@ npm run smoke:office   # 按插件启动方案拉起 OfficeMCP（可用 --expect
 npm run smoke:connect  # 「已连接」实机冒烟（Windows）：node scripts/connect-smoke.mjs chrome …
 npm run smoke:local    # 本地兼容发现 / moduleSource / contribute 清单
 npm run smoke:gamebot  # GameBot 设置下发冒烟（SMOKE_GAMEBOT_URL，默认 http://127.0.0.1:8767；临时配置 / 记忆目录）
-npm run check          # 语法检查 + GameBot 字段与 lib/client.js 一致性（prepublishOnly 会先 build 再跑它）
+npm run check          # 语法检查 + GameBot 字段与 lib/client.js 一致性 + vendor/wsz987 与补丁一致（prepublishOnly 会先 build 再跑它）
+npm run vendor:channels  # 由 npm 上的 @wsz987/channel-* 0.5.1 + vendor/wsz987/patches 重新生成 vendor/wsz987（加 -- --check 只校验）
 ```
 
 发布走 GitHub Actions（`.github/workflows/publish.yml`，npm trusted publishing / OIDC，自动带 provenance）：推送 `v*` 标签触发；本地不要 `npm publish`。
@@ -193,6 +195,20 @@ npm run check          # 语法检查 + GameBot 字段与 lib/client.js 一致�
 - `POST /dsh-workbench/api/session/cancel` `{ sessionId, reason? }`
 - `GET /dsh-workbench/api/session/notices`
 
+## 通道 · Telegram
+
+「通道」分组的 Telegram 卡片把机器人私聊接到 DSH 会话，功能与独立插件 `dsh-telegram-temp` 相同（文字、图片、流式回复，以及多模态工具结果图片转发）。
+
+- **默认关闭**；关闭时不加载任何通道代码。打开「启用」后才动态加载 `lib/channel-telegram.mjs`，在本插件 ctx 下挂一个 fork（channel-core → channel-harness → Telegram 适配器）；关闭开关或插件卸载时随 fork 一起清理（`ctx.effect`）。不直接写会话日志：入站经宿主 `agents` 服务进入会话。
+- **令牌**写进宿主凭据（默认引用名 `TELEGRAM_BOT_TOKEN`，与 `dsh-telegram-temp` 共用，切换时无需重新填写），不写入本插件设置；`GET /settings` 只回传占位值。
+- **会话绑定与访问策略**沿用 `~/.dsh/dsh-channels`（`bindings.json`、`storage/access/policy/v1/telegram/main`）。卡片填写了所有者用户 ID 时，启动时按卡片写入访问策略（所有者 + 允许的用户，私聊白名单，群组规则保持原样）；留空则沿用已保存的策略。
+- **代理**：卡片填写的 HTTP 代理只用于访问 `api.telegram.org`；留空沿用宿主与环境变量。
+- **路由与格式**（迁移自 profile `cordis.patch.yml` 的 channels-harness / channels-telegram）：默认智能体预设、通道级 / 会话级预设覆盖、路由模式、入站元数据前缀、出站格式（默认 HTML）。
+- **冲突保护**：profile 的 bundles 里仍有 `dsh-telegram-temp`（或 `@wsz987/dsh-channels`）、或宿主里已有其他插件提供的 `channels` / `channelControl` 服务时不启动，卡片显示「已由独立插件 dsh-telegram-temp 接管，请先移除该插件」等说明；运行中出现 Telegram 409（同一机器人被别处轮询）时立即停止轮询。
+- **补丁随仓库走**：`vendor/wsz987/<包>` 是 npm 0.5.1 打上 `vendor/wsz987/patches/*.patch` 之后的副本，构建时把 `@wsz987/channel-{core,harness,telegram}` 解析到这里并打包进 `lib/channel-telegram.mjs`，不依赖 postinstall，`npm install` 不会冲掉补丁。依赖版本在 devDependencies 里精确锁定（`.npmrc` 设 `legacy-peer-deps=true`，因为 DSH 各包 rc.2 / rc.3 的 peer 声明互相冲突）。
+
+从 `dsh-telegram-temp` 切换：在卡片填好设置并打开「启用」（此时显示接管说明，不会轮询）→ 退出 DSH Desktop → `"%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop remove dsh-telegram-temp` → 重新打开 DSH。
+
 ## 游戏 · GameBot
 
 GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层，不单独出卡片），设置页「游戏」分组**按游戏分卡**：
@@ -201,7 +217,7 @@ GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层�
 |---|---|---|
 | Minecraft | `gamebot-minecraft` | `gamebot-minecraftEnabled` |
 | 文明 VI | `gamebot-civilization` | `gamebot-civilizationEnabled` |
-| 视觉兜底 | `gamebot-vision` | `gamebot-visionEnabled` |
+| 视觉 | `gamebot-vision` | `gamebot-visionEnabled` |
 
 - **每次应用/会话启动全部默认关闭**，需重新启用；共享的 `gamebotUrl` / `gamebotRoot` 会记住。
 - **共享 body**：任一游戏启用 → 自动启动一个 REST body（默认 `http://127.0.0.1:8766`）；全部关闭 → 停止（只停本插件拉起的进程）。

@@ -48,3 +48,51 @@ for (const [entry, out] of [
     logLevel: 'info',
   })
 }
+
+// 「通道」分组的 Telegram 运行时：src/channels/telegram/runtime.mjs → lib/channel-telegram.mjs。
+// 只在卡片里打开「启用」后才由 lib/index.mjs 动态 import，关闭时不加载。
+// @wsz987/channel-{core,harness,telegram} 一律解析到 vendor/wsz987/<pkg>（npm 0.5.1 + vendor/wsz987/patches/*.patch，
+// 由 `npm run vendor:channels` 生成、`npm run check` 校验），所以 npm install 不会把补丁冲掉。
+// 其余依赖（dsh-agent、dsh-llm、undici 等）从 node_modules 打包进来（版本由 devDependencies 精确锁定）。
+const CHANNEL_PKG = /^@wsz987\/(channel-core|channel-harness|channel-telegram)(\/plugin)?$/
+const vendorChannels = {
+  name: 'vendor-wsz987-channels',
+  setup(b) {
+    b.onResolve({ filter: /^@wsz987\// }, (args) => {
+      const m = CHANNEL_PKG.exec(args.path)
+      if (!m) return undefined // 未打补丁的 @wsz987 包（如 channel-control）照常从 node_modules 解析
+      return { path: join(root, 'vendor', 'wsz987', m[1], 'lib', m[2] ? 'plugin.js' : 'index.js') }
+    })
+    // dsh-llm 运行时 createRequire(import.meta.url)('../package.json') 读自身版本；打包后该相对路径会指到别处，
+    // 这里换成构建时读到的版本常量。
+    b.onLoad({ filter: /[\\/]node_modules[\\/](@deepseek-ai[\\/])?dsh-[a-z-]+[\\/].*\.js$/ }, async (args) => {
+      const { readFile } = await import('node:fs/promises')
+      let text = await readFile(args.path, 'utf8')
+      const re = /createRequire\(import\.meta\.url\)\((['"])\.\.\/package\.json\1\)/g
+      if (!re.test(text)) return undefined
+      const pkgDir = args.path.replace(/[\\/](lib|dist)[\\/].*$/, '')
+      const { version, name } = JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8'))
+      text = text.replace(re, () => `(${JSON.stringify({ name, version })})`)
+      return { contents: text, loader: 'js' }
+    })
+  },
+}
+await build({
+  entryPoints: [join(root, 'src', 'channels', 'telegram', 'runtime.mjs')],
+  outfile: join(root, 'lib', 'channel-telegram.mjs'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+  plugins: [vendorChannels],
+  banner: {
+    js: [
+      '/* dsh-workbench Telegram channel runtime (loaded only when the 通道 › Telegram toggle is on).',
+      ' * Bundled: @wsz987/channel-core, channel-harness, channel-telegram 0.5.1 (MIT, wsz987/dsh-channels) with patches',
+      ' * from vendor/wsz987/patches; DeepSeek Harness packages (MIT); undici (MIT). See NOTICE.',
+      ' */',
+      "import { createRequire as __mmCreateRequire } from 'node:module'; const require = __mmCreateRequire(import.meta.url);",
+    ].join('\n'),
+  },
+  logLevel: 'info',
+})

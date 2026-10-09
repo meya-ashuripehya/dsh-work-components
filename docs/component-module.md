@@ -6,6 +6,7 @@
 
 相关入口：`src/components/index.mjs`（注册表 + 管理器）、`src/connect.mjs`（探测汇总）、`src/tools.mjs`（下载 / venv / npm 原语）、`lib/client.js`（设置页 UI，手写，需与模块 meta / 字段说明保持同步）。
 > **多模态卡片（非组件模块）**：UI 用统一 `MmBlock`（`type:'mm'` / `kind` / `status`），经 `presentationMeta.mm` 交给前端；`output.render` 只发 Host 接受的 `text`+`image`（DeepSeek Messages 拒 `mm`）。工具 `mm_send_image`（本地图片 → Host attachmentId）。运行中 `tool.call.toolview` 只显示 pending/sending；**settled 全卡挂在 `conversation.chat.turnTail`**（ConversationNodeDefinition → turn data `mmCards`，与 deliverables 同属产物表面），过程折叠后仍可见。`loadImage` 经 `uiConversation.imageUrl`。
+> **「通道」分组（非组件模块）**：Telegram 不是 `ComponentModule`（不经 MCP、无下载安装），代码在 `src/channels/telegram/`：`index.mjs` 是宿主半边（设置键、令牌经宿主 credentials 保存、冲突检测、按开关启停、`/components` 列表项），`runtime.mjs` 单独打包为 `lib/channel-telegram.mjs`，只在打开「启用」后动态加载。打过补丁的 `@wsz987/channel-*` 在 `vendor/wsz987/`（`npm run vendor:channels` 生成、`npm run check` 校验）。
 
 
 ---

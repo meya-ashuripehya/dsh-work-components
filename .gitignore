@@ -2,6 +2,8 @@ node_modules/
 lib/index.mjs
 lib/index.mjs.map
 lib/component-sdk.mjs
+lib/channel-telegram.mjs
+lib/channel-telegram.mjs.map
 lib/smoke.png
 tools/
 local-components/

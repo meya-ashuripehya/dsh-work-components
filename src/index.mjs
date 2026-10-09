@@ -12,6 +12,7 @@
  *     POST /dsh-workbench/api/components/<id>/install|uninstall|cancel（cancel：取消进行中 / 排队中的下载并删除该组件的工具文件）
  *     （id：uv / node / office / blender / unity / figma / photoshop / chrome / godot），
  *     POST /dsh-workbench/api/components/godot/addon { project }（把同版本的 Godot AI 插件装进 Godot 项目），
+ *     GET/POST /dsh-workbench/api/update/check|apply|ignore|status（自更新检测与应用；状态在数据目录 update-state.json），
  *     以及 /dsh-workbench/assets/*（插件 assets/ 下的静态文件；不要放入第三方界面截图或标志）。
  *  3. 会话控制（通用）：撤回 / 重试（按回合就地截断多帧 zstd，保留连续 seq，并清投影缓存）、熔断（取消；自动熔断再截掉失败尾轮）；API 在 /dsh-workbench/api/session/*。
  *  4. 多模态图片：`mm_send_image`（本地文件 → attachments.saveImage → Host attachmentId）。model 侧 render 只发 text+image（DeepSeek Messages 拒 type:'mm'）；MmCard 数据走 presentationMeta.mm，客户端用 meta / image fallback。
@@ -24,10 +25,13 @@ import { COMPONENTS, componentById, createComponentManager, contributeInfo, loca
 import { installExitHook as installGamebotExitHook, stopBody as stopGamebotBody } from './components/gamebot/process.mjs'
 import { gamebotSchemaShape, legacyConfigCandidates, legacyImportPatch } from './components/gamebot/fields.mjs'
 import { dataDir, dirSize, killProcessesUnder, managedPaths, migrateLegacyState, pluginRoot, settingsFilePath, toolsDir } from './tools.mjs'
+import { checkForUpdate, getUpdateJob, ignoreVersion, startApplyUpdate } from './updater.mjs'
 import { mountSessionControls, handleSessionApi } from './session-controls/index.mjs'
+import { createTelegramChannel, telegramSchemaShape } from './channels/telegram/index.mjs'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { imageSize } from 'image-size'
 
 export { COMPONENTS, componentById, createComponentManager, contributeInfo, localComponentsDir, CONTRIBUTE_COMPARE_URL, dataDir, dirSize, killProcessesUnder, managedPaths, settingsFilePath, toolsDir }
 
@@ -129,7 +133,7 @@ export const SettingsSchema = z.object({
   comfyuiBin: z.string().default('').description('comfy-cli 的 comfy 可执行文件路径，作为 COMFY_BIN 传给服务器；留空时用环境变量 COMFY_BIN。'),
   'gamebot-minecraftEnabled': z.boolean().default(false).description('启用 GameBot · Minecraft（共享 body + 仅 Minecraft 的 MCP）。每次启动默认关闭。'),
   'gamebot-civilizationEnabled': z.boolean().default(false).description('启用 GameBot · 文明 VI（共享 body + 仅文明的 MCP）。每次启动默认关闭。'),
-  'gamebot-visionEnabled': z.boolean().default(false).description('启用 GameBot · 视觉兜底（共享 body + 仅视觉桌面的 MCP）。每次启动默认关闭。'),
+  'gamebot-visionEnabled': z.boolean().default(false).description('启用 GameBot · 视觉（共享 body + 仅视觉桌面的 MCP）。每次启动默认关闭。'),
   gamebotUrl: z.string().default('http://127.0.0.1:8766').description('GameBot REST 地址（/health、/v1/...）；可跨重启记住。'),
   gamebotRoot: z.string().default('').description('可选：外部 GameBot 目录（含 pyproject.toml + src/gamebot）；留空用插件内嵌 src/components/gamebot。填写时也会从它的 data/game-configs.json 一次性导入旧设置。'),
   nodePath: z.string().default('').description('node 可执行文件（npm 取同目录）。插件 tools/node 里有 Node.js 时优先用它；否则用这里的路径，留空时用 PATH 里的 node，再退回 DSH 自带的运行时。'),
@@ -139,6 +143,8 @@ export const SettingsSchema = z.object({
   sessionCircuitMaxSameTool: z.natural().min(2).max(50).default(6).description('熔断：同一工具（含相同参数）连续调用达到该次数时取消。'),
   sessionCircuitMaxSteps: z.natural().min(5).max(500).default(80).description('熔断：单回合 step/start 次数上限。'),
   sessionCircuitMaxReasoningChars: z.natural().min(1000).max(5000000).default(200000).description('熔断：单回合累计思考字符上限。'),
+
+  ...telegramSchemaShape(z),
 
   ...gamebotSchemaShape(z),
 })
@@ -292,58 +298,6 @@ const IMAGE_EXT_MEDIA = {
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024
 
 /**
- * Best-effort width/height from common image headers (fallback if saveImage omits dims).
- * @returns {{ width: number, height: number } | null}
- */
-function sniffImageDims(buf) {
-  if (!Buffer.isBuffer(buf) || buf.length < 24) return null
-  // PNG
-  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
-    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
-  }
-  // GIF
-  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
-    return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) }
-  }
-  // BMP
-  if (buf[0] === 0x42 && buf[1] === 0x4d && buf.length >= 26) {
-    const w = buf.readInt32LE(18)
-    const h = Math.abs(buf.readInt32LE(22))
-    if (w > 0 && h > 0) return { width: w, height: h }
-  }
-  // JPEG SOF
-  if (buf[0] === 0xff && buf[1] === 0xd8) {
-    let i = 2
-    while (i + 9 < buf.length) {
-      if (buf[i] !== 0xff) break
-      const marker = buf[i + 1]
-      const len = buf.readUInt16BE(i + 2)
-      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
-        return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) }
-      }
-      i += 2 + len
-    }
-  }
-  // WebP (RIFF....WEBP)
-  if (buf.length >= 30 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
-    const tag = buf.toString('ascii', 12, 16)
-    if (tag === 'VP8 ' && buf.length >= 30) {
-      return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff }
-    }
-    if (tag === 'VP8L' && buf.length >= 25) {
-      const b = buf.readUInt32LE(21)
-      return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1 }
-    }
-    if (tag === 'VP8X' && buf.length >= 30) {
-      const w = 1 + buf[24] + (buf[25] << 8) + (buf[26] << 16)
-      const h = 1 + buf[27] + (buf[28] << 8) + (buf[29] << 16)
-      return { width: w, height: h }
-    }
-  }
-  return null
-}
-
-/**
  * Resolve + validate a local image path for mm_send_image.
  * Rejects empty paths, remote URLs, missing/non-file paths, bad extensions, oversized files.
  */
@@ -375,15 +329,23 @@ function loadLocalImageFile(rawPath) {
     throw new Error('unsupported image type "' + (ext || '(none)') + '"; allowed: ' + Object.keys(IMAGE_EXT_MEDIA).join(' '))
   }
   const data = readFileSync(full)
-  const sniffed = sniffImageDims(data)
+  let width
+  let height
+  try {
+    const dims = imageSize(data)
+    width = dims?.width
+    height = dims?.height
+  } catch {
+    // 损坏或未知格式：保持宽高为 undefined，不中断 mm_send_image
+  }
   return {
     full,
     name: basename(full),
     mediaType,
     data,
     bytes: data.length,
-    width: sniffed && sniffed.width,
-    height: sniffed && sniffed.height,
+    width,
+    height,
   }
 }
 
@@ -442,12 +404,14 @@ export function apply(ctx, config) {
   /** True when we persist via the data-dir settings.json (no settings service). */
   let filePersist = false
   const components = createComponentManager(ctx, () => current)
+  // 「通道」分组：Telegram（默认关闭；启用后才动态加载 lib/channel-telegram.mjs）。
+  const telegram = createTelegramChannel(ctx, () => current)
   const settings = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
   if (settings && typeof settings.register === 'function') {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync() })
+      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync() })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -492,12 +456,18 @@ export function apply(ctx, config) {
 
   // ── 工作组件：各自 fork 一个 dsh-mcp-client 子插件（不写进 profile，随本插件卸载）──
   components.sync()
+  void telegram.sync()
+  // 宿主的凭据服务可能晚于本插件就绪：就绪时重新同步一次 Telegram（令牌从 credentials 读取）。
+  ctx.inject?.(['credentials'], (credCtx) => {
+    credCtx.effect?.(() => { void telegram.resync() }, 'dsh-workbench: telegram credentials')
+  })
   ctx.effect?.(() => {
     // GameBot body 是本插件拉起的子进程：宿主退出时同步结束它；插件卸载时等它真正退出。
     const offExit = installGamebotExitHook()
     return async () => {
       offExit()
       components.dispose()
+      try { await telegram.dispose() } catch {}
       try { await stopGamebotBody() } catch {}
     }
   }, 'dsh-workbench: components')
@@ -516,11 +486,12 @@ export function apply(ctx, config) {
           const url = new URL(req.url ?? '/', 'http://local')
           const sub = url.pathname.slice(API_PREFIX.length) || '/'
           if (sub === '/settings' && req.method === 'GET') {
-            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: maskSecrets(current) })
+            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
           }
           if (sub === '/settings' && req.method === 'POST') {
             if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
-            const patch = unmaskPatch(JSON.parse(await readBody(req) || '{}'))
+            // Telegram 令牌：写进宿主凭据（credentials 引用），不进插件设置。
+            const patch = unmaskPatch(await telegram.absorbSecretPatch(JSON.parse(await readBody(req) || '{}'), SECRET_MASK))
             const localEnabled = pickLocalEnabled({ ...current, ...patch })
             const next = RuntimeSettingsSchema({ ...current, ...patch, ...localEnabled })
             // 启动门控：未安装 / 正在安装的组件不能从停用改为启用（builtin 组件不受限）。
@@ -541,7 +512,8 @@ export function apply(ctx, config) {
               }
             }
             await components.sync()
-            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: maskSecrets(current) })
+            await telegram.sync()
+            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
           }
           if (sub === '/components' && req.method === 'GET') {
             // 顺带探测已启动组件的连接（有缓存、不并发）；最多等 1.5 秒，没探完的下次请求再带上。
@@ -552,7 +524,7 @@ export function apply(ctx, config) {
               dataDir: dataDir(),
               localComponentsDir: localComponentsDir(),
               contributeCompareUrl: CONTRIBUTE_COMPARE_URL,
-              components: await components.list(),
+              components: [...await components.list(), await telegram.item()],
             })
           }
           const addon = /^\/components\/([\w-]+)\/addon$/.exec(sub)
@@ -578,6 +550,37 @@ export function apply(ctx, config) {
             const info = components.contribute(contrib[1])
             if (!info) return sendJson(res, 404, { ok: false, error: `${contrib[1]} 不是本地组件，或没有贡献信息` })
             return sendJson(res, 200, { ok: true, ...info })
+          }
+          if (sub === '/update/check' && (req.method === 'GET' || req.method === 'POST')) {
+            const urlObj = new URL(req.url ?? '/', 'http://local')
+            let force = urlObj.searchParams.get('force') === '1' || urlObj.searchParams.get('force') === 'true'
+            if (req.method === 'POST') {
+              if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
+              try {
+                const body = JSON.parse(await readBody(req) || '{}')
+                if (body && body.force) force = true
+              } catch { /* ignore body parse */ }
+            }
+            const result = await checkForUpdate({ force, cfg: current })
+            return sendJson(res, result.ok === false ? 502 : 200, result)
+          }
+          if (sub === '/update/apply' && req.method === 'POST') {
+            if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
+            let targetVersion = undefined
+            try {
+              const body = JSON.parse(await readBody(req) || '{}')
+              if (body && body.version) targetVersion = String(body.version)
+            } catch { /* ignore */ }
+            const started = startApplyUpdate({ targetVersion })
+            return sendJson(res, 202, { ok: true, ...started })
+          }
+          if (sub === '/update/ignore' && req.method === 'POST') {
+            if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
+            const body = JSON.parse(await readBody(req) || '{}')
+            return sendJson(res, 200, ignoreVersion(body.version))
+          }
+          if (sub === '/update/status' && req.method === 'GET') {
+            return sendJson(res, 200, { ok: true, job: getUpdateJob() })
           }
           if (sub === '/health') return sendJson(res, 200, { ok: true, name, persisted: settingsPersisted() })
           if (sub.startsWith('/session')) {
