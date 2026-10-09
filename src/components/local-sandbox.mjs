@@ -86,8 +86,8 @@ class LocalComponentChild {
     this.pending = new Map()
     this.nextReq = 1
     this.dead = false
-    /** @type {null | { task?: any, hooks?: any, tools?: any }} */
-    this.hostHandlers = null
+    /** @type {Array<null | { task?: any, hooks?: any, tools?: any }>} */
+    this.hostHandlerStack = []
   }
 
   async start(discoverTimeoutMs = LOCAL_DISCOVER_TIMEOUT_MS) {
@@ -211,15 +211,46 @@ class LocalComponentChild {
     }
   }
 
+  /** Nearest stack frame that can serve this op (nested installed/probe must not blank install handlers). */
+  #handlersFor(op) {
+    for (let i = this.hostHandlerStack.length - 1; i >= 0; i--) {
+      const cand = this.hostHandlerStack[i]
+      if (!cand) continue
+      if (op.startsWith('task.') && cand.task) return cand
+      if (op.startsWith('hooks.') && cand.hooks) return cand
+      if (op === 'mcpExecute' && cand.tools) return cand
+    }
+    return null
+  }
+
   async #handleHost(op, args) {
-    const h = this.hostHandlers
-    if (!h) throw new Error('no host handlers registered for this call')
+    const h = this.#handlersFor(op)
+    if (!h) {
+      // Late / nested fire-and-forget must not fail the install IPC.
+      if (op === 'task.step' || op === 'task.log' || op === 'task.live' || op === 'task.progress'
+        || op === 'task.dumpConsole' || op === 'task.clearConsole') {
+        return null
+      }
+      throw new Error('no host handlers registered for this call')
+    }
     switch (op) {
       case 'task.step':
         h.task?.step?.(args.text)
         return null
       case 'task.log':
         h.task?.log?.(args.line)
+        return null
+      case 'task.live':
+        h.task?.live?.(args.line)
+        return null
+      case 'task.progress':
+        h.task?.progress?.(args.line, args.percent)
+        return null
+      case 'task.dumpConsole':
+        h.task?.dumpConsole?.()
+        return null
+      case 'task.clearConsole':
+        h.task?.clearConsole?.()
         return null
       case 'hooks.beforeReplace':
         if (h.hooks?.beforeReplace) await h.hooks.beforeReplace()
@@ -247,7 +278,8 @@ class LocalComponentChild {
     if (this.dead || !this.child?.connected) {
       return Promise.reject(new Error(`local component "${this.dirName}" child is not running`))
     }
-    this.hostHandlers = hostHandlers
+    // Push even null frames so nested calls restore the previous install handlers on pop.
+    this.hostHandlerStack.push(hostHandlers)
     const reqId = this.nextReq++
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -264,8 +296,9 @@ class LocalComponentChild {
         reject(error)
       }
     }).finally(() => {
-      // Clear handlers after the call settles so a late host-event is ignored safely.
-      if (this.hostHandlers === hostHandlers) this.hostHandlers = null
+      const i = this.hostHandlerStack.lastIndexOf(hostHandlers)
+      if (i >= 0) this.hostHandlerStack.splice(i, 1)
+      else this.hostHandlerStack.pop()
     })
   }
 

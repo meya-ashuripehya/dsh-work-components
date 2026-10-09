@@ -147,6 +147,10 @@ async function handleCall(op, args = {}) {
         proxy: args.taskProxy || '',
         step: (text) => hostEvent('task.step', { text: String(text) }),
         log: (line) => hostEvent('task.log', { line: String(line) }),
+        live: (line) => hostEvent('task.live', { line: String(line) }),
+        progress: (line, percent) => hostEvent('task.progress', { line: String(line), percent }),
+        dumpConsole: () => hostEvent('task.dumpConsole', {}),
+        clearConsole: () => hostEvent('task.clearConsole', {}),
       }
       const hooks = {
         npm: args.hooksNpm ?? undefined,
