@@ -146,7 +146,7 @@ uv、Node.js 在 `manager.list()` 里以 `kind: 'prerequisite'` 出现，**不�
 | 路径 | `src/components/<id>/`（进 git） | `<dataDir>/local-components/<id>/`（默认 `~/.dsh/data/dsh-work-components/`；旧检出里已有的 `<pluginRoot>/local-components/` 原地沿用） |
 | 标记 | `moduleSource: 'bundled'`（registry 写入） | `moduleSource: 'local'` |
 | 发现 | `registry.mjs` 静态 import | 启动时扫描目录；在 **forked child** 中 `import()`（超时 / exit 隔离） |
-| 设置页 | 「工作组件」分组，徽标「已验证」 | 「本地兼容」分组，徽标「本地」；管理页可「贡献到仓库」 |
+| 设置页 | 「工作组件」分组，徽标「已验证」 | 「工作组件」分组，徽标「本地」；管理页可「贡献到仓库」 |
 | 覆盖 | — | 与 bundled **同 id 时 bundled 优先**，本地被忽略 |
 
 **为何用 `local-components/` 而不是 `tools/`，以及为何在数据目录：**
@@ -195,7 +195,7 @@ API：`GET /dsh-workbench/api/components/<id>/contribute`（返回清单、文�
 ### A. 先做本地兼容（推荐；设置页「添加工作组件」提示词走这条）
 
 1. 建目录 `local-components/<id>/`，实现 `index.mjs`（`meta` / `app` / `probe` / `component`）。
-2. 重启 / 重载插件后应出现在设置页「本地兼容」；**不要**改 `registry.mjs` 静态表。
+2. 重启 / 重载插件后应出现在设置页「工作组件」分组（徽标「本地」）；**不要**改 `registry.mjs` 静态表。
 3. **不要**把 MCP 下载进 `tools/`（除非用户在 UI 点「下载安装」）。
 4. 详情页已有「启用」开关（`<id>Enabled`，**缺省关**；仅显式 `true` 启）。`launch` 用 `if (!cfg.<id>Enabled) return OFF`。其它自定义键仍无 UI，须待 schema / INPUT_FIELDS；`spec` / 默认包名可在模块内硬编码。
 5. `probe`：守护进程 / 远程 / WSL 等可先探测 MCP/工具，勿在无 Desktop 进程时一律 `noAppFor`。
@@ -228,7 +228,7 @@ API：`GET /dsh-workbench/api/components/<id>/contribute`（返回清单、文�
 
 1. `local-components/<id>/index.mjs` 实现与 bundled 相同的导出。
 2. `keys` 含 `<id>Enabled` 与可选参数键；`spec`/`launch` 用 `cfg.xxx || 默认`。
-3. 重启 / 重载后出现在「本地兼容」；详情页可启用、下载安装（产物进 `tools/<id>/`）、贡献清单。
+3. 重启 / 重载后出现在「工作组件」分组（徽标「本地」）；详情页可启用、下载安装（产物进 `tools/<id>/`）、贡献清单。
 4. 满意后再按「合入仓库」清单拷进 `src/components/`。
 
 ---
