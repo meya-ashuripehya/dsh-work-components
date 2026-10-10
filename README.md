@@ -59,6 +59,10 @@
 
 多模态：`mm_send_image`（本地图片 → Host `attachmentId`；render=`text`+`image`；UI：`presentationMeta.mm` → turnTail MmCard，toolview 仅 pending/compact）。
 
+地图（默认关闭）：在设置页启用并保存高德 Web 服务 Key 后，提供地理编码、地点检索、路线规划、天气预报、地图标点卡片与可点击的路线图。标点卡片在页面上可打开高德地图；发到 Telegram 时改为原生命置，不再发送静态地图图片。路线图点开后进入高德导航页，并附带可在手机打开的网页分享链接与导航深链，坐标为 GCJ-02。可将分享链接通过 Telegram 发送，或复制到系统浏览器打开；该链接适用于 iOS 与 Android。导航深链（amapuri）供 Android 与 HarmonyOS 直接打开。上述方式不写入高德账号收藏夹。Key 只保存在设置页，不读取环境变量。设置项「绕过代理」默认开启，高德请求不使用系统或环境变量中的 HTTP 代理。静态地图预览经 `attachments.saveImage` 发出，不落盘缓存。媒体卡片中的图片可点击放大。
+
+日历（默认开启）：`calendar_show`、`calendar_event_save`、`calendar_event_delete`。公历、农历、节气和中国法定节假日（含调休）由 `lunar-javascript` 离线计算，「今天」按 Asia/Shanghai。日程写在数据目录 `calendar/events.json`，不放进设置。天气预报来自 [Open-Meteo](https://open-meteo.com/)（CC BY 4.0），填写设置项「天气城市」后查询未来 4 天，不使用高德 Key，请求沿用当前进程的代理。未填城市时历法与日程仍然可用。聊天卡片和设置页「日历」共用同一块月历。Telegram 不另发日历消息，模型的文字回复仍走原通道。
+
 ## 实装截图
 
 ![工作组件列表](https://github.com/meya-ashuripehya/dsh-work-components/raw/main/docs/images/01-settings-workbench-list.png)
@@ -70,6 +74,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | 分组 | 功能 | 列表状态（示意） | 管理页要点 |
 | --- | --- | --- | --- |
 | 多模态 | 媒体卡片 | mm_send_image · 可用 | `mm_send_image` 发图（API text+image；settled MmCard 在 turnTail，toolview 折叠后仍可见） |
+| 多模态 | 日历 | 已启用 | 月历、农历、节假日、日程；天气城市走 Open-Meteo |
 | 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / FFmpeg / Obsidian（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
 | 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
@@ -200,7 +205,7 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 
 ## 通道 · Telegram
 
-「通道」分组的 Telegram 卡片把机器人私聊接到 DSH 会话，功能与独立插件 `dsh-telegram-temp` 相同（文字、图片、流式回复，以及多模态工具结果图片转发）。
+「通道」分组的 Telegram 卡片把机器人私聊接到 DSH 会话，功能与独立插件 `dsh-telegram-temp` 相同（文字、图片、流式回复，以及多模态工具结果图片转发）。地图标点卡片改为 Telegram 原生命置（`sendVenue`，坐标由 GCJ-02 转为 WGS-84），不发送静态地图图片。
 
 - **默认关闭**；关闭时不加载任何通道代码。打开「启用」后才动态加载 `lib/channel-telegram.mjs`，在本插件 ctx 下挂一个 fork（channel-core → channel-harness → Telegram 适配器）；关闭开关或插件卸载时随 fork 一起清理（`ctx.effect`）。不直接写会话日志：入站经宿主 `agents` 服务进入会话。
 - **令牌**写进宿主凭据（默认引用名 `TELEGRAM_BOT_TOKEN`，与 `dsh-telegram-temp` 共用，切换时无需重新填写），不写入本插件设置；`GET /settings` 只回传占位值。

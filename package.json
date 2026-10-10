@@ -121,6 +121,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "image-size": "^2.0.4"
+    "image-size": "^2.0.4",
+    "lunar-javascript": "^1.7.7"
   }
 }

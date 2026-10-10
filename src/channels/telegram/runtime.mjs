@@ -5,6 +5,7 @@
  * 补丁见 vendor/wsz987/patches/）：
  *   - channel-telegram：getMe / deleteWebhook / 接收循环失败可无限退避重试、接收看门狗、单条更新处理预算；
  *   - channel-harness：流式工具循环正文去重、inboundPreempt 入站插队、工具结果图片（mm_send_image 等）转发为 Telegram 图片。
+ *     地图标点（kind place）不转发预览图，改由本模块调用 sendVenue（坐标须已是 WGS-84）。
  *
  * 挂载方式与 dsh-telegram-temp 的 cordis.patch.yml 一致（channel-core → channel-harness → telegram 适配器），
  * 但全部挂在本插件 ctx.plugin() 的一个 fork 下：关闭「启用」或插件卸载时整棵 fork 一起 dispose
@@ -22,6 +23,9 @@ import * as harness from '@wsz987/channel-harness'
 import { Config as TelegramConfig, FetchTransport, TelegramAdapter } from '@wsz987/channel-telegram'
 import { ProxyAgent, fetch as undiciFetch } from 'undici'
 import { join } from 'node:path'
+import { installMapPlaceDelivery } from './place.mjs'
+
+installMapPlaceDelivery(harness.ReplyRouter)
 
 /** channel-harness 需要的宿主服务（与它自己的 inject 相同，去掉本 fork 提供的 channels）。 */
 export const HOST_SERVICES = harness.inject.filter((n) => n !== 'channels')
@@ -32,6 +36,7 @@ export const ACCOUNT_ID = 'main'
 export const PATCH_MARKERS = {
   telegramStall: typeof TelegramAdapter.prototype.runSupervisor === 'function' && typeof TelegramAdapter.prototype.startWatchdog === 'function',
   harnessImages: typeof harness.ReplyRouter?.prototype?.deliverTurnImages === 'function',
+  mapPlace: harness.ReplyRouter?.prototype?.__dshMapPlace === true,
   harnessPreempt: Object.prototype.hasOwnProperty.call(harness.Config({}), 'inboundPreempt'),
   harnessSegments: typeof harness.ReplyRouter?.prototype?.flushProcess === 'function',
   telegramDraftStream: typeof TelegramAdapter.prototype.resolveStreamingMode === 'function',

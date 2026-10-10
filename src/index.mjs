@@ -16,6 +16,14 @@
  *     以及 /dsh-workbench/assets/*（插件 assets/ 下的静态文件；不要放入第三方界面截图或标志）。
  *  3. 会话控制（通用）：撤回 / 重试（按回合就地截断多帧 zstd，保留连续 seq，并清投影缓存）、熔断（取消；自动熔断再截掉失败尾轮）；API 在 /dsh-workbench/api/session/*。
  *  4. 多模态图片：`mm_send_image`（本地文件 → attachments.saveImage → Host attachmentId）。model 侧 render 只发 text+image（DeepSeek Messages 拒 type:'mm'）；MmCard 数据走 presentationMeta.mm，客户端用 meta / image fallback。
+ *     地图工具（默认关闭）：设置页保存高德 Key 后注册 geo_resolve / place_search / place_detail / route / weather / map_card。
+ *     route 在页面上发出可点击的路线图，打开高德导航页；另返回可在手机打开的分享链接（iOS 与 Android）与 amapuri 深链（Android、HarmonyOS）。
+ *     可将分享链接通过 Telegram 或复制交给手机，不写入高德账号收藏夹。
+ *     map_card 为 kind:place：页面预览可打开高德标点，Telegram 改发原生命置（WGS-84）。
+ *     日历（默认开启）：calendar_show / calendar_event_save / calendar_event_delete。阴阳历与法定节假日离线计算，
+ *     日程写在数据目录 calendar/events.json。天气预报走 Open-Meteo，只认设置里的城市名，未填写时不请求。
+ *     图片字节直接 saveImage，不读环境变量、不落地图文件。
+ *     设置项 mapBypassProxy（默认开启）让高德请求直连，不使用系统代理。
  *
  * 前端设置页与工具卡片在 lib/client.js。
  */
@@ -28,6 +36,9 @@ import { dataDir, dirSize, killProcessesUnder, managedPaths, migrateLegacyState,
 import { checkForUpdate, getUpdateJob, ignoreVersion, startApplyUpdate } from './updater.mjs'
 import { mountSessionControls, handleSessionApi } from './session-controls/index.mjs'
 import { createTelegramChannel, telegramSchemaShape } from './channels/telegram/index.mjs'
+import { createMapFeature } from './map/index.mjs'
+import { handleCalendarApi } from './calendar/api.mjs'
+import { createCalendarFeature } from './calendar/index.mjs'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
@@ -145,6 +156,13 @@ export const SettingsSchema = z.object({
   sessionCircuitMaxSteps: z.natural().min(5).max(500).default(80).description('熔断：单回合 step/start 次数上限。'),
   sessionCircuitMaxReasoningChars: z.natural().min(1000).max(5000000).default(200000).description('熔断：单回合累计思考字符上限。'),
 
+  mapEnabled: z.boolean().default(false).description('启用地图工具（地理编码、地点检索、路线规划、天气预报、静态地图卡片、可点击路线图）。路线图打开高德导航页，分享链接可发至手机，不写入高德账号收藏夹。默认关闭。'),
+  gaodeApiKey: z.string().role('secret').default('').description('高德 Web 服务 Key。只保存在本设置里，不读取环境变量。'),
+  mapBypassProxy: z.boolean().default(true).description('绕过代理。开启后高德请求使用独立直连，不附带下载代理或环境变量中的 HTTP 代理。默认开启。'),
+
+  calendarEnabled: z.boolean().default(true).description('启用日历工具（公历、农历、节气、法定节假日、日程、天气预报）。默认开启。关闭后卸下工具，已保存的日程仍保留。'),
+  calendarCity: z.string().default('').description('日历天气预报使用的城市名，例如成都。留空则不请求天气。数据来自 Open-Meteo，不使用高德 Key。请求沿用当前进程的代理。'),
+
   ...telegramSchemaShape(z),
 
   ...gamebotSchemaShape(z),
@@ -251,7 +269,7 @@ const IMAGE_VALUE_SCHEMA = {
  * DeepSeek Messages serialize rejects unknown user/tool-result types with UNSUPPORTED_CONTENT
  * (`user/tool-result content mm`). Keep type:'mm' out of output.render; put it in presentationMeta.
  *   type: 'mm'
- *   kind: 'image' | 'video' | 'webpage' | 'document'
+ *   kind: 'image' | 'place' | 'calendar' | 'video' | 'webpage' | 'document'
  *   status: 'pending' | 'ready' | 'error' | 'canceled'
  *   progress?: number (0..1 or 0..100)
  *   title?: string
@@ -261,7 +279,7 @@ const IMAGE_VALUE_SCHEMA = {
  *   source?: { url?: string, href?: string }
  * Frontend lib/client.js: settled MmCard via conversation.chat.turnTail (turn data mmCards);
  * toolview shows pending/compact only. Prefers meta.mm, then content type:'mm' (legacy),
- * then type:'image'. video/webpage/document remain stubs.
+ * then type:'image'. kind 'place' opens an Amap marker page; video/webpage/document remain stubs.
  */
 function mmImageBlock(image, opts = {}) {
   return {
@@ -407,12 +425,14 @@ export function apply(ctx, config) {
   const components = createComponentManager(ctx, () => current)
   // 「通道」分组：Telegram（默认关闭；启用后才动态加载 lib/channel-telegram.mjs）。
   const telegram = createTelegramChannel(ctx, () => current)
+  const map = createMapFeature(ctx, () => current)
+  const calendar = createCalendarFeature(ctx, () => current)
   const settings = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
   if (settings && typeof settings.register === 'function') {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync() })
+      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync(); void map.sync(); void calendar.sync() })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -458,6 +478,8 @@ export function apply(ctx, config) {
   // ── 工作组件：各自 fork 一个 dsh-mcp-client 子插件（不写进 profile，随本插件卸载）──
   components.sync()
   void telegram.sync()
+  void map.sync()
+  void calendar.sync()
   // 宿主的凭据服务可能晚于本插件就绪：就绪时重新同步一次 Telegram（令牌从 credentials 读取）。
   ctx.inject?.(['credentials'], (credCtx) => {
     credCtx.effect?.(() => { void telegram.resync() }, 'dsh-workbench: telegram credentials')
@@ -469,6 +491,8 @@ export function apply(ctx, config) {
       offExit()
       components.dispose()
       try { await telegram.dispose() } catch {}
+      try { await map.dispose() } catch {}
+      try { await calendar.dispose() } catch {}
       try { await stopGamebotBody() } catch {}
     }
   }, 'dsh-workbench: components')
@@ -514,6 +538,8 @@ export function apply(ctx, config) {
             }
             await components.sync()
             await telegram.sync()
+            await map.sync()
+            await calendar.sync()
             return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
           }
           if (sub === '/components' && req.method === 'GET') {
@@ -584,6 +610,10 @@ export function apply(ctx, config) {
             return sendJson(res, 200, { ok: true, job: getUpdateJob() })
           }
           if (sub === '/health') return sendJson(res, 200, { ok: true, name, persisted: settingsPersisted() })
+          if (sub === '/calendar' || sub.startsWith('/calendar/')) {
+            const handled = await handleCalendarApi(req, res, sub, { sendJson, readBody, getConfig: () => current })
+            if (handled !== false) return
+          }
           if (sub.startsWith('/session')) {
             const handled = await handleSessionApi(ctx, sessionControls.circuit, req, res, sub, { sendJson, readBody, getConfig: () => current })
             if (handled !== false) return
