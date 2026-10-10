@@ -12,7 +12,7 @@ public class RouterTests
     [Fact]
     public void HigherIntegrityWithoutUiAccessIsDenied()
     {
-        foreach (var action in new[] { DesktopAction.Click, DesktopAction.Type, DesktopAction.Key, DesktopAction.Invoke, DesktopAction.ClickScreen })
+        foreach (var action in new[] { DesktopAction.Click, DesktopAction.Type, DesktopAction.Key, DesktopAction.Invoke, DesktopAction.ClickScreen, DesktopAction.Scroll, DesktopAction.ScrollScreen })
         {
             var decision = Router.Decide(Input(action, b =>
             {
@@ -20,6 +20,7 @@ public class RouterTests
                 b.HasInvoke = true;
                 b.HasValue = true;
                 b.HasBounds = true;
+                b.HasScroll = true;
                 b.IsChromiumEdit = true;
                 b.ChromiumHostFound = true;
             }));
@@ -122,6 +123,39 @@ public class RouterTests
     }
 
     [Fact]
+    public void ScrollPrefersPatternThenChromiumThenBounds()
+    {
+        Assert.Equal("scroll", Router.Decide(Input(DesktopAction.Scroll, b =>
+        {
+            b.HasScroll = true;
+            b.ChromiumHostFound = true;
+            b.HasBounds = true;
+        })).Via);
+        Assert.Equal("chromium", Router.Decide(Input(DesktopAction.Scroll, b =>
+        {
+            b.ChromiumHostFound = true;
+            b.HasBounds = true;
+        })).Via);
+        Assert.Equal("sendinput", Router.Decide(Input(DesktopAction.Scroll, b => b.HasBounds = true)).Via);
+    }
+
+    [Fact]
+    public void ScrollWithoutPatternHostOrBoundsIsDenied()
+    {
+        var decision = Router.Decide(Input(DesktopAction.Scroll));
+        Assert.Equal(RouteChannel.Deny, decision.Channel);
+        Assert.Equal(Router.DenyNoWay, decision.Reason);
+    }
+
+    [Fact]
+    public void ScrollScreenUsesSendInput()
+    {
+        var decision = Router.Decide(Input(DesktopAction.ScrollScreen));
+        Assert.Equal(RouteChannel.SendInput, decision.Channel);
+        Assert.Equal("sendinput", decision.Via);
+    }
+
+    [Fact]
     public void ClickWithoutPatternOrBoundsIsDenied()
     {
         var decision = Router.Decide(Input(DesktopAction.Click));
@@ -139,6 +173,7 @@ public class RouterTests
         public bool IsChromiumEdit { get; set; }
         public bool ChromiumHostFound { get; set; }
         public bool HasBounds { get; set; }
+        public bool HasScroll { get; set; }
         public bool TargetHigherIntegrity { get; set; }
         public bool SelfHasUiAccess { get; set; }
 
@@ -152,6 +187,7 @@ public class RouterTests
             IsChromiumEdit = IsChromiumEdit,
             ChromiumHostFound = ChromiumHostFound,
             HasBounds = HasBounds,
+            HasScroll = HasScroll,
             TargetHigherIntegrity = TargetHigherIntegrity,
             SelfHasUiAccess = SelfHasUiAccess,
         };

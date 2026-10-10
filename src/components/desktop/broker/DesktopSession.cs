@@ -119,6 +119,7 @@ static class DesktopSession
     public static string Type(string element, string text) => Act(element, DesktopAction.Type, text ?? "", null, 1);
     public static string Key(string element, string key, int times) => Act(element, DesktopAction.Key, null, key ?? "", times);
     public static string Click(string element) => Act(element, DesktopAction.Click, null, null, 1);
+    public static string Scroll(string element, string direction, int notches) => Act(element, DesktopAction.Scroll, null, direction, notches);
 
     public static string ClickScreen(int x, int y, string hwnd) => Sta.Call(() =>
     {
@@ -146,6 +147,49 @@ static class DesktopSession
         return Json(new { ok = true, confirmed = true, via = "sendinput", hwnd = FormatHwnd(top), x, y });
     });
 
+    public static string ScrollScreen(int x, int y, string direction, int notches, string hwnd) => Sta.Call(() =>
+    {
+        if (!TryScrollDelta(direction, notches, out var delta, out var horizontal, out var why))
+            return Json(Fail(why));
+        var top = IntPtr.Zero;
+        if (!string.IsNullOrWhiteSpace(hwnd))
+        {
+            if (!TryParseHwnd(hwnd, out top))
+                return Json(Fail("hwnd 无法解析。"));
+        }
+        else top = Win32.RootFromPoint(x, y);
+        if (top == IntPtr.Zero) return Json(Fail("这个坐标上没有窗口。"));
+        var pid = Win32.WindowPid(top);
+        var decision = Router.Decide(new RouteInput
+        {
+            Action = DesktopAction.ScrollScreen,
+            TargetHigherIntegrity = Win32.IsHigherThanSelf(pid),
+            SelfHasUiAccess = Win32.SelfHasUiAccess,
+            HasBounds = true,
+        });
+        if (decision.Channel == RouteChannel.Deny)
+            return Json(Fail(decision.Reason ?? Router.DenyHigherIntegrity, decision.Via));
+        var host = Win32.FindRenderWidget(top);
+        if (host != IntPtr.Zero)
+        {
+            var posted = Win32.PostWheel(host, x, y, delta, horizontal);
+            return Json(new
+            {
+                ok = posted,
+                confirmed = posted,
+                via = "chromium",
+                hwnd = FormatHwnd(top),
+                x,
+                y,
+                reason = posted ? null : "滚轮消息没有送进内容子窗口。",
+            });
+        }
+        if (!Win32.ConfirmForeground(top))
+            return Json(Fail(ForegroundBlocked, "sendinput"));
+        Win32.Wheel(x, y, delta, horizontal);
+        return Json(new { ok = true, confirmed = true, via = "sendinput", hwnd = FormatHwnd(top), x, y });
+    });
+
     public static Shot? Capture(string hwnd) => Sta.Call<Shot?>(() =>
     {
         if (!string.IsNullOrWhiteSpace(hwnd))
@@ -165,6 +209,8 @@ static class DesktopSession
     {
         if (!_cache.Items.TryGetValue(element ?? "", out var item))
             return Json(Fail(Stale));
+        if (action == DesktopAction.Scroll && !TryScrollDelta(key, times, out _, out _, out var why))
+            return Json(Fail(why));
         var decision = Router.Decide(new RouteInput
         {
             Action = action,
@@ -172,6 +218,7 @@ static class DesktopSession
             HasToggle = item.HasToggle,
             HasSelection = item.HasSelection,
             HasValue = item.HasValue,
+            HasScroll = item.HasScroll,
             IsChromiumEdit = item.IsChromiumEdit,
             ChromiumHostFound = item.ChromiumHostFound,
             HasBounds = item.HasBounds,
@@ -186,7 +233,7 @@ static class DesktopSession
         var before = ReadState(el);
         var outcome = decision.Channel switch
         {
-            RouteChannel.Pattern => ApplyPattern(el, item, decision.Via, text),
+            RouteChannel.Pattern => ApplyPattern(el, item, decision.Via, text, key, times),
             RouteChannel.Chromium => ApplyChromium(el, item, action, text, key, times),
             RouteChannel.SendInput or RouteChannel.SendInputFallback => ApplySendInput(el, item, action, decision.Via, text, key, times),
             _ => new Outcome(false, decision.Reason ?? Router.DenyNoWay),
@@ -213,7 +260,7 @@ static class DesktopSession
         });
     });
 
-    static Outcome ApplyPattern(AutomationElement el, CachedElement item, string via, string? text)
+    static Outcome ApplyPattern(AutomationElement el, CachedElement item, string via, string? text, string? direction, int times)
     {
         try
         {
@@ -239,6 +286,8 @@ static class DesktopSession
                 el.Patterns.SelectionItem.Pattern.Select();
                 return new Outcome(true, null);
             }
+            if (via == "scroll")
+                return ApplyScroll(el, direction, times);
             el.Patterns.Invoke.Pattern.Invoke();
             return new Outcome(true, null);
         }
@@ -248,10 +297,104 @@ static class DesktopSession
         }
     }
 
+    static Outcome ApplyScroll(AutomationElement el, string? direction, int times)
+    {
+        if (!TryScrollDelta(direction, times, out var delta, out var horizontal, out var why))
+            return new Outcome(false, why);
+        try
+        {
+            var pattern = el.Patterns.Scroll.Pattern;
+            var beforeV = pattern.VerticalScrollPercent;
+            var beforeH = pattern.HorizontalScrollPercent;
+            var vertical = horizontal ? ScrollAmount.NoAmount : delta > 0 ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement;
+            var across = horizontal ? delta > 0 ? ScrollAmount.SmallIncrement : ScrollAmount.SmallDecrement : ScrollAmount.NoAmount;
+            var notches = Math.Clamp(Math.Abs(delta) / 120, 1, 20);
+            for (var i = 0; i < notches; i++)
+                pattern.Scroll(across, vertical);
+            Thread.Sleep(80);
+            var afterV = pattern.VerticalScrollPercent;
+            var afterH = pattern.HorizontalScrollPercent;
+            var before = horizontal ? beforeH : beforeV;
+            var after = horizontal ? afterH : afterV;
+            if (before < 0 || after < 0)
+                return new Outcome(false, "控件没有报告滚动位置。");
+            var moved = ScrollMoved(before, after);
+            return new Outcome(moved, moved ? null : "滚动位置没有变化。");
+        }
+        catch (Exception ex)
+        {
+            return new Outcome(false, ex.Message);
+        }
+    }
+
+    static bool ScrollMoved(double before, double after) =>
+        before >= 0 && after >= 0 && Math.Abs(after - before) > 0.01;
+
+    static bool TryScrollDelta(string? direction, int notches, out int delta, out bool horizontal, out string error)
+    {
+        notches = Math.Clamp(notches, 1, 20);
+        horizontal = false;
+        var step = 120 * notches;
+        switch ((direction ?? "").Trim().ToLowerInvariant())
+        {
+            case "up":
+                delta = step;
+                error = "";
+                return true;
+            case "down":
+                delta = -step;
+                error = "";
+                return true;
+            case "left":
+                delta = -step;
+                horizontal = true;
+                error = "";
+                return true;
+            case "right":
+                delta = step;
+                horizontal = true;
+                error = "";
+                return true;
+            default:
+                delta = 0;
+                error = "方向用 up、down、left、right。";
+                return false;
+        }
+    }
+
+    static bool TryPoint(CachedElement item, out int x, out int y)
+    {
+        if (item.HasBounds)
+        {
+            x = item.Bounds.CenterX;
+            y = item.Bounds.CenterY;
+            return true;
+        }
+        var hwnd = item.ChromiumHost != IntPtr.Zero ? item.ChromiumHost : item.Top;
+        if (Win32.TryGetRect(hwnd, out var rect))
+        {
+            x = rect.CenterX;
+            y = rect.CenterY;
+            return true;
+        }
+        x = 0;
+        y = 0;
+        return false;
+    }
+
     static Outcome ApplyChromium(AutomationElement el, CachedElement item, DesktopAction action, string? text, string? key, int times)
     {
         var host = item.ChromiumHost;
         if (host == IntPtr.Zero) return new Outcome(false, "没有 Chromium 内容子窗口。");
+        if (action == DesktopAction.Scroll)
+        {
+            if (!TryScrollDelta(key, times, out var delta, out var horizontal, out var why))
+                return new Outcome(false, why);
+            if (!TryPoint(item, out var x, out var y))
+                return new Outcome(false, Router.DenyNoWay);
+            var posted = Win32.PostWheel(host, x, y, delta, horizontal);
+            return new Outcome(posted, posted ? null : "滚轮消息没有送进内容子窗口。");
+        }
         try { el.Focus(); } catch { /* 有的输入框不支持 SetFocus */ }
         Thread.Sleep(60);
         if (action == DesktopAction.Key)
@@ -294,6 +437,13 @@ static class DesktopSession
         if (action == DesktopAction.Click)
         {
             Win32.Click(item.Bounds.CenterX, item.Bounds.CenterY);
+            return new Outcome(true, null);
+        }
+        if (action == DesktopAction.Scroll)
+        {
+            if (!TryScrollDelta(key, times, out var delta, out var horizontal, out var why))
+                return new Outcome(false, why);
+            Win32.Wheel(item.Bounds.CenterX, item.Bounds.CenterY, delta, horizontal);
             return new Outcome(true, null);
         }
         var typed = TypeAt(item, text ?? "");
@@ -342,6 +492,7 @@ static class DesktopSession
             HasToggle = Supports(() => el.Patterns.Toggle.IsSupported),
             HasSelection = Supports(() => el.Patterns.SelectionItem.IsSupported),
             HasValue = Supports(() => el.Patterns.Value.IsSupported),
+            HasScroll = Supports(() => el.Patterns.Scroll.IsSupported),
             HasBounds = hasBounds,
             Bounds = bounds,
             Pid = Win32.WindowPid(top),
@@ -355,6 +506,7 @@ static class DesktopSession
         if (cached.HasToggle) patterns.Add("toggle");
         if (cached.HasSelection) patterns.Add("selection");
         if (cached.HasValue) patterns.Add("value");
+        if (cached.HasScroll) patterns.Add("scroll");
         nodes.Add(new Node(cached, name, controlType.ToString(), className, patterns));
 
         if (depth == MaxDepth) return;
@@ -549,6 +701,7 @@ static class DesktopSession
         public bool HasToggle;
         public bool HasSelection;
         public bool HasValue;
+        public bool HasScroll;
         public bool HasBounds;
         public BoundsRect Bounds;
         public int Pid;

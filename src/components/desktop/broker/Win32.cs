@@ -20,6 +20,8 @@ static class Win32
     const uint MOUSEEVENTF_MOVE = 0x0001;
     const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    const uint MOUSEEVENTF_WHEEL = 0x0800;
+    const uint MOUSEEVENTF_HWHEEL = 0x1000;
     const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
     const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
     const int SM_XVIRTUALSCREEN = 76;
@@ -31,6 +33,8 @@ static class Win32
     public const int WM_KEYDOWN = 0x0100;
     public const int WM_KEYUP = 0x0101;
     public const int WM_CHAR = 0x0102;
+    public const int WM_MOUSEWHEEL = 0x020A;
+    public const int WM_MOUSEHWHEEL = 0x020E;
 
     public static bool SelfHasUiAccess { get; } = ReadUiAccess(GetCurrentProcess());
     public static int SelfIntegrity { get; } = ReadIntegrity(GetCurrentProcess());
@@ -170,6 +174,39 @@ static class Win32
             Mouse(ax, ay, MOUSEEVENTF_LEFTUP | flags),
         };
         _ = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>把光标放到物理像素上，再按一格 120 发送滚轮。horizontal 为真时走水平滚轮。</summary>
+    public static void Wheel(int x, int y, int delta, bool horizontal)
+    {
+        if (delta == 0) return;
+        var (ax, ay) = ToAbsolute(x, y);
+        const uint moveFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE;
+        var wheelFlag = (horizontal ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL) | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        var step = Math.Sign(delta) * 120;
+        var count = Math.Clamp(Math.Abs(delta) / 120, 1, 20);
+        var inputs = new INPUT[1 + count];
+        inputs[0] = Mouse(ax, ay, moveFlags);
+        for (var i = 0; i < count; i++)
+            inputs[i + 1] = MouseWheel(ax, ay, step, wheelFlag);
+        _ = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>把滚轮发给 Chromium 内容子窗口，不发给顶层窗口。一格 120。</summary>
+    public static bool PostWheel(IntPtr hwnd, int x, int y, int delta, bool horizontal)
+    {
+        if (hwnd == IntPtr.Zero || delta == 0) return false;
+        var msg = horizontal ? WM_MOUSEHWHEEL : WM_MOUSEWHEEL;
+        var step = Math.Sign(delta) * 120;
+        var count = Math.Clamp(Math.Abs(delta) / 120, 1, 20);
+        var ok = true;
+        for (var i = 0; i < count; i++)
+        {
+            var wParam = (IntPtr)(uint)((ushort)(short)step << 16);
+            var lParam = (IntPtr)(uint)((ushort)(short)x | ((uint)(ushort)(short)y << 16));
+            ok = PostMessage(hwnd, msg, wParam, lParam) && ok;
+        }
+        return ok;
     }
 
     public static void TypeUnicode(string text)
@@ -318,6 +355,12 @@ static class Win32
     {
         Type = 0,
         U = new INPUTUNION { mi = new MOUSEINPUT { dx = x, dy = y, dwFlags = flags } },
+    };
+
+    static INPUT MouseWheel(int x, int y, int delta, uint flags) => new()
+    {
+        Type = 0,
+        U = new INPUTUNION { mi = new MOUSEINPUT { dx = x, dy = y, mouseData = unchecked((uint)delta), dwFlags = flags } },
     };
 
     static INPUT KeyScan(char ch, bool down) => new()

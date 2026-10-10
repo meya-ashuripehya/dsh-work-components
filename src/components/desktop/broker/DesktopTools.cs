@@ -35,6 +35,20 @@ public static class DesktopTools
     [McpServerTool(Name = "click"), Description("点击 inspect 给出的元素。有 Invoke、Toggle 或 Selection 时走控件操作，否则在前台确认后点击边界中心。前台确认失败不会发鼠标。")]
     public static string Click([Description("inspect 返回的 ref。")] string element) => DesktopSession.Click(element);
 
+    [McpServerTool(Name = "scroll"), Description("滚动 inspect 给出的元素。有 Scroll 模式时走控件并核对滚动位置。Chromium 内容子窗口发送 WM_MOUSEWHEEL。否则在前台确认后，于边界中心发送滚轮，确认失败不滚动。direction 为 up、down、left、right。up 看到更上面的内容。notches 为 1 到 20，一格 120。")]
+    public static string Scroll(
+        [Description("inspect 返回的 ref。小程序只有骨架时，用 Chrome Legacy Window 或 Pane 的 ref。")] string element,
+        [Description("up、down、left、right。")] string direction,
+        [Description("格数，1 到 20。")] int notches = 1) => DesktopSession.Scroll(element, direction, notches);
+
+    [McpServerTool(Name = "scroll_screen"), Description("在虚拟屏幕的物理像素上滚动。目标有 Chromium 内容子窗口时把 WM_MOUSEWHEEL 发给该子窗口。否则先确认前台，再发送滚轮，确认失败不滚动。direction 为 up、down、left、right。")]
+    public static string ScrollScreen(
+        [Description("物理像素 x。")] int x,
+        [Description("物理像素 y。")] int y,
+        [Description("up、down、left、right。")] string direction,
+        [Description("格数，1 到 20。")] int notches = 1,
+        [Description("可选。目标顶层窗口句柄。留空则用该坐标上的窗口。")] string hwnd = "") => DesktopSession.ScrollScreen(x, y, direction, notches, hwnd);
+
     [McpServerTool(Name = "click_screen"), Description("点击虚拟屏幕上的物理像素。只在控件树为空（自绘窗口）时使用。会先把目标窗口拉到前台，确认失败则不点击。")]
     public static string ClickScreen(
         [Description("物理像素 x。")] int x,

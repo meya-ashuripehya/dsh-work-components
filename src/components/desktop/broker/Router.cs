@@ -51,6 +51,16 @@ public static class Router
                 return new RouteDecision(RouteChannel.Pattern, "selection", null);
             case DesktopAction.Click when input.HasBounds:
                 return new RouteDecision(RouteChannel.SendInput, "sendinput", null);
+
+            case DesktopAction.Scroll when input.HasScroll:
+                return new RouteDecision(RouteChannel.Pattern, "scroll", null);
+            case DesktopAction.Scroll when input.ChromiumHostFound:
+                return new RouteDecision(RouteChannel.Chromium, "chromium", null);
+            case DesktopAction.Scroll when input.HasBounds:
+                return new RouteDecision(RouteChannel.SendInput, "sendinput", null);
+
+            case DesktopAction.ScrollScreen:
+                return new RouteDecision(RouteChannel.SendInput, "sendinput", null);
         }
 
         return new RouteDecision(RouteChannel.Deny, "deny", DenyNoWay);
@@ -64,6 +74,8 @@ public enum DesktopAction
     Key,
     Click,
     ClickScreen,
+    Scroll,
+    ScrollScreen,
 }
 
 public enum RouteChannel
@@ -85,6 +97,7 @@ public sealed record RouteInput
     public bool IsChromiumEdit { get; init; }
     public bool ChromiumHostFound { get; init; }
     public bool HasBounds { get; init; }
+    public bool HasScroll { get; init; }
     public bool TargetHigherIntegrity { get; init; }
     public bool SelfHasUiAccess { get; init; }
 }
