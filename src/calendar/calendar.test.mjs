@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describeDay, shanghaiToday } from './day.mjs'
+import { weatherCodes, weatherKind, weatherKindFromText, weatherText, WEATHER_EMOJI } from './weather.mjs'
 import { buildMonth } from './month.mjs'
 import { deleteEvent, listEvents, saveEvent } from './store.mjs'
 import { createCalendarTools } from './tools.mjs'
@@ -113,16 +114,16 @@ test('calendar month uses Open-Meteo and attaches a stubbed forecast', async () 
         assert.equal(parsed.pathname, '/v1/forecast')
         assert.equal(parsed.searchParams.get('latitude'), '30.67')
         assert.equal(parsed.searchParams.get('timezone'), 'Asia/Shanghai')
-        assert.equal(parsed.searchParams.get('forecast_days'), '4')
+        assert.equal(parsed.searchParams.get('forecast_days'), '16')
         return {
           ok: true,
           async text() {
             return JSON.stringify({
               daily: {
-                time: ['2026-02-17'],
-                weather_code: [0],
-                temperature_2m_max: [12.4],
-                temperature_2m_min: [4.2],
+                time: ['2026-02-17', '2026-02-18'],
+                weather_code: [0, 3],
+                temperature_2m_max: [12.4, 11],
+                temperature_2m_min: [4.2, 3],
               },
             })
           },
@@ -133,13 +134,28 @@ test('calendar month uses Open-Meteo and attaches a stubbed forecast', async () 
     assert.equal(ok.weather.source, 'Open-Meteo')
     const forecast = ok.days.find((day) => day.date === '2026-02-17').forecast
     assert.equal(forecast.dayWeather, '晴')
+    assert.equal(forecast.icon, 'clear')
     assert.equal(forecast.dayTemp, '12')
     assert.equal(forecast.nightTemp, '4')
     assert.equal(forecast.week, '二')
+    assert.equal(ok.days.find((day) => day.date === '2026-02-18').forecast.dayWeather, '阴')
+    assert.equal(ok.days.find((day) => day.date === '2026-02-18').forecast.icon, 'overcast')
+    assert.equal(ok.weather.forecasts.length, 2)
     assert.equal(ok.days.find((day) => day.date === '2026-02-16').forecast, null)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('every Open-Meteo weather code maps to a kind and a telegram emoji', () => {
+  for (const code of weatherCodes()) {
+    const kind = weatherKind(code)
+    assert.notEqual(kind, 'unknown', String(code))
+    assert.ok(WEATHER_EMOJI[kind], kind)
+    assert.equal(weatherKindFromText(weatherText(code)), kind)
+  }
+  assert.equal(weatherKind(12345), 'unknown')
+  assert.equal(WEATHER_EMOJI.unknown, '🌡️')
 })
 
 test('calendar_show card is text only for the model and a calendar mm block for the page', async () => {

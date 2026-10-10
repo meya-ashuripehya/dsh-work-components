@@ -143,6 +143,7 @@ static class DesktopSession
             return Json(Fail(decision.Reason ?? Router.DenyHigherIntegrity, decision.Via));
         if (!Win32.ConfirmForeground(top))
             return Json(Fail(ForegroundBlocked, "sendinput"));
+        ActionOverlay.ShowClick(x, y);
         Win32.Click(x, y);
         return Json(new { ok = true, confirmed = true, via = "sendinput", hwnd = FormatHwnd(top), x, y });
     });
@@ -173,6 +174,7 @@ static class DesktopSession
         if (host != IntPtr.Zero)
         {
             var posted = Win32.PostWheel(host, x, y, delta, horizontal);
+            if (posted) ActionOverlay.ShowScroll(x, y, delta, horizontal);
             return Json(new
             {
                 ok = posted,
@@ -186,6 +188,7 @@ static class DesktopSession
         }
         if (!Win32.ConfirmForeground(top))
             return Json(Fail(ForegroundBlocked, "sendinput"));
+        ActionOverlay.ShowScroll(x, y, delta, horizontal);
         Win32.Wheel(x, y, delta, horizontal);
         return Json(new { ok = true, confirmed = true, via = "sendinput", hwnd = FormatHwnd(top), x, y });
     });
@@ -287,7 +290,11 @@ static class DesktopSession
                 return new Outcome(true, null);
             }
             if (via == "scroll")
+            {
+                if (TryPoint(item, out var sx, out var sy) && TryScrollDelta(direction, times, out var scrollDelta, out var scrollHorizontal, out _))
+                    ActionOverlay.ShowScroll(sx, sy, scrollDelta, scrollHorizontal);
                 return ApplyScroll(el, direction, times);
+            }
             el.Patterns.Invoke.Pattern.Invoke();
             return new Outcome(true, null);
         }
@@ -393,6 +400,7 @@ static class DesktopSession
             if (!TryPoint(item, out var x, out var y))
                 return new Outcome(false, Router.DenyNoWay);
             var posted = Win32.PostWheel(host, x, y, delta, horizontal);
+            if (posted) ActionOverlay.ShowScroll(x, y, delta, horizontal);
             return new Outcome(posted, posted ? null : "滚轮消息没有送进内容子窗口。");
         }
         try { el.Focus(); } catch { /* 有的输入框不支持 SetFocus */ }
@@ -401,9 +409,13 @@ static class DesktopSession
         {
             if (!Win32.TryVirtualKey(key ?? "", out var vk))
                 return new Outcome(false, "不认识的按键。可用 enter、tab、backspace、delete、escape、方向键、space。");
+            if (TryPoint(item, out var keyX, out var keyY))
+                ActionOverlay.ShowKey(keyX, keyY, key ?? "", times);
             Win32.PostKey(host, vk, times);
             return new Outcome(true, null);
         }
+        if (TryPoint(item, out var typeX, out var typeY))
+            ActionOverlay.ShowType(typeX, typeY, text ?? "");
         if (!PostAndSee(el, item, host, text ?? ""))
         {
             try { el.Focus(); } catch { }
@@ -431,11 +443,14 @@ static class DesktopSession
         {
             if (!Win32.TryVirtualKey(key ?? "", out var vk))
                 return new Outcome(false, "不认识的按键。可用 enter、tab、backspace、delete、escape、方向键、space。");
+            if (TryPoint(item, out var keyX, out var keyY))
+                ActionOverlay.ShowKey(keyX, keyY, key ?? "", times);
             Win32.KeyPress(vk, times);
             return new Outcome(true, null);
         }
         if (action == DesktopAction.Click)
         {
+            ActionOverlay.ShowClick(item.Bounds.CenterX, item.Bounds.CenterY);
             Win32.Click(item.Bounds.CenterX, item.Bounds.CenterY);
             return new Outcome(true, null);
         }
@@ -443,6 +458,7 @@ static class DesktopSession
         {
             if (!TryScrollDelta(key, times, out var delta, out var horizontal, out var why))
                 return new Outcome(false, why);
+            ActionOverlay.ShowScroll(item.Bounds.CenterX, item.Bounds.CenterY, delta, horizontal);
             Win32.Wheel(item.Bounds.CenterX, item.Bounds.CenterY, delta, horizontal);
             return new Outcome(true, null);
         }
@@ -458,8 +474,10 @@ static class DesktopSession
     static bool TypeAt(CachedElement item, string text)
     {
         if (!Win32.ConfirmForeground(item.Top)) return false;
+        ActionOverlay.ShowClick(item.Bounds.CenterX, item.Bounds.CenterY);
         Win32.Click(item.Bounds.CenterX, item.Bounds.CenterY);
         Thread.Sleep(80);
+        ActionOverlay.ShowType(item.Bounds.CenterX, item.Bounds.CenterY, text);
         Win32.TypeUnicode(text);
         Thread.Sleep(280);
         var again = Relocate(item);

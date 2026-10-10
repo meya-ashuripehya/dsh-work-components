@@ -61,7 +61,7 @@
 
 地图（默认关闭）：在设置页启用并保存高德 Web 服务 Key 后，提供地理编码、地点检索、路线规划、天气预报、地图标点卡片与可点击的路线图。标点卡片在页面上可打开高德地图；发到 Telegram 时改为原生命置，不再发送静态地图图片。路线图点开后进入高德导航页，并附带可在手机打开的网页分享链接与导航深链，坐标为 GCJ-02。可将分享链接通过 Telegram 发送，或复制到系统浏览器打开；该链接适用于 iOS 与 Android。导航深链（amapuri）供 Android 与 HarmonyOS 直接打开。上述方式不写入高德账号收藏夹。Key 只保存在设置页，不读取环境变量。设置项「绕过代理」默认开启，高德请求不使用系统或环境变量中的 HTTP 代理。静态地图预览经 `attachments.saveImage` 发出，不落盘缓存。媒体卡片中的图片可点击放大。
 
-日历（默认开启）：`calendar_show`、`calendar_event_save`、`calendar_event_delete`。公历、农历、节气和中国法定节假日（含调休）由 `lunar-javascript` 离线计算，「今天」按 Asia/Shanghai。日程写在数据目录 `calendar/events.json`，不放进设置。天气预报来自 [Open-Meteo](https://open-meteo.com/)（CC BY 4.0），填写设置项「天气城市」后查询未来 4 天，不使用高德 Key，请求沿用当前进程的代理。未填城市时历法与日程仍然可用。聊天卡片和设置页「日历」共用同一块月历。Telegram 不另发日历消息，模型的文字回复仍走原通道。
+日历（默认开启）：`calendar_show`、`calendar_event_save`、`calendar_event_delete`。公历、农历、节气和中国法定节假日（含调休）由 `lunar-javascript` 离线计算，「今天」按 Asia/Shanghai。日程写在数据目录 `calendar/events.json`，不放进设置。天气预报来自 [Open-Meteo](https://open-meteo.com/)（CC BY 4.0），填写设置项「天气城市」后按接口能提供的最长天数查询，不使用高德 Key，请求沿用当前进程的代理。未填城市时历法与日程仍然可用。聊天卡片和设置页「日历」共用同一块月历，每种天气有一枚动态小图标。发到 Telegram 时，`calendar_show` 的卡片另成一条 HTML 月历（天气用对应表情），模型的文字回复仍走原通道。
 
 ## 实装截图
 
@@ -78,6 +78,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / FFmpeg / Obsidian（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
 | 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
+| 游戏 | Minecraft / 文明 VI / 视觉（徽标「已验证」与「实验性」，**默认关闭**） | 未启动 / 已启动 / 出错… | 共享 GameBot REST + 按游戏 MCP；仓库自带无需下载，首次启用准备 Python 环境 |
 | 通用 | 桌面控制 / 会话控制 / uv / Node.js / 下载代理 | 已连接 / 可用 / 未安装 / 已设置… | 桌面控制随插件提供，打开「启用」即可；其余为会话能力、运行时与代理 |
 | 基础工具 | 添加工作组件 | 提示词工具 | Token 声明 + 可复制 AI 提示词：写成**本地**模块（不装进 `tools/`）。选型**功能最全优先**；应补可配置/必填参数（中文 label）；本地阶段 `keys` + `launch`/`spec` 硬编码默认，拟议 schema 写注释；自定义键未进 schema 前不持久化。模块就位后重启 DSH，再在设置页下载安装。 |
 
@@ -213,13 +214,76 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 - **代理**：卡片填写的 HTTP 代理只用于访问 `api.telegram.org`；留空沿用宿主与环境变量。
 - **路由与格式**（迁移自 profile `cordis.patch.yml` 的 channels-harness / channels-telegram）：默认智能体预设、通道级 / 会话级预设覆盖、路由模式、入站元数据前缀、出站格式（默认 HTML）。
 - **冲突保护**：profile 的 bundles 里仍有 `dsh-telegram-temp`（或 `@wsz987/dsh-channels`）、或宿主里已有其他插件提供的 `channels` / `channelControl` 服务时不启动，卡片显示「已由独立插件 dsh-telegram-temp 接管，请先移除该插件」等说明；运行中出现 Telegram 409（同一机器人被别处轮询）时立即停止轮询。
+- **参考源码**：通道实现参考 [wsz987/dsh-channels](https://github.com/wsz987/dsh-channels)（npm：[@wsz987/channel-core](https://www.npmjs.com/package/@wsz987/channel-core) / [channel-harness](https://www.npmjs.com/package/@wsz987/channel-harness) / [channel-telegram](https://www.npmjs.com/package/@wsz987/channel-telegram) / [channel-control](https://www.npmjs.com/package/@wsz987/channel-control)，聚合包 [@wsz987/dsh-channels](https://www.npmjs.com/package/@wsz987/dsh-channels)）；行为对齐独立插件名 dsh-telegram-temp（无单独公开仓库）。完整依赖表见下文「依赖说明」。
 - **补丁随仓库走**：`vendor/wsz987/<包>` 是 npm 0.5.1 打上 `vendor/wsz987/patches/*.patch` 之后的副本，构建时把 `@wsz987/channel-{core,harness,telegram}` 解析到这里并打包进 `lib/channel-telegram.mjs`，不依赖 postinstall，`npm install` 不会冲掉补丁。依赖版本在 devDependencies 里精确锁定（`.npmrc` 设 `legacy-peer-deps=true`，因为 DSH 各包 rc.2 / rc.3 的 peer 声明互相冲突）。
 
 从 `dsh-telegram-temp` 切换：在卡片填好设置并打开「启用」（此时显示接管说明，不会轮询）→ 退出 DSH Desktop → `"%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop remove dsh-telegram-temp` → 重新打开 DSH。
 
+## 依赖说明
+
+下列包列在 `devDependencies`（另有 `schemastery` 与若干运行时依赖），供本机构建、类型解析，以及把「通道 › Telegram」打成自包含的 `lib/channel-telegram.mjs`。正式发布的 npm 包一般不要求用户再装这些 Harness / 通道包；宿主 DSH 仍通过 Cordis `inject`（如 `tools`、`agents`、`sessions`、`credentials`、`attachments`）提供同名服务。版权与保留义务见 [NOTICE](./NOTICE)。
+
+### 构建与校验
+
+| 包 | 本插件中的用途 | npm | 源码 |
+|---|---|---|---|
+| [esbuild](https://www.npmjs.com/package/esbuild) | `npm run build`：打包 `lib/index.mjs`、`lib/local-loader-worker.mjs`、`lib/component-sdk.mjs`，以及 Telegram 运行时 `lib/channel-telegram.mjs`；`vendor:channels` 等脚本也会用到 | [esbuild](https://www.npmjs.com/package/esbuild) | [evanw/esbuild](https://github.com/evanw/esbuild) |
+
+### 设置 Schema
+
+| 包 | 本插件中的用途 | npm | 源码 |
+|---|---|---|---|
+| [schemastery](https://www.npmjs.com/package/schemastery) | `src/index.mjs` 的 `SettingsSchema` / `RuntimeSettingsSchema`（设置注册与 API 校验） | [schemastery](https://www.npmjs.com/package/schemastery) | [shigma/schemastery](https://github.com/shigma/schemastery) |
+| [@deepseek-ai/schemastery](https://www.npmjs.com/package/@deepseek-ai/schemastery) | 与通道栈（`@wsz987/channel-*`）声明的 Schema 实现对齐并锁定版本；构建 Telegram 运行时时随通道依赖解析 | [@deepseek-ai/schemastery](https://www.npmjs.com/package/@deepseek-ai/schemastery) | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) |
+
+### Cordis（插件运行时）
+
+通道启用后会在本插件 `ctx` 下再挂一层 fork（`ctx.plugin`），因此构建 Telegram 包时需解析 DeepSeek 发行的 Cordis 及相关加载器，版本与宿主侧声明对齐（见 `.npmrc` 的 `legacy-peer-deps`）。
+
+| 包 | 本插件中的用途 | npm | 源码 |
+|---|---|---|---|
+| [@deepseek-ai/cordis](https://www.npmjs.com/package/@deepseek-ai/cordis) | 通道 fork 的 Cordis 运行时；`@wsz987/channel-*` 的 peer / 依赖 | [@deepseek-ai/cordis](https://www.npmjs.com/package/@deepseek-ai/cordis) | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) |
+| [@deepseek-ai/cordis-plugin-loader](https://www.npmjs.com/package/@deepseek-ai/cordis-plugin-loader) | Cordis 插件加载器；由 `cordis` / 通道依赖树引入，devDependencies 精确锁定以免打包漂移 | [@deepseek-ai/cordis-plugin-loader](https://www.npmjs.com/package/@deepseek-ai/cordis-plugin-loader) | 同上 |
+| [@deepseek-ai/cordis-plugin-include](https://www.npmjs.com/package/@deepseek-ai/cordis-plugin-include) | Cordis 插件 include；同上，并被 `dsh-agent-presets` 等依赖 | [@deepseek-ai/cordis-plugin-include](https://www.npmjs.com/package/@deepseek-ai/cordis-plugin-include) | 同上 |
+
+### DeepSeek Harness 包（锁定进 Telegram 产物 / vendor）
+
+下列 `@deepseek-ai/dsh-*` 多数**不由本仓库源码直接 import**，而是 `@wsz987/channel-harness` / `channel-telegram` / `channel-core` 的依赖；`scripts/build.mjs` 打 `lib/channel-telegram.mjs` 时从 `node_modules` 打入（版本在 `devDependencies` 精确锁定）。宿主侧同名能力则通过服务注入使用（例如 `credentials`、`attachments`、`agents`、`sessions`）。
+
+| 包 | 本插件中的用途 | npm | 源码 |
+|---|---|---|---|
+| [@deepseek-ai/dsh-tools](https://www.npmjs.com/package/@deepseek-ai/dsh-tools) | ① `vendor/dsh-tools/` 副本供 `defineTool`（`npm run vendor:sync` 自本机 DSH Desktop 同步）；② 通道 harness 依赖树中的工具类型 | [@deepseek-ai/dsh-tools](https://www.npmjs.com/package/@deepseek-ai/dsh-tools) | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)；vendor 说明见 NOTICE |
+| [@deepseek-ai/dsh-llm](https://www.npmjs.com/package/@deepseek-ai/dsh-llm) | vendor 中仅保留 `HarnessError`（自该包抽取）；通道 harness 依赖中亦有 LLM 相关模块 | [@deepseek-ai/dsh-llm](https://www.npmjs.com/package/@deepseek-ai/dsh-llm) | 同上 |
+| [@deepseek-ai/dsh-agent](https://www.npmjs.com/package/@deepseek-ai/dsh-agent) | 通道 harness：入站消息经宿主 `agents` 进会话；打包时解析该包 | [@deepseek-ai/dsh-agent](https://www.npmjs.com/package/@deepseek-ai/dsh-agent) | 同上 |
+| [@deepseek-ai/dsh-agent-presets](https://www.npmjs.com/package/@deepseek-ai/dsh-agent-presets) | 通道路由 / 预设（默认智能体、通道级与会话级覆盖） | [@deepseek-ai/dsh-agent-presets](https://www.npmjs.com/package/@deepseek-ai/dsh-agent-presets) | 同上 |
+| [@deepseek-ai/dsh-session](https://www.npmjs.com/package/@deepseek-ai/dsh-session) | 通道与会话绑定、会话生命周期（与 inject `sessions` 对应） | [@deepseek-ai/dsh-session](https://www.npmjs.com/package/@deepseek-ai/dsh-session) | 同上 |
+| [@deepseek-ai/dsh-scope](https://www.npmjs.com/package/@deepseek-ai/dsh-scope) | 通道 harness 作用域 / 绑定上下文 | [@deepseek-ai/dsh-scope](https://www.npmjs.com/package/@deepseek-ai/dsh-scope) | 同上 |
+| [@deepseek-ai/dsh-attachment](https://www.npmjs.com/package/@deepseek-ai/dsh-attachment) | 通道侧附件与多模态出站；宿主 `attachments`（如 `mm_send_image`）为同名服务 | [@deepseek-ai/dsh-attachment](https://www.npmjs.com/package/@deepseek-ai/dsh-attachment) | 同上 |
+| [@deepseek-ai/dsh-commands](https://www.npmjs.com/package/@deepseek-ai/dsh-commands) | 通道 harness 命令面 | [@deepseek-ai/dsh-commands](https://www.npmjs.com/package/@deepseek-ai/dsh-commands) | 同上 |
+| [@deepseek-ai/dsh-user-questions](https://www.npmjs.com/package/@deepseek-ai/dsh-user-questions) | 通道 / harness 用户提问交互 | [@deepseek-ai/dsh-user-questions](https://www.npmjs.com/package/@deepseek-ai/dsh-user-questions) | 同上 |
+| [@deepseek-ai/dsh-invariants](https://www.npmjs.com/package/@deepseek-ai/dsh-invariants) | harness 不变量校验（通道依赖树） | [@deepseek-ai/dsh-invariants](https://www.npmjs.com/package/@deepseek-ai/dsh-invariants) | 同上 |
+| [@deepseek-ai/dsh-home-paths](https://www.npmjs.com/package/@deepseek-ai/dsh-home-paths) | `$DSH_HOME` 等路径约定；`channel-core` / harness 依赖 | [@deepseek-ai/dsh-home-paths](https://www.npmjs.com/package/@deepseek-ai/dsh-home-paths) | 同上 |
+| [@deepseek-ai/dsh-credentials](https://www.npmjs.com/package/@deepseek-ai/dsh-credentials) | Telegram 机器人令牌等凭据；`channel-telegram` 依赖，宿主经 `ctx.inject(['credentials'])` 读取 | [@deepseek-ai/dsh-credentials](https://www.npmjs.com/package/@deepseek-ai/dsh-credentials) | 同上 |
+| [@deepseek-ai/dsh-atomic-write](https://www.npmjs.com/package/@deepseek-ai/dsh-atomic-write) | 原子写盘；由 `dsh-agent-presets` 等引入，devDependencies 锁定以免通道产物版本漂移 | [@deepseek-ai/dsh-atomic-write](https://www.npmjs.com/package/@deepseek-ai/dsh-atomic-write) | 同上 |
+
+### 通道栈（@wsz987）与 HTTP
+
+参考实现与独立插件名 `dsh-telegram-temp` 行为对齐（令牌、会话绑定目录、`cordis.patch` 挂载顺序等）；**公开源码仓库为** [wsz987/dsh-channels](https://github.com/wsz987/dsh-channels)（npm 聚合包 [@wsz987/dsh-channels](https://www.npmjs.com/package/@wsz987/dsh-channels)）。`dsh-telegram-temp` 本身无独立公开 Git 仓库，仅作本机 / profile 侧临时插件名出现在冲突检测与迁移说明中。
+
+| 包 | 本插件中的用途 | npm | 源码 |
+|---|---|---|---|
+| [@wsz987/channel-core](https://www.npmjs.com/package/@wsz987/channel-core) | 通道契约与 `ctx.channels`；运行时 `apply` 自 **vendor 打补丁副本**（非直接 npm 原版） | [@wsz987/channel-core](https://www.npmjs.com/package/@wsz987/channel-core) | [wsz987/dsh-channels](https://github.com/wsz987/dsh-channels)（`packages/channel-core`） |
+| [@wsz987/channel-harness](https://www.npmjs.com/package/@wsz987/channel-harness) | 渠道 ↔ Harness 桥（会话绑定、回复管线等）；同样解析自 **vendor 补丁副本** | [@wsz987/channel-harness](https://www.npmjs.com/package/@wsz987/channel-harness) | 同上（`packages/channel-harness`） |
+| [@wsz987/channel-telegram](https://www.npmjs.com/package/@wsz987/channel-telegram) | Telegram Bot 适配器（长轮询、出站等）；**vendor 补丁副本** | [@wsz987/channel-telegram](https://www.npmjs.com/package/@wsz987/channel-telegram) | 同上（`packages/channel-telegram`） |
+| [@wsz987/channel-control](https://www.npmjs.com/package/@wsz987/channel-control) | 通道控制面（配置 / 凭据 / 生命周期）；**未打补丁**，构建时从 `node_modules` 解析（见 `scripts/build.mjs`） | [@wsz987/channel-control](https://www.npmjs.com/package/@wsz987/channel-control) | 同上（`packages/channel-control`） |
+| [undici](https://www.npmjs.com/package/undici) | Telegram 运行时可选 HTTP 代理：`ProxyAgent` + `fetch` 访问 `api.telegram.org`；打入 `lib/channel-telegram.mjs` | [undici](https://www.npmjs.com/package/undici) | [nodejs/undici](https://github.com/nodejs/undici) |
+
+**Vendor 与补丁（Telegram）：** `vendor/wsz987/<包>` 由 npm 上的 `@wsz987/channel-{core,harness,telegram}@0.5.1` 加上 `vendor/wsz987/patches/*.patch` 生成（`npm run vendor:channels`；`npm run check` 校验）。补丁涵盖长轮询停滞守护、流式正文去重、入站插队、工具结果图片转发等。发布包不携带 `vendor/wsz987/`，只携带已打好补丁的 `lib/channel-telegram.mjs`。细节见上文「通道 · Telegram」与 [NOTICE](./NOTICE)。
+
+
 ## 游戏 · GameBot
 
-GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层，不单独出卡片），设置页「游戏」分组**按游戏分卡**：
+「游戏」分组（Minecraft / 文明 VI / 视觉）标为**实验性**（与会话控制相同的「实验性」徽标样式）。GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层，不单独出卡片），设置页「游戏」分组**按游戏分卡**：
 
 | 卡片 | 组件 id / MCP serverName | 启用键 |
 |---|---|---|
@@ -230,7 +294,7 @@ GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层�
 - **每次应用/会话启动全部默认关闭**，需重新启用；共享的 `gamebotUrl` / `gamebotRoot` 会记住。
 - **共享 body**：任一游戏启用 → 自动启动一个 REST body（默认 `http://127.0.0.1:8766`）；全部关闭 → 停止（只停本插件拉起的进程）。
 - **按游戏的 MCP**：每张卡一个 MCP 服务器（工具前缀 `mcp__gamebot-<game>__`），桥带 `GAMEBOT_GAME=<game>`：游戏参数固定、只列该游戏会话、拒绝其他游戏的 session、去掉 `list_games`、`get_game` 结果里的密钥打码。
-- **仓库自带、已验证**：游戏卡没有「下载安装」。首次启用任一游戏时自动准备共享 Python 环境 `<数据目录>/gamebot/.venv`：用插件托管的 uv（没有就先装进 `tools/uv`）建 Python 3.12 venv，再**从 PyPI 下载安装** `pyproject.toml` 里的依赖（fastapi、uvicorn、httpx、websockets、pydantic、mss、Pillow、numpy 等，约半分钟到几分钟，走设置里的下载代理）；GameBot 代码本身随包提供，不再安装。装好后写 `.dsh-gamebot-ready.json` 标记；装到一半失败下次会重建。uv 不可用时退回本机 Python 3.10–3.12 + pip。
+- **仓库自带、实验性**：游戏卡没有「下载安装」。设置页标题旁有徽标「已验证」（随仓分发）与「实验性」（尚未完全验证）。首次启用任一游戏时自动准备共享 Python 环境 `<数据目录>/gamebot/.venv`：用插件托管的 uv（没有就先装进 `tools/uv`）建 Python 3.12 venv，再**从 PyPI 下载安装** `pyproject.toml` 里的依赖（fastapi、uvicorn、httpx、websockets、pydantic、mss、Pillow、numpy 等，约半分钟到几分钟，走设置里的下载代理）；GameBot 代码本身随包提供，不再安装。装好后写 `.dsh-gamebot-ready.json` 标记；装到一半失败下次会重建。uv 不可用时退回本机 Python 3.10–3.12 + pip。
 - **设置页是唯一来源**：每张卡包含该游戏在 GameBot 里的全部配置（驱动、地址、端口、目录、决策 / 聊天模型、服务商、密钥、人设、记忆…，键名 `gb_<game>_<配置键>`）。启用或保存时通过 `PATCH /v1/games/<game>` 下发到 body。密钥字段留空 = 保持 GameBot 已存的该服务商密钥；人设留空 = GameBot 默认。填写了 `gamebotRoot`（外部 GameBot 目录）时，首次加载会从它的 `data/game-configs.json` 一次性导入。
 - GameBot 自带的网页设置前端（`/ui`）已移除，body 只提供 REST。
 - Minecraft 只提供 minaret（NeoForge 模组 WebSocket）驱动。Mineflayer 驱动需要的 Node 桥（`minecraft-bridge`，依赖 mineflayer）不随包发布，所以设置页不显示；要用的话自备桥目录（`server.js` + `npm install`），设置环境变量 `GAMEBOT_MINECRAFT_BRIDGE_DIR` 指向它。

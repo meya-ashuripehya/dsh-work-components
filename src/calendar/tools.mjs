@@ -56,7 +56,7 @@ export function createCalendarTools(options = {}) {
 
   const show = defineTool({
     name: 'calendar_show',
-    description: '查看某月的公历、农历、节气、中国法定节假日与调休、已保存的日程，以及最多 4 天的天气预报。默认本月（上海时区）。会在对话里发出日历卡片。天气来自 Open-Meteo，使用设置里的日历城市名；未填写城市时仍返回历法与日程。不使用高德，也不读取环境变量。',
+    description: '查看某月的公历、农历、节气、中国法定节假日与调休、已保存的日程，以及天气预报。默认本月（上海时区）。会在对话里发出日历卡片；若当前会话在 Telegram，通道会把同一份月历另发成一条消息，回复里不必再贴整月表格。天气来自 Open-Meteo，使用设置里的日历城市名，按接口能提供的最长天数查询；未填写城市时仍返回历法与日程。不使用高德，也不读取环境变量。',
     parameters: {
       month: { type: 'string', description: '月份，YYYY-MM。留空为本月（Asia/Shanghai）。' },
       city: { type: 'string', description: '可选。覆盖设置中的天气预报城市名，例如成都。留空用设置里的城市。' },
@@ -87,6 +87,7 @@ export function createCalendarTools(options = {}) {
                     week: { type: 'string', required: true },
                     dayWeather: { type: 'string', required: true },
                     nightWeather: { type: 'string', required: true },
+                    icon: { type: 'string', required: true },
                     dayTemp: { type: 'string', required: true },
                     nightTemp: { type: 'string', required: true },
                   },

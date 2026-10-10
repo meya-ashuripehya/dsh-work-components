@@ -5,6 +5,8 @@
 
 const GEOCODE = 'https://geocoding-api.open-meteo.com/v1/search'
 const FORECAST = 'https://api.open-meteo.com/v1/forecast'
+/** Open-Meteo 预报天数上限。请求这个值，接口返回几天就保留几天。 */
+export const FORECAST_DAYS = 16
 
 const WEATHER_TEXT = {
   0: '晴',
@@ -39,8 +41,106 @@ const WEATHER_TEXT = {
 
 const WEEK = ['日', '一', '二', '三', '四', '五', '六']
 
+/** WMO weather code → 图标种类。页面按种类画动态图标，Telegram 按种类选表情。 */
+const CODE_KIND = {
+  0: 'clear',
+  1: 'mainly-clear',
+  2: 'partly',
+  3: 'overcast',
+  45: 'fog',
+  48: 'fog',
+  51: 'drizzle',
+  53: 'drizzle',
+  55: 'drizzle',
+  56: 'freezing-drizzle',
+  57: 'freezing-drizzle',
+  61: 'rain',
+  63: 'rain',
+  65: 'rain-heavy',
+  66: 'freezing-rain',
+  67: 'freezing-rain',
+  71: 'snow',
+  73: 'snow',
+  75: 'snow-heavy',
+  77: 'grains',
+  80: 'showers',
+  81: 'showers',
+  82: 'showers-heavy',
+  85: 'snow-showers',
+  86: 'snow-showers',
+  95: 'thunder',
+  96: 'hail',
+  99: 'hail',
+}
+
+const TEXT_KIND = {
+  晴: 'clear',
+  大部晴朗: 'mainly-clear',
+  多云: 'partly',
+  阴: 'overcast',
+  雾: 'fog',
+  雾凇: 'fog',
+  小毛毛雨: 'drizzle',
+  毛毛雨: 'drizzle',
+  大毛毛雨: 'drizzle',
+  冻毛毛雨: 'freezing-drizzle',
+  强冻毛毛雨: 'freezing-drizzle',
+  小雨: 'rain',
+  中雨: 'rain',
+  大雨: 'rain-heavy',
+  冻雨: 'freezing-rain',
+  强冻雨: 'freezing-rain',
+  小雪: 'snow',
+  中雪: 'snow',
+  大雪: 'snow-heavy',
+  雪粒: 'grains',
+  小阵雨: 'showers',
+  阵雨: 'showers',
+  强阵雨: 'showers-heavy',
+  小阵雪: 'snow-showers',
+  阵雪: 'snow-showers',
+  雷暴: 'thunder',
+  雷暴伴冰雹: 'hail',
+  强雷暴伴冰雹: 'hail',
+}
+
+/** Telegram 月历用的表情。同一种类一枚，页面上的动态图标比这里分得更细。 */
+export const WEATHER_EMOJI = {
+  clear: '☀️',
+  'mainly-clear': '🌤️',
+  partly: '⛅',
+  overcast: '☁️',
+  fog: '🌫️',
+  drizzle: '🌦️',
+  'freezing-drizzle': '🌧️',
+  rain: '🌧️',
+  'rain-heavy': '🌧️',
+  'freezing-rain': '🧊',
+  snow: '❄️',
+  'snow-heavy': '❄️',
+  grains: '🌨️',
+  showers: '🌦️',
+  'showers-heavy': '🌧️',
+  'snow-showers': '🌨️',
+  thunder: '⛈️',
+  hail: '⛈️',
+  unknown: '🌡️',
+}
+
 export function weatherText(code) {
   return WEATHER_TEXT[Number(code)] || '未知'
+}
+
+export function weatherKind(code) {
+  return CODE_KIND[Number(code)] || 'unknown'
+}
+
+export function weatherKindFromText(text) {
+  return TEXT_KIND[String(text ?? '').trim()] || 'unknown'
+}
+
+export function weatherCodes() {
+  return Object.keys(WEATHER_TEXT).map(Number)
 }
 
 function weekdayLabel(ymd) {
@@ -116,17 +216,19 @@ export async function forecastCity(city, fetchImpl = globalThis.fetch) {
   forecastUrl.searchParams.set('longitude', String(place.longitude))
   forecastUrl.searchParams.set('daily', 'weather_code,temperature_2m_max,temperature_2m_min')
   forecastUrl.searchParams.set('timezone', 'Asia/Shanghai')
-  forecastUrl.searchParams.set('forecast_days', '4')
+  forecastUrl.searchParams.set('forecast_days', String(FORECAST_DAYS))
   const report = await getJson(forecastUrl, fetchImpl)
   const daily = report?.daily || {}
   const times = Array.isArray(daily.time) ? daily.time : []
-  const forecasts = times.slice(0, 4).map((date, index) => {
-    const text = weatherText(daily.weather_code?.[index])
+  const forecasts = times.map((date, index) => {
+    const code = daily.weather_code?.[index]
+    const text = weatherText(code)
     return {
       date: String(date),
       week: weekdayLabel(date),
       dayWeather: text,
       nightWeather: text,
+      icon: weatherKind(code),
       dayTemp: formatTemp(daily.temperature_2m_max?.[index]),
       nightTemp: formatTemp(daily.temperature_2m_min?.[index]),
     }
