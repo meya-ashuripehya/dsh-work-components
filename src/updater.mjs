@@ -50,9 +50,9 @@ export function compareSemver(a, b) {
   return 0
 }
 
-export function shouldAutoCheck(state, today = localDateKey()) {
-  if (!state || !state.lastCheckDate) return true
-  return state.lastCheckDate !== today
+/** 每次 DSH/插件启动都应检查；不再按本地日期去重。保留函数供测试与兼容调用。 */
+export function shouldAutoCheck(_state, _today = localDateKey()) {
+  return true
 }
 
 export function shouldPromptUpdate(info, state) {

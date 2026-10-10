@@ -26,11 +26,8 @@ ok('shouldAutoCheck: empty state', () => {
   assert.equal(shouldAutoCheck({}, '2026-10-09'), true)
 })
 
-ok('shouldAutoCheck: same day skips', () => {
-  assert.equal(shouldAutoCheck({ lastCheckDate: '2026-10-09' }, '2026-10-09'), false)
-})
-
-ok('shouldAutoCheck: new day runs', () => {
+ok('shouldAutoCheck: always runs (every DSH start)', () => {
+  assert.equal(shouldAutoCheck({ lastCheckDate: '2026-10-09' }, '2026-10-09'), true)
   assert.equal(shouldAutoCheck({ lastCheckDate: '2026-10-08' }, '2026-10-09'), true)
 })
 
