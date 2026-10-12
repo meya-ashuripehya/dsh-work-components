@@ -12,7 +12,7 @@ const telegramInteger = z.number().int().refine(Number.isSafeInteger, {
 });
 const telegramChatSchema = z.object({
     id: telegramInteger,
-    type: z.enum(['private', 'group', 'supergroup']),
+    type: z.enum(['private', 'group', 'supergroup', 'channel']),
     first_name: z.string().optional(),
     username: z.string().optional(),
     title: z.string().optional(),
@@ -63,7 +63,11 @@ const telegramMessageSchema = z.object({
     message_id: telegramInteger,
     date: telegramInteger.optional(),
     chat: telegramChatSchema,
-    from: telegramUserSchema,
+    // Group posts sent as the chat itself (anonymous admin, channel) omit `from`
+    // and carry `sender_chat` instead. `from` stays optional so that shape is not
+    // a silent schema drop; mapInbound requires one of the two.
+    from: telegramUserSchema.optional(),
+    sender_chat: telegramChatSchema.optional(),
     text: z.string().optional(),
     caption: z.string().optional(),
     entities: z.array(telegramMessageEntitySchema).optional(),
@@ -87,7 +91,7 @@ const telegramDedupSchema = z.object({
 }).passthrough();
 /** Message fields that carry metadata rather than content kind. */
 const TELEGRAM_META_KEYS = new Set([
-    'message_id', 'date', 'chat', 'from', 'reply_to_message',
+    'message_id', 'date', 'chat', 'from', 'sender_chat', 'reply_to_message',
     'edit_date', 'media_group_id', 'message_thread_id', 'entities', 'caption',
     'caption_entities', 'author_signature', 'is_automatic_forward',
 ]);
@@ -99,19 +103,50 @@ export function simpleHash(input) {
     }
     return Math.abs(hash).toString(36);
 }
+const UPDATE_MESSAGE_KEYS = ['edited_message', 'channel_post', 'edited_channel_post'];
+/** Copy edited/channel updates onto `message` so one schema covers every text post. */
+function unwrapMessageUpdate(raw) {
+    if (!raw || typeof raw !== 'object' || raw.message)
+        return raw;
+    for (const key of UPDATE_MESSAGE_KEYS) {
+        if (raw[key] && typeof raw[key] === 'object')
+            return { ...raw, message: raw[key] };
+    }
+    return raw;
+}
+/** Telegram sometimes sends JSON null for an omitted optional. Zod optional rejects null. */
+function stripNulls(value) {
+    if (Array.isArray(value))
+        return value.map(stripNulls);
+    if (value && typeof value === 'object') {
+        const out = {};
+        for (const [key, item] of Object.entries(value)) {
+            if (item !== null)
+                out[key] = stripNulls(item);
+        }
+        return out;
+    }
+    return value;
+}
 /** Map one raw Telegram update into the stable channel event shape. */
 export function mapInbound(raw, meta) {
-    const parsed = telegramMessageUpdateSchema.safeParse(raw);
+    const parsed = telegramMessageUpdateSchema.safeParse(stripNulls(unwrapMessageUpdate(raw)));
     if (!parsed.success) {
-        throw new TelegramInboundValidationError('telegram mapInbound: invalid message update');
+        const detail = parsed.error.issues.slice(0, 6).map((issue) => `${issue.path.join('.') || '<root>'}: ${issue.message}`).join('; ');
+        throw new TelegramInboundValidationError(`telegram mapInbound: invalid message update (${detail})`);
     }
     const { message } = parsed.data;
-    const { chat, from } = message;
-    const sender = String(from.id);
+    const { chat } = message;
+    const actor = message.from ?? message.sender_chat;
+    if (!actor || actor.id === undefined) {
+        throw new TelegramInboundValidationError('telegram mapInbound: message has no sender');
+    }
+    const sender = String(actor.id);
+    const senderName = message.from?.first_name ?? message.sender_chat?.title;
     // The chat id is the conversation id for both dm and group messages.
     const conversationId = String(chat.id);
     const messageId = String(message.message_id);
-    const conversationType = chat.type === 'group' || chat.type === 'supergroup' ? 'group' : 'dm';
+    const conversationType = chat.type === 'private' ? 'dm' : 'group';
     const mentionedBot = conversationType === 'group'
         ? messageMentionedBot(message, meta.bot)
         : undefined;
@@ -124,12 +159,12 @@ export function mapInbound(raw, meta) {
             // 'private' → dm; 'group'/'supergroup' → group keyed by the chat id.
             // The schema rejects unsupported chat types rather than treating them as
             // a private conversation.
-            type: chat.type === 'group' || chat.type === 'supergroup' ? 'group' : 'dm',
+            type: chat.type === 'private' ? 'dm' : 'group',
             ...(message.message_thread_id !== undefined
                 ? { threadId: String(message.message_thread_id) }
                 : {}),
         },
-        sender: { id: sender, name: from.first_name },
+        sender: { id: sender, name: senderName },
         message: {
             id: messageId,
             content: partsFor(message),
@@ -175,6 +210,38 @@ function messageMentionedBot(message, bot) {
                     return true;
             }
         }
+    }
+    // Typed "@name" without a Telegram entity, and a reply to the bot, both
+    // count. The access switch decides whether a mention is required at all.
+    if (replyTargetsBot(message, bot))
+        return true;
+    for (const source of sources) {
+        if (textMentionsUsername(source.text, username))
+            return true;
+    }
+    return false;
+}
+function replyTargetsBot(message, bot) {
+    const from = message.reply_to_message?.from;
+    if (!from)
+        return false;
+    if (bot.id !== undefined && from.id === bot.id)
+        return true;
+    const username = bot.username?.replace(/^@/, '').toLowerCase();
+    return !!username && from.username?.replace(/^@/, '').toLowerCase() === username;
+}
+function textMentionsUsername(text, username) {
+    if (typeof text !== 'string' || !username)
+        return false;
+    const hay = text.toLowerCase();
+    const pin = '@' + username.toLowerCase();
+    let at = hay.indexOf(pin);
+    while (at !== -1) {
+        const before = at === 0 ? '' : hay[at - 1];
+        const after = hay[at + pin.length] ?? '';
+        if ((before === '' || /[^a-z0-9_]/.test(before)) && (after === '' || /[^a-z0-9_]/.test(after)))
+            return true;
+        at = hay.indexOf(pin, at + 1);
     }
     return false;
 }
@@ -300,7 +367,7 @@ export function mapCallbackQuery(raw, meta) {
         conversation: {
             id: conversationId,
             // 'private' → dm; 'group'/'supergroup' → group keyed by the chat id.
-            type: chat.type === 'group' || chat.type === 'supergroup' ? 'group' : 'dm',
+            type: chat.type === 'private' ? 'dm' : 'group',
             ...(threadId !== undefined ? { threadId: String(threadId) } : {}),
         },
         sender: { id: sender, name: from.first_name },

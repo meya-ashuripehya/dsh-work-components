@@ -19,7 +19,7 @@ public class BrokerSmokeTests
         await using var client = await McpClient.CreateAsync(transport);
         var names = (await client.ListToolsAsync()).Select(tool => tool.Name).OrderBy(name => name).ToArray();
         Assert.Equal(
-            ["click", "click_screen", "inspect", "invoke", "key", "list_windows", "screenshot", "scroll", "scroll_screen", "status", "type"],
+            ["click", "click_screen", "dock", "elements", "inspect", "invoke", "key", "list_windows", "reveal_window", "screenshot", "scroll", "scroll_screen", "status", "type"],
             names);
         var status = await client.CallToolAsync("status", new Dictionary<string, object?>());
         var statusText = TextOf(status);

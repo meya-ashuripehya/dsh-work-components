@@ -412,40 +412,70 @@ async function downloadToFile(url, dest, onProgress) {
   return { bytes: done, total: total || done }
 }
 
+/**
+ * 找 npm：本插件 node_modules/npm（一般没有）→ 当前 node 旁的 npm-cli.js → PATH 上的 npm。
+ * 旧实现直接用 node 跑 <root>/node_modules/npm/bin/npm-cli.js：文件不存在时 node 照样启动、以退出码 1 结束，
+ * 不触发 'error'，于是永远走不到 PATH 回退，用户只看到「退出码 1」。
+ */
+function resolveNpmCommand(root) {
+  const candidates = [
+    join(root, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ]
+  for (const cli of candidates) {
+    if (existsSync(cli)) return { cmd: process.execPath, pre: [cli], shell: false, via: cli }
+  }
+  // Windows 上 .cmd 必须经 shell 启动（Node 安全修复后 spawn .cmd 不带 shell 会 EINVAL）。
+  if (process.platform === 'win32') return { cmd: 'npm.cmd', pre: [], shell: true, via: 'PATH npm.cmd' }
+  return { cmd: 'npm', pre: [], shell: false, via: 'PATH npm' }
+}
+
+/** 保留最后若干行输出，失败时拼进错误信息（去掉 ANSI、空行、npm 的 timing/verbose 噪声）。 */
+function npmErrorTail(lines, max = 12) {
+  const clean = lines
+    .map((l) => String(l).replace(/\x1b\[[0-9;]*m/g, '').trim())
+    .filter((l) => l && !/^npm (timing|verbose|http fetch)/i.test(l))
+  const errs = clean.filter((l) => /^npm (err|error)|ERR!|ERESOLVE|EBUSY|EPERM|EACCES|ENOENT|ETARGET|E404|ECONNRESET|ETIMEDOUT|Cannot find module|peer dep/i.test(l))
+  const pick = errs.length ? errs : clean
+  return pick.slice(-max).join('\n')
+}
+
 async function runNpmInRoot(root, args, onLine) {
+  const npm = resolveNpmCommand(root)
+  const tail = []
   await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [join(root, 'node_modules', 'npm', 'bin', 'npm-cli.js'), ...args], {
-      cwd: root,
-      env: { ...process.env, npm_config_progress: 'false', npm_config_fund: 'false', npm_config_audit: 'false' },
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    // Fallback: system npm via shell if local npm-cli missing
-    // Actually spawn above may fail if no local npm — handle below
-    let failed = false
-    child.on('error', () => { failed = true })
-    // If immediate fail, we re-run with `npm` from PATH in caller
+    let child
+    try {
+      child = spawn(npm.cmd, [...npm.pre, ...args], {
+        cwd: root,
+        env: { ...process.env, npm_config_progress: 'false', npm_config_fund: 'false', npm_config_audit: 'false', npm_config_update_notifier: 'false' },
+        windowsHide: true,
+        shell: npm.shell,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      return reject(Object.assign(new Error(`无法启动 npm（${npm.via}）：${error.message}`), { npmVia: npm.via }))
+    }
     const take = (buf) => {
       String(buf).split(/\r?\n/).forEach((line) => {
         const t = line.trim()
-        if (t && onLine) onLine(t)
+        if (!t) return
+        tail.push(t)
+        if (tail.length > 200) tail.shift()
+        if (onLine) onLine(t)
       })
     }
     child.stdout?.on('data', take)
     child.stderr?.on('data', take)
+    child.on('error', (error) => reject(Object.assign(new Error(`无法启动 npm（${npm.via}）：${error.message}`), { npmVia: npm.via })))
     child.on('close', (code) => {
-      if (failed) return reject(Object.assign(new Error('spawn npm failed'), { code: 'SPAWN' }))
-      if (code === 0) resolve()
-      else reject(new Error(`npm ${args.join(' ')} 退出码 ${code}`))
-    })
-  }).catch(async (err) => {
-    if (err?.code !== 'SPAWN' && !/ENOENT|spawn npm failed/i.test(String(err.message))) throw err
-    await execFileAsync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, {
-      cwd: root,
-      env: process.env,
-      windowsHide: true,
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: 600_000,
+      if (code === 0) return resolve()
+      const detail = npmErrorTail(tail)
+      reject(Object.assign(
+        new Error(`npm ${args.join(' ')} 退出码 ${code}${detail ? '\n' + detail : ''}`),
+        { npmVia: npm.via, npmTail: detail, exitCode: code },
+      ))
     })
   })
 }
@@ -468,9 +498,16 @@ async function applyGitUpdate(install, report) {
       await runNpmInRoot(root, ['install', '--ignore-scripts', '--no-audit', '--no-fund'], (line) => {
         report({ step: `正在安装依赖… ${line.slice(0, 80)}`, progress: 60 })
       })
-    } catch (error) {
-      // 忽略 scripts 失败时再试普通 install
-      await runNpmInRoot(root, ['install', '--no-audit', '--no-fund'], () => {})
+    } catch (first) {
+      // 忽略 scripts 失败时再试普通 install；两次都失败时把第一次的错误也带上，便于判断真实原因。
+      try {
+        await runNpmInRoot(root, ['install', '--no-audit', '--no-fund'], (line) => {
+          report({ step: `正在安装依赖… ${line.slice(0, 80)}`, progress: 62 })
+        })
+      } catch (second) {
+        const firstTail = first?.npmTail ? `\n（首次 --ignore-scripts 尝试）\n${first.npmTail}` : ''
+        throw Object.assign(new Error(`${second.message}${firstTail}`), { npmVia: second.npmVia, npmTail: second.npmTail })
+      }
     }
   }
   report({ step: '正在构建…', progress: 80 })
@@ -598,6 +635,9 @@ export function startApplyUpdate({ targetVersion } = {}) {
 
 export const __test = {
   localDateKey,
+  resolveNpmCommand,
+  npmErrorTail,
+  runNpmInRoot,
   compareSemver,
   shouldAutoCheck,
   shouldPromptUpdate,

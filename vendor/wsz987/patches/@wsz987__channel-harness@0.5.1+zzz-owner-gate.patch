@@ -1,0 +1,69 @@
+diff --git a/lib/bridge.js b/lib/bridge.js
+index 76a1e94..4eeb1a2 100644
+--- a/lib/bridge.js
++++ b/lib/bridge.js
+@@ -53,6 +53,12 @@ import { ChannelSessionFactory } from './channel-session-factory.js';
+ import { isReservedClaimCommand } from '@wsz987/channel-core';
+ import { InboundAccessController } from './access/controller.js';
+ import { commandLocaleFromSettings } from './commands/locale.js';
++/** Inbound trace log is opt-in (Telegram card «排查日志» sets DSH_TELEGRAM_TRACE=1). */
++function inboundTraceEnabled() {
++    return process.env.DSH_TELEGRAM_TRACE === '1';
++}
++/** Formal notice sent to the chat when a message could not be handled (no internal detail leaks to the chat). */
++const HANDLING_FAILED_NOTICE = '抱歉，本条消息未能处理：会话创建或恢复失败，请稍后再试；若持续出现，请联系管理员检查智能体预设。';
+ function trimBrandedId(value) {
+     return value.trim();
+ }
+@@ -274,11 +280,20 @@ export class ChannelHarnessBridge {
+                     conversationId: normalizedEvent.conversation.id,
+                     error: error instanceof Error ? error.message : String(error),
+                 });
++                await this.notifyHandlingFailure(normalizedEvent);
+             }
+             return;
+         }
+         const generation = this.generationOf(key);
+-        await this.enqueueSelf(key, () => this.handleQueuedMessage(normalizedEvent, key, text, parsed, generation));
++        await this.enqueueSelf(key, () => this.handleQueuedMessage(normalizedEvent, key, text, parsed, generation).catch(async (error) => {
++            this.traceInbound({
++                stage: 'handling_failed',
++                conversationId: normalizedEvent.conversation.id,
++                error: error instanceof Error ? error.message : String(error),
++            });
++            await this.notifyHandlingFailure(normalizedEvent);
++            throw error;
++        }));
+     }
+     /** Apply the contract's only identity normalization before any side effect. */
+     normalizeInboundIdentity(event) {
+@@ -535,8 +550,19 @@ export class ChannelHarnessBridge {
+         });
+         return resolved.policy;
+     }
+-    /** Append one JSON line next to the telegram receive log. Never throws. */
++    /** Tell the chat that this message was not handled. Best-effort; never throws. */
++    async notifyHandlingFailure(event) {
++        try {
++            await this.sendCommandNotice(event, HANDLING_FAILED_NOTICE);
++        }
++        catch (error) {
++            this.options.logger.warn('[channel-harness] failed to send handling-failure notice', toLoggableError(error));
++        }
++    }
++    /** Append one JSON line next to the telegram receive log (opt-in). Never throws. */
+     traceInbound(entry) {
++        if (!inboundTraceEnabled())
++            return;
+         try {
+             const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+             mkdirSync(dirname(file), { recursive: true });
+@@ -556,6 +582,8 @@ export class ChannelHarnessBridge {
+             conversationType: event.conversation.type,
+             reason,
+         });
++        if (!inboundTraceEnabled())
++            return;
+         try {
+             const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+             mkdirSync(dirname(file), { recursive: true });

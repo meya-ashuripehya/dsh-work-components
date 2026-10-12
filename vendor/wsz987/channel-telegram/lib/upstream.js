@@ -104,7 +104,7 @@ export class HttpTelegramUpstream {
                         timeout: Math.max(1, Math.floor(this.options.longPollTimeoutMs / 1000)),
                         // Plan §3.4 / §5: subscribe to interactive callback_query updates
                         // in addition to plain messages.
-                        allowed_updates: ['message', 'callback_query'],
+                        allowed_updates: ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query'],
                     },
                     timeoutMs: this.options.longPollTimeoutMs + 5000,
                 }, signal);

@@ -8,7 +8,7 @@ using FlaUI.UIA3;
 
 namespace DSHDesktopBroker;
 
-static class DesktopSession
+static partial class DesktopSession
 {
     const int MaxNodes = 250;
     const int MaxDepth = 8;
@@ -41,6 +41,12 @@ static class DesktopSession
         });
     });
 
+    public static string Dock(string mode, string hwnd) => Sta.Call(() =>
+    {
+        DockLayout.BootstrapFromEnv();
+        return DockLayout.Control(mode, hwnd);
+    });
+
     public static string ListWindows() => Sta.Call(() =>
     {
         var windows = new List<object>();
@@ -61,13 +67,22 @@ static class DesktopSession
                 bounds = bounds.IsEmpty ? (BoundsRect?)null : bounds,
             });
         }
-        return Json(new { ok = true, windows });
+        var hidden = HiddenMiniProgramInfo();
+        if (hidden.Length == 0) return Json(new { ok = true, windows });
+        return Json(new
+        {
+            ok = true,
+            windows,
+            hiddenMiniPrograms = hidden,
+            hint = "有微信小程序窗口处于隐藏状态（微信打开后没有显示）。用 reveal_window(hwnd) 把它显示出来再操作。",
+        });
     });
 
     public static string Inspect(string hwnd, string title) => Sta.Call(() =>
     {
         if (!ResolveWindow(hwnd, title, out var top, out var error))
             return Json(new { ok = false, reason = error });
+        DockLayout.MaybeRetile(top);
         var host = Win32.FindRenderWidget(top);
         var chromiumTop = Win32.IsChromiumTop(top, host);
         var nodes = new List<Node>();
@@ -131,6 +146,7 @@ static class DesktopSession
         }
         else top = Win32.RootFromPoint(x, y);
         if (top == IntPtr.Zero) return Json(Fail("这个坐标上没有窗口。"));
+        DockLayout.MaybeRetile(top);
         var pid = Win32.WindowPid(top);
         var decision = Router.Decide(new RouteInput
         {
@@ -144,7 +160,10 @@ static class DesktopSession
         if (!Win32.ConfirmForeground(top))
             return Json(Fail(ForegroundBlocked, "sendinput"));
         ActionOverlay.ShowClick(x, y);
-        Win32.Click(x, y);
+        if (!Win32.ConfirmForeground(top))
+            return Json(Fail(ForegroundBlocked, "sendinput"));
+        if (!Win32.Click(x, y))
+            return Json(Fail("鼠标点击没有送出去。", "sendinput"));
         return Json(new { ok = true, confirmed = true, via = "sendinput", hwnd = FormatHwnd(top), x, y });
     });
 
@@ -160,6 +179,7 @@ static class DesktopSession
         }
         else top = Win32.RootFromPoint(x, y);
         if (top == IntPtr.Zero) return Json(Fail("这个坐标上没有窗口。"));
+        DockLayout.MaybeRetile(top);
         var pid = Win32.WindowPid(top);
         var decision = Router.Decide(new RouteInput
         {
@@ -189,7 +209,10 @@ static class DesktopSession
         if (!Win32.ConfirmForeground(top))
             return Json(Fail(ForegroundBlocked, "sendinput"));
         ActionOverlay.ShowScroll(x, y, delta, horizontal);
-        Win32.Wheel(x, y, delta, horizontal);
+        if (!Win32.ConfirmForeground(top))
+            return Json(Fail(ForegroundBlocked, "sendinput"));
+        if (!Win32.Wheel(x, y, delta, horizontal))
+            return Json(Fail("滚轮没有送出去。", "sendinput"));
         return Json(new { ok = true, confirmed = true, via = "sendinput", hwnd = FormatHwnd(top), x, y });
     });
 
@@ -212,6 +235,7 @@ static class DesktopSession
     {
         if (!_cache.Items.TryGetValue(element ?? "", out var item))
             return Json(Fail(Stale));
+        DockLayout.MaybeRetile(item.Top);
         if (action == DesktopAction.Scroll && !TryScrollDelta(key, times, out _, out _, out var why))
             return Json(Fail(why));
         var decision = Router.Decide(new RouteInput
@@ -451,7 +475,10 @@ static class DesktopSession
         if (action == DesktopAction.Click)
         {
             ActionOverlay.ShowClick(item.Bounds.CenterX, item.Bounds.CenterY);
-            Win32.Click(item.Bounds.CenterX, item.Bounds.CenterY);
+            if (!Win32.ConfirmForeground(item.Top))
+                return new Outcome(false, ForegroundBlocked);
+            if (!Win32.Click(item.Bounds.CenterX, item.Bounds.CenterY))
+                return new Outcome(false, "鼠标点击没有送出去。");
             return new Outcome(true, null);
         }
         if (action == DesktopAction.Scroll)
@@ -459,7 +486,10 @@ static class DesktopSession
             if (!TryScrollDelta(key, times, out var delta, out var horizontal, out var why))
                 return new Outcome(false, why);
             ActionOverlay.ShowScroll(item.Bounds.CenterX, item.Bounds.CenterY, delta, horizontal);
-            Win32.Wheel(item.Bounds.CenterX, item.Bounds.CenterY, delta, horizontal);
+            if (!Win32.ConfirmForeground(item.Top))
+                return new Outcome(false, ForegroundBlocked);
+            if (!Win32.Wheel(item.Bounds.CenterX, item.Bounds.CenterY, delta, horizontal))
+                return new Outcome(false, "滚轮没有送出去。");
             return new Outcome(true, null);
         }
         var typed = TypeAt(item, text ?? "");
@@ -475,7 +505,8 @@ static class DesktopSession
     {
         if (!Win32.ConfirmForeground(item.Top)) return false;
         ActionOverlay.ShowClick(item.Bounds.CenterX, item.Bounds.CenterY);
-        Win32.Click(item.Bounds.CenterX, item.Bounds.CenterY);
+        if (!Win32.ConfirmForeground(item.Top)) return false;
+        if (!Win32.Click(item.Bounds.CenterX, item.Bounds.CenterY)) return false;
         Thread.Sleep(80);
         ActionOverlay.ShowType(item.Bounds.CenterX, item.Bounds.CenterY, text);
         Win32.TypeUnicode(text);

@@ -24,7 +24,8 @@ const AGGREGATE = '@wsz987/dsh-channels'
 /** 变更后需要重启通道的设置键（令牌另由 tokenRev 触发）。 */
 export const TELEGRAM_KEYS = [
   'telegramEnabled', 'telegramTokenRef', 'telegramProxy', 'telegramOwnerId', 'telegramAllowFrom',
-  'telegramPreset', 'telegramChannelRoutes', 'telegramConversationRoutes', 'telegramRoutingMode',
+  'telegramGroupPolicy', 'telegramGroupIds', 'telegramGroupRequireMention', 'telegramGroupSenderPolicy',
+  'telegramPreset', 'telegramGroupPreset', 'telegramAuthorizedIds', 'telegramDebugTrace', 'telegramChannelRoutes', 'telegramConversationRoutes', 'telegramRoutingMode',
   'telegramIncludeMetadataPrefix', 'telegramFormat', 'telegramInboundPreempt',
   'telegramSendReasoning', 'telegramShowToolCalls', 'telegramReasoningMaxChars', 'telegramStreamMode',
 ]
@@ -37,10 +38,17 @@ export function telegramSchemaShape(z) {
     telegramToken: z.string().role('secret').default('').description('BotFather 签发的机器人令牌；保存时写入宿主凭据引用，不写入本插件设置。'),
     telegramTokenRef: z.string().default(DEFAULT_TOKEN_REF).description('保存机器人令牌的凭据引用名，默认 TELEGRAM_BOT_TOKEN（与 dsh-telegram-temp 相同）。'),
     telegramProxy: z.string().default('').description('访问 Telegram Bot API 的 HTTP 代理，例如 http://127.0.0.1:7890；留空时沿用宿主 / 环境变量的代理设置。'),
-    telegramOwnerId: z.string().default('').description('所有者的 Telegram 数字用户 ID；留空时沿用已保存的访问策略。'),
-    telegramAllowFrom: z.string().default('').description('另外允许私聊的 Telegram 数字用户 ID，以逗号或空格分隔。'),
-    telegramPreset: z.string().default('lingsnow').description('默认智能体预设（agent.default.preset）。留空时使用宿主默认；已绑定的会话不受影响。'),
-    telegramChannelRoutes: z.string().default('telegram:guest, qq:guest, weixin:guest').description('通道级预设覆盖，形如 telegram:guest, qq:guest（routing.overrides.channel）。'),
+    telegramOwnerId: z.string().default('').description('所有者的 Telegram 数字用户 ID。填写后启动时按卡片写入私聊与群聊策略；留空时不改已保存的策略。'),
+    telegramAllowFrom: z.string().default('').description('另外允许私聊的 Telegram 数字用户 ID，以逗号或空格分隔。群内发言人设为白名单时，同一份名单也用于群。'),
+    telegramGroupPolicy: z.union(['disabled', 'allowlist', 'open']).default('disabled').description('群聊：关闭、只接收指定群，或接收机器人所在的所有群。默认关闭。'),
+    telegramGroupIds: z.string().default('').description('指定群的数字聊天 ID（负数，超级群以 -100 开头），逗号、空格或换行分隔。仅「指定群」时使用。'),
+    telegramGroupRequireMention: z.boolean().default(false).description('可选。关闭时，允许的群里每条普通消息都会唤醒会话。开启时，只有 @ 机器人、回复它，或 /命令@机器人 才会唤醒。默认关闭。'),
+    telegramGroupSenderPolicy: z.union(['open', 'allowlist']).default('open').description('允许的群里谁可以触发：所有成员，或仅所有者与私聊白名单。'),
+    telegramPreset: z.string().default('').description('默认智能体预设（agent.default.preset），私聊使用。留空时使用宿主默认；已绑定的会话不受影响。'),
+    telegramGroupPreset: z.string().default('').description('群聊使用的预设。留空时与私聊相同（通道级覆盖 → 默认预设）；会话级覆盖仍优先。已绑定的会话不受影响。'),
+    telegramAuthorizedIds: z.string().default('').description('授权用户 ID：只有这些 Telegram 用户触发的回合可以使用会更改电脑的工具。留空时使用所有者用户 ID；两者都空时任何人都不能使用。'),
+    telegramDebugTrace: z.boolean().default(false).description('排查日志：把入站更新与准入 / 建会话阶段写到 ~/.dsh/dsh-channels/telegram-inbound.log。默认关闭。'),
+    telegramChannelRoutes: z.string().default('').description('通道级预设覆盖，形如 telegram:预设名（routing.overrides.channel）。留空不覆盖。'),
     telegramConversationRoutes: z.string().default('').description('会话级预设覆盖，每行或逗号分隔：会话ID:预设（routing.overrides.conversation）。'),
     telegramRoutingMode: z.union(['global', 'channel', 'account', 'conversation']).default('conversation').description('路由模式：按全局 / 通道 / 账号 / 会话选择智能体预设。'),
     telegramIncludeMetadataPrefix: z.boolean().default(true).description('入站消息前附加通道元数据前缀（includeMetadataPrefix）。'),
@@ -139,7 +147,12 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
     }
     if (gen !== s.gen) return
     try {
-      s.policy = await rt.applyAccessPolicy(cfg.telegramOwnerId, cfg.telegramAllowFrom)
+      s.policy = await rt.applyAccessPolicy(cfg.telegramOwnerId, cfg.telegramAllowFrom, {
+        policy: cfg.telegramGroupPolicy || 'disabled',
+        chatIds: cfg.telegramGroupIds || '',
+        requireMention: cfg.telegramGroupRequireMention === true,
+        senderPolicy: cfg.telegramGroupSenderPolicy || 'open',
+      })
     } catch (error) {
       s.status = 'error'; s.detail = String(error?.message ?? error); return
     }
@@ -154,6 +167,9 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
         proxy: cfg.telegramProxy,
         inboundPreempt: cfg.telegramInboundPreempt !== false,
         preset: cfg.telegramPreset,
+        groupPreset: cfg.telegramGroupPreset || '',
+        authorizedIds: rt.resolveAuthorizedIds(cfg.telegramAuthorizedIds, cfg.telegramOwnerId),
+        debugTrace: cfg.telegramDebugTrace === true,
         includeMetadataPrefix: cfg.telegramIncludeMetadataPrefix !== false,
         routingMode: cfg.telegramRoutingMode || 'conversation',
         channelRoutes: cfg.telegramChannelRoutes,
@@ -242,7 +258,7 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
         url: 'https://core.telegram.org/bots/api',
         kind: 'component',
         group: '通道',
-        summary: '经 Telegram Bot API 长轮询，把机器人私聊接到 DSH 会话（文字、图片、工具结果图片）。',
+        summary: '经 Telegram Bot API 长轮询，把机器人私聊和已允许的群聊接到 DSH 会话（文字、图片、工具结果图片）。',
         serverName: null,
         moduleSource: 'bundled',
         moduleDir: null,

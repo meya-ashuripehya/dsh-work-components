@@ -21,13 +21,15 @@ static class CursorMotion
         public float Y3 { get; init; }
         public int DurationMs { get; init; }
         public bool Moves { get; init; }
+        /// <summary>入场按时间匀速走，避免缓入把前半段耗在屏幕外。</summary>
+        public bool Linear { get; init; }
     }
 
     /// <summary>从离落点最近的屏幕边外侧入场。depart 是进入屏幕的方向。</summary>
     internal static (float x, float y, float departX, float departY) OffscreenStart(
         float x, float y, float left, float top, float right, float bottom)
     {
-        var margin = 64f;
+        var margin = 120f;
         var toLeft = x - left;
         var toRight = right - x;
         var toTop = y - top;
@@ -89,7 +91,10 @@ static class CursorMotion
             y2 = fromY + dy * 0.68f;
         }
 
-        var ms = (int)Math.Clamp(220f + dist * 0.62f, 260f, 860f);
+        var entrance = departX != 0f || departY != 0f;
+        var ms = entrance
+            ? (int)Math.Clamp(640f + dist * 0.35f, 780f, 1400f)
+            : (int)Math.Clamp(220f + dist * 0.62f, 260f, 860f);
         return new Plan
         {
             X0 = fromX,
@@ -102,13 +107,14 @@ static class CursorMotion
             Y3 = toY,
             DurationMs = ms,
             Moves = true,
+            Linear = entrance,
         };
     }
 
     internal static void Sample(in Plan plan, float u, out float x, out float y, out float heading)
     {
         var t = Math.Clamp(u, 0f, 1f);
-        t = t * t * (3f - 2f * t);
+        if (!plan.Linear) t = t * t * (3f - 2f * t);
         Cubic(plan, t, out x, out y, out var tx, out var ty);
         var len = MathF.Sqrt(tx * tx + ty * ty);
         heading = len < 0.001f ? MathF.Atan2(RestDy, RestDx) : MathF.Atan2(ty, tx);
@@ -118,6 +124,30 @@ static class CursorMotion
             y = plan.Y3;
         }
     }
+
+    /// <summary>路径从屏幕外进来时，返回尖端第一次进入可见区域的进度。已经在屏幕内则返回 0。</summary>
+    internal static float FirstOnScreenU(in Plan plan, float left, float top, float right, float bottom)
+    {
+        if (right - left < 16f || bottom - top < 16f) return 0f;
+        Sample(plan, 1f, out var tx, out var ty, out _);
+        var inset = Contains(tx, ty, left, top, right, bottom, 8f) ? 8f : 0f;
+        if (!Contains(tx, ty, left, top, right, bottom, inset)) return 0f;
+        Sample(plan, 0f, out var x, out var y, out _);
+        if (Contains(x, y, left, top, right, bottom, inset)) return 0f;
+        var lo = 0f;
+        var hi = 1f;
+        for (var i = 0; i < 14; i++)
+        {
+            var mid = (lo + hi) * 0.5f;
+            Sample(plan, mid, out x, out y, out _);
+            if (Contains(x, y, left, top, right, bottom, inset)) hi = mid;
+            else lo = mid;
+        }
+        return hi;
+    }
+
+    static bool Contains(float x, float y, float left, float top, float right, float bottom, float inset) =>
+        x >= left + inset && y >= top + inset && x < right - inset && y < bottom - inset;
 
     static void Cubic(in Plan plan, float t, out float x, out float y, out float tx, out float ty)
     {

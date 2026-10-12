@@ -96,7 +96,10 @@ static class ActionOverlay
     static int TargetX;
     static int TargetY;
     static bool Gliding;
-    static long GlideStart;
+    static bool GlideClock;
+    static long GlideStamp;
+    static float GlideU;
+    static float GlideBase;
     static CursorMotion.Plan GlidePlan;
     static float Heading = MathF.Atan2(CursorMotion.RestDy, CursorMotion.RestDx);
     static long HoldUntil;
@@ -123,7 +126,7 @@ static class ActionOverlay
     {
         var done = new ManualResetEventSlim(false);
         Enqueue(new Cue(OverlayKind.Click, x, y, 0, false, "", 1, done));
-        done.Wait(1000);
+        done.Wait(1800);
     }
 
     public static void ShowScroll(int x, int y, int delta, bool horizontal) =>
@@ -247,7 +250,7 @@ static class ActionOverlay
     static void Apply(Cue cue)
     {
         var now = Now();
-        BeginMove(cue.X, cue.Y, now);
+        BeginMove(cue.X, cue.Y);
         switch (cue.Kind)
         {
             case OverlayKind.Click:
@@ -300,13 +303,14 @@ static class ActionOverlay
         return (int)Math.Clamp(420f + travel / 0.2f, 1100f, 4800f);
     }
 
-    static void BeginMove(int x, int y, long now)
+    static void BeginMove(int x, int y)
     {
         TargetX = x;
         TargetY = y;
         var departX = 0f;
         var departY = 0f;
-        if (!HasCursor)
+        var entrance = !HasCursor;
+        if (entrance)
         {
             var (sx, sy, dx, dy) = EntryPoint(x, y);
             CursorX = sx;
@@ -316,6 +320,9 @@ static class ActionOverlay
             departY = dy;
         }
         GlidePlan = CursorMotion.Build(CursorX, CursorY, x, y, departX, departY);
+        GlideClock = false;
+        GlideBase = 0f;
+        GlideU = 0f;
         if (!GlidePlan.Moves)
         {
             CursorX = x;
@@ -324,9 +331,14 @@ static class ActionOverlay
             Gliding = false;
             return;
         }
-        GlideStart = now;
+        if (entrance) GlideU = CursorMotion.FirstOnScreenU(GlidePlan, VirtualLeft(), VirtualTop(), VirtualRight(), VirtualBottom());
         Gliding = true;
     }
+
+    static int VirtualLeft() => GetSystemMetrics(76);
+    static int VirtualTop() => GetSystemMetrics(77);
+    static int VirtualRight() => VirtualLeft() + Math.Max(GetSystemMetrics(78), 1);
+    static int VirtualBottom() => VirtualTop() + Math.Max(GetSystemMetrics(79), 1);
 
     static (float x, float y, float departX, float departY) EntryPoint(int x, int y)
     {
@@ -367,17 +379,35 @@ static class ActionOverlay
     static void Advance()
     {
         if (!Gliding) return;
+        if (!GlideClock)
+        {
+            CursorMotion.Sample(GlidePlan, GlideU, out var holdX, out var holdY, out Heading);
+            CursorX = holdX;
+            CursorY = holdY;
+            if (holdX >= VirtualLeft() && holdX < VirtualRight() && holdY >= VirtualTop() && holdY < VirtualBottom())
+                return;
+            GlideU = Math.Min(1f, GlideU + 0.06f);
+            CursorMotion.Sample(GlidePlan, GlideU, out holdX, out holdY, out Heading);
+            CursorX = holdX;
+            CursorY = holdY;
+            return;
+        }
+        var now = Now();
+        var step = now - GlideStamp;
+        if (step < 0) step = 0;
+        if (step > 32) step = 32;
+        GlideStamp = now;
         var span = Math.Max(GlidePlan.DurationMs, 1);
-        var u = (Now() - GlideStart) / (float)span;
-        CursorMotion.Sample(GlidePlan, Math.Min(u, 1f), out var x, out var y, out Heading);
+        var remain = Math.Max(0.04f, 1f - GlideBase);
+        GlideU = Math.Min(1f, GlideU + step / span * remain);
+        CursorMotion.Sample(GlidePlan, GlideU, out var x, out var y, out Heading);
         CursorX = x;
         CursorY = y;
-        if (u < 1f) return;
+        if (GlideU < 1f) return;
         CursorX = TargetX;
         CursorY = TargetY;
         Heading = MathF.Atan2(CursorMotion.RestDy, CursorMotion.RestDx);
         Gliding = false;
-        var now = Now();
         HoldUntil = now + DwellMs;
         FlushPending(now);
         MotionDone?.Set();
@@ -425,7 +455,7 @@ static class ActionOverlay
         var tipScreenY = Gliding ? CursorY : TargetY;
         Hovering = PointerHit(tipScreenX, tipScreenY, scale) || (Hovering && NameHit(tipScreenX, tipScreenY, scale));
         if (Hovering) HoldUntil = now + DwellMs;
-        var pad = (int)Math.Ceiling(64f * scale);
+        var pad = (int)Math.Ceiling((click ? 88f : 64f) * scale);
         var labelH = Hovering ? (int)Math.Ceiling(42f * scale) : 0;
         MeasureBadge(scale, badge, out var badgeW, out var badgeH);
         Direction(ScrollDelta, ScrollHorizontal, out var scrollDx, out var scrollDy);
@@ -475,7 +505,7 @@ static class ActionOverlay
         var x0 = tipX - 12f * scale;
         var y0 = tipY - 10f * scale;
         var x1 = tipX + 30f * scale;
-        var y1 = tipY + 36f * scale;
+        var y1 = tipY + 24f * scale;
         return x >= x0 && x <= x1 && y >= y0 && y <= y1;
     }
 
@@ -527,8 +557,6 @@ static class ActionOverlay
         g.TranslateTransform(x, y);
         g.RotateTransform(degrees);
         g.ScaleTransform(s, s);
-        using var glow = new SolidBrush(Color.FromArgb((int)(78 * alpha), 70, 214, 255));
-        g.FillEllipse(glow, -16, -12, 34, 34);
         using var shadow = new SolidBrush(Color.FromArgb((int)(54 * alpha), 12, 22, 36));
         using var shadowPath = PointerPath();
         g.TranslateTransform(1.4f, 2.2f);
@@ -552,11 +580,8 @@ static class ActionOverlay
         var path = new GraphicsPath();
         path.AddLines([
             new PointF(1.2f, 1.2f),
-            new PointF(1.2f, 18.5f),
-            new PointF(6.2f, 14.4f),
-            new PointF(10.2f, 22.6f),
-            new PointF(13.4f, 21.1f),
-            new PointF(9.3f, 13.1f),
+            new PointF(1.2f, 17.4f),
+            new PointF(7.8f, 13.0f),
             new PointF(16.2f, 12.6f),
         ]);
         path.CloseFigure();
@@ -565,19 +590,20 @@ static class ActionOverlay
 
     static void DrawRings(Graphics g, float x, float y, float scale, float seconds, bool click)
     {
-        DrawRing(g, x, y, scale, seconds, 0f, click ? Color.FromArgb(120, 230, 255) : Color.FromArgb(255, 196, 90));
-        DrawRing(g, x, y, scale, seconds, 0.07f, Color.FromArgb(255, 255, 255));
+        var color = click ? Color.FromArgb(170, 46, 200, 255) : Color.FromArgb(170, 255, 196, 90);
+        DrawRing(g, x, y, scale, seconds, 0f, color);
+        DrawRing(g, x, y, scale, seconds, 0.14f, Color.FromArgb(150, 255, 255, 255));
+        DrawRing(g, x, y, scale, seconds, 0.28f, color);
     }
 
     static void DrawRing(Graphics g, float x, float y, float scale, float seconds, float delay, Color color)
     {
-        var u = (seconds - delay) / 0.44f;
+        var u = (seconds - delay) / 0.82f;
         if (u is < 0 or > 1) return;
-        var eased = EaseOut(u);
-        var radius = (7f + 40f * eased) * scale;
-        var alpha = (int)((1f - eased) * color.A);
-        if (alpha <= 0) return;
-        using var pen = new Pen(Color.FromArgb(alpha, color), 2.2f * scale);
+        var radius = (4f + 62f * u) * scale;
+        var alpha = (int)((1f - u) * color.A);
+        if (alpha <= 8) return;
+        using var pen = new Pen(Color.FromArgb(alpha, color), (2.8f - 1.6f * u) * scale);
         g.DrawEllipse(pen, x - radius, y - radius, radius * 2, radius * 2);
     }
 
@@ -788,10 +814,16 @@ static class ActionOverlay
             var dst = new POINT { X = x, Y = y };
             var blend = new BLENDFUNCTION { BlendOp = 0, SourceConstantAlpha = 255, AlphaFormat = 1 };
             UpdateLayeredWindow(Hwnd, screen, ref dst, ref size, mem, ref src, 0, ref blend, ULW_ALPHA);
-            if (!Visible)
+            if (IntersectsVirtual(x, y, bmp.Width, bmp.Height))
             {
                 ShowWindow(Hwnd, SW_SHOWNOACTIVATE);
                 Visible = true;
+            }
+            if (Gliding && !GlideClock && Visible)
+            {
+                GlideClock = true;
+                GlideBase = GlideU;
+                GlideStamp = Now();
             }
         }
         finally
@@ -803,9 +835,14 @@ static class ActionOverlay
         }
     }
 
+    static bool IntersectsVirtual(int x, int y, int width, int height) =>
+        x < VirtualRight() && x + width > VirtualLeft() && y < VirtualBottom() && y + height > VirtualTop();
+
     static void Hide()
     {
         HasCursor = false;
+        Gliding = false;
+        GlideClock = false;
         Hovering = false;
         Heading = MathF.Atan2(CursorMotion.RestDy, CursorMotion.RestDx);
         if (!Visible || Hwnd == IntPtr.Zero) return;
@@ -827,7 +864,7 @@ static class ActionOverlay
         TimerOn = false;
     }
 
-    static bool ClickAlive(long now) => ClickStart != 0 && now - ClickStart < 520;
+    static bool ClickAlive(long now) => ClickStart != 0 && now - ClickStart < 1200;
     static bool ScrollAlive(long now) => ScrollStart != 0 && now - ScrollStart < 700;
     static bool BadgeAlive(long now) => (BadgeChips.Length > 0 || BadgeText.Length > 0) && BadgeStart != 0 && now - BadgeStart < BadgeHoldMs;
 

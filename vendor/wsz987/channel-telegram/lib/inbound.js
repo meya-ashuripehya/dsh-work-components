@@ -1,5 +1,36 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { hydrateTelegramParts } from './media-hydrator.js';
 import { dedupKey, isCallbackQueryUpdate, mapCallbackQuery, mapInbound, TelegramInboundValidationError, } from './mapper.js';
+const INBOUND_KINDS = ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query'];
+/** Append one JSON line under ~/.dsh/dsh-channels. Never throws; never logs the token. */
+function traceInbound(entry) {
+    // Opt-in: the Telegram card «排查日志» sets DSH_TELEGRAM_TRACE=1.
+    if (process.env.DSH_TELEGRAM_TRACE !== '1')
+        return;
+    try {
+        const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+        mkdirSync(dirname(file), { recursive: true });
+        appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...entry }) + '\n');
+    }
+    catch {
+        // Tracing must not affect delivery.
+    }
+}
+function summarizeUpdate(raw) {
+    const kind = INBOUND_KINDS.find((key) => raw && raw[key]);
+    const body = kind ? raw[kind] : undefined;
+    const text = typeof body?.text === 'string' ? body.text : typeof body?.caption === 'string' ? body.caption : '';
+    return {
+        update_id: raw?.update_id ?? null,
+        kind: kind ?? null,
+        chat: body?.chat?.id !== undefined ? String(body.chat.id) : null,
+        chatType: body?.chat?.type ?? null,
+        from: body?.from?.id !== undefined ? String(body.from.id) : body?.sender_chat?.id !== undefined ? String(body.sender_chat.id) : null,
+        text: text.slice(0, 80),
+    };
+}
 /** Compact per-part summary for inbound message logs (debug diagnostics). */
 function summarizeParts(parts) {
     return parts.map((part) => {
@@ -56,6 +87,7 @@ export class InboundProcessor {
     }
     /** Process one raw update from the upstream; dedup, hydrate, then emit. */
     async handle(raw) {
+        traceInbound(summarizeUpdate(raw));
         const key = dedupKey(raw);
         if (this.options.dedupEnabled) {
             const now = this.now();
@@ -80,7 +112,8 @@ export class InboundProcessor {
                 throw error;
             // Invalid identities must not enter the contract or block the polling
             // cursor forever. This is intentionally a silent protocol-level drop.
-            this.options.ctx.logger.warn('[channel-telegram] dropped invalid inbound update');
+            traceInbound({ ...summarizeUpdate(raw), drop: error instanceof Error ? error.message : String(error) });
+            this.options.ctx.logger.warn('[channel-telegram] dropped invalid inbound update', error instanceof Error ? error.message : error);
             return;
         }
         if (this.options.dedupEnabled)

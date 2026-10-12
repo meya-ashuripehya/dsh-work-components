@@ -34,6 +34,9 @@
  * race).
  */
 import { randomUUID } from 'node:crypto';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {} from '@deepseek-ai/cordis';
 import { parseCommand } from '@deepseek-ai/dsh-commands';
 import { PersistenceUnavailableError, SessionNotFoundError } from './agent-manager.js';
@@ -50,6 +53,12 @@ import { ChannelSessionFactory } from './channel-session-factory.js';
 import { isReservedClaimCommand } from '@wsz987/channel-core';
 import { InboundAccessController } from './access/controller.js';
 import { commandLocaleFromSettings } from './commands/locale.js';
+/** Inbound trace log is opt-in (Telegram card «排查日志» sets DSH_TELEGRAM_TRACE=1). */
+function inboundTraceEnabled() {
+    return process.env.DSH_TELEGRAM_TRACE === '1';
+}
+/** Formal notice sent to the chat when a message could not be handled (no internal detail leaks to the chat). */
+const HANDLING_FAILED_NOTICE = '抱歉，本条消息未能处理：会话创建或恢复失败，请稍后再试；若持续出现，请联系管理员检查智能体预设。';
 function trimBrandedId(value) {
     return value.trim();
 }
@@ -266,11 +275,25 @@ export class ChannelHarnessBridge {
             }
             catch (error) {
                 this.options.logger.error(`[channel-harness] preempt message handling failed for conversation '${key}'`, toLoggableError(error));
+                this.traceInbound({
+                    stage: 'preempt_failed',
+                    conversationId: normalizedEvent.conversation.id,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                await this.notifyHandlingFailure(normalizedEvent);
             }
             return;
         }
         const generation = this.generationOf(key);
-        await this.enqueueSelf(key, () => this.handleQueuedMessage(normalizedEvent, key, text, parsed, generation));
+        await this.enqueueSelf(key, () => this.handleQueuedMessage(normalizedEvent, key, text, parsed, generation).catch(async (error) => {
+            this.traceInbound({
+                stage: 'handling_failed',
+                conversationId: normalizedEvent.conversation.id,
+                error: error instanceof Error ? error.message : String(error),
+            });
+            await this.notifyHandlingFailure(normalizedEvent);
+            throw error;
+        }));
     }
     /** Apply the contract's only identity normalization before any side effect. */
     normalizeInboundIdentity(event) {
@@ -488,6 +511,11 @@ export class ChannelHarnessBridge {
         }
         catch (error) {
             this.options.logger.warn('[channel-access] policy resolution failed', toLoggableError(error));
+            this.traceInbound({
+                stage: 'policy_error',
+                conversationId,
+                error: error instanceof Error ? error.message : String(error),
+            });
             return undefined;
         }
         if (resolved.state === 'missing') {
@@ -514,16 +542,63 @@ export class ChannelHarnessBridge {
             this.dropInbound(accessLogger, event, decision.reason);
             return undefined;
         }
+        this.traceInbound({
+            stage: 'admitted',
+            conversationId,
+            conversationType: event.conversation.type,
+            mentioned: event.message.activation?.mentionedBot === true,
+        });
         return resolved.policy;
+    }
+    /** Tell the chat that this message was not handled. Best-effort; never throws. */
+    async notifyHandlingFailure(event) {
+        try {
+            await this.sendCommandNotice(event, HANDLING_FAILED_NOTICE);
+        }
+        catch (error) {
+            this.options.logger.warn('[channel-harness] failed to send handling-failure notice', toLoggableError(error));
+        }
+    }
+    /** Append one JSON line next to the telegram receive log (opt-in). Never throws. */
+    traceInbound(entry) {
+        if (!inboundTraceEnabled())
+            return;
+        try {
+            const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+            mkdirSync(dirname(file), { recursive: true });
+            const error = typeof entry.error === 'string' ? entry.error.replace(/\s+/g, ' ').slice(0, 240) : undefined;
+            appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...entry, ...(error ? { error } : {}) }) + '\n');
+        }
+        catch {
+            // Tracing must not affect delivery.
+        }
     }
     /** Log a fail-closed inbound drop with minimal plan-§42 fields. */
     dropInbound(accessLogger, event, reason) {
         accessLogger.info('[channel-access] inbound dropped', {
             channel: event.channel,
             account: event.accountId,
+            conversationId: event.conversation.id,
             conversationType: event.conversation.type,
             reason,
         });
+        if (!inboundTraceEnabled())
+            return;
+        try {
+            const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+            mkdirSync(dirname(file), { recursive: true });
+            appendFileSync(file, JSON.stringify({
+                t: new Date().toISOString(),
+                drop: reason,
+                channel: event.channel,
+                conversationId: event.conversation.id,
+                conversationType: event.conversation.type,
+                senderId: event.sender?.id,
+            }) + '\n');
+        }
+        catch {
+            // Tracing must not affect the access decision.
+        }
     }
     /**
      * Queued (serialized) message handling for one conversation. Captures the
@@ -606,6 +681,7 @@ export class ChannelHarnessBridge {
             // unknown /foo is then rejected at command admission (Host parity;
             // the session must exist first because channel commands register in the
             // Agent scope and cannot be resolved without one).
+            this.traceInbound({ stage: 'creating', conversationId: event.conversation.id, preset: route?.preset ?? null });
             const fresh = await this.sessionFactory.create(this.conversationInput(event), route);
             binding = fresh.binding;
             agentRef = fresh.agentRef;

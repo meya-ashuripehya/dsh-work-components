@@ -35,14 +35,15 @@ export const component = {
   label: '桌面控制',
   serverName: 'desktop',
   summary: meta.summary,
-  keys: ['desktopEnabled'],
+  keys: ['desktopEnabled', 'desktopDock'],
   builtin: true,
   installed() { return true },
   launch(cfg) {
     if (!cfg.desktopEnabled) return OFF
     if (!IS_WIN) return { ok: false, reason: '桌面控制只在 Windows 上可用' }
     if (!existsSync(BROKER_EXE)) return { ok: false, reason: MISSING }
-    return { ok: true, source: 'managed', runtime: '随插件提供', config: stdio('desktop', BROKER_EXE, []) }
+    const env = cfg.desktopDock ? { DSH_DESKTOP_DOCK: '1' } : {}
+    return { ok: true, source: 'managed', runtime: '随插件提供', config: stdio('desktop', BROKER_EXE, [], { env }) }
   },
 }
 

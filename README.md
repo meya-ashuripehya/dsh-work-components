@@ -17,6 +17,7 @@
 | Windows | [Windows-MCP](https://github.com/CursorTouch/Windows-MCP)（PyPI） | `mcp__windows__` | Windows；stdio 由插件拉起，或连已有 HTTP 服务 |
 | 桌面控制 | 插件自带经纪人（UI Automation） | `mcp__desktop__` | Windows；随插件提供，打开「启用」即可，无需下载 |
 | Notion | [Notion MCP](https://developers.notion.com/docs/mcp)（经 [mcp-remote](https://github.com/geelen/mcp-remote) OAuth 桥） | `mcp__notion__` | 首次 OAuth；token 在 `%USERPROFILE%\.mcp-auth` |
+| Gmail | 插件自带（IMAP `imap.gmail.com` / SMTP `smtp.gmail.com`） | `mcp__gmail__` | 留空则沿用本机 TRIX 邮件已保存的应用专用密码；`send_message` 会直接发信 |
 | Cloudflare | [Cloudflare API MCP](https://github.com/cloudflare/mcp-server-cloudflare)（经 mcp-remote） | `mcp__cloudflare__` | 首次 OAuth（scope=offline_access） |
 | Cloudflare Docs | [Cloudflare Docs MCP](https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-catalog/)（公开 HTTP） | `mcp__cloudflare-docs__` | 无需登录 |
 | GitHub | [GitHub MCP](https://github.com/github/github-mcp-server)（托管 HTTP） | `mcp__github__` | PAT：设置 `githubToken` 或环境变量 `GITHUB_MCP_PAT` |
@@ -34,13 +35,13 @@
 在 DSH Desktop 里让智能体用内置的 `plugin_manager` 安装 bundle（不要自己在 profile 目录里跑 npm / pnpm，`install_bundle` 会完成包安装和 bundle 选择）：
 
 1. 对智能体说：「用 plugin_manager 的 install_bundle 安装 npm 包 `dsh-work-components`」。
-2. 本包没有 install / postinstall 构建脚本；如果结果里列出待批准的构建脚本，不要批准，先确认来源。
+2. 推荐从 **npm** 安装（发布包已含 `lib/` 构建产物）。本包的 `prepare` 仅在缺少 `lib/index.mjs` 时才会执行 `npm run build`（例如从 git 源码安装）；从 npm 安装时通常已有产物并跳过。若 `plugin_manager` 列出待批准的构建脚本，先确认来源再批准 `dsh-work-components` 的 `prepare`（pnpm ≥10 可能还需在 profile 的 `pnpm-workspace.yaml` 里允许该包）。桌面经纪人 exe 随 npm 包分发；纯 git 安装且本机无 .NET SDK 时，桌面控制需另跑 `npm run build:desktop`（或改用 npm 包）。
 3. 用 `list_bundles` / `list_plugins` 确认 `dsh-work-components` 已启用；结果是 `restart-required` 时重启 DSH Desktop。替换已装的版本（升级）同样需要重启才会加载新代码。
 4. 打开设置页「工作组件」，按需「下载安装」各组件并打开「启用」（新装时全部默认关闭）。
 
 卸载：`plugin_manager` 的 `remove_bundle`。数据目录（设置、已下载的工具、GameBot 数据）不随包删除，需要时手动删掉。
 
-要求：DSH Desktop（Node ≥ 22.15 运行时，会话控制要用 zstd）；Office / Photoshop / Windows / 桌面控制等组件只在 Windows 上可用。桌面控制随插件提供，不需要单独下载或安装 .NET。
+要求：DSH Desktop（Node ≥ 22.15 运行时，会话控制要用 zstd）；Office / Photoshop / Windows / 桌面控制等组件只在 Windows 上可用。桌面控制随插件提供，不需要单独下载或安装 .NET。装好后可用设置页打开「启用」并调用 `mm_send_image` 等工具做一次冒烟；仓库 CI（`.github/workflows/ci.yml`）在 PR / push 时跑 `check` + `smoke`。
 
 ## 数据目录
 
@@ -75,7 +76,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | --- | --- | --- | --- |
 | 多模态 | 媒体卡片 | mm_send_image · 可用 | `mm_send_image` 发图（API text+image；settled MmCard 在 turnTail，toolview 折叠后仍可见） |
 | 多模态 | 日历 | 已启用 | 月历、农历、节假日、日程；天气城市走 Open-Meteo |
-| 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / FFmpeg / Obsidian（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
+| 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Gmail / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / FFmpeg / Obsidian（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
 | 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
 | 游戏 | Minecraft / 文明 VI / 视觉（徽标「已验证」与「实验性」，**默认关闭**） | 未启动 / 已启动 / 出错… | 共享 GameBot REST + 按游戏 MCP；仓库自带无需下载，首次启用准备 Python 环境 |
@@ -206,11 +207,11 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 
 ## 通道 · Telegram
 
-「通道」分组的 Telegram 卡片把机器人私聊接到 DSH 会话，功能与独立插件 `dsh-telegram-temp` 相同（文字、图片、流式回复，以及多模态工具结果图片转发）。地图标点卡片改为 Telegram 原生命置（`sendVenue`，坐标由 GCJ-02 转为 WGS-84），不发送静态地图图片。
+「通道」分组的 Telegram 卡片把机器人私聊和已允许的群聊接到 DSH 会话，功能与独立插件 `dsh-telegram-temp` 相同（文字、图片、流式回复，以及多模态工具结果图片转发）。地图标点卡片改为 Telegram 原生命置（`sendVenue`，坐标由 GCJ-02 转为 WGS-84），不发送静态地图图片。
 
 - **默认关闭**；关闭时不加载任何通道代码。打开「启用」后才动态加载 `lib/channel-telegram.mjs`，在本插件 ctx 下挂一个 fork（channel-core → channel-harness → Telegram 适配器）；关闭开关或插件卸载时随 fork 一起清理（`ctx.effect`）。不直接写会话日志：入站经宿主 `agents` 服务进入会话。
 - **令牌**写进宿主凭据（默认引用名 `TELEGRAM_BOT_TOKEN`，与 `dsh-telegram-temp` 共用，切换时无需重新填写），不写入本插件设置；`GET /settings` 只回传占位值。
-- **会话绑定与访问策略**沿用 `~/.dsh/dsh-channels`（`bindings.json`、`storage/access/policy/v1/telegram/main`）。卡片填写了所有者用户 ID 时，启动时按卡片写入访问策略（所有者 + 允许的用户，私聊白名单，群组规则保持原样）；留空则沿用已保存的策略。
+- **会话绑定与访问策略**沿用 `~/.dsh/dsh-channels`（`bindings.json`、`storage/access/policy/v1/telegram/main`）。卡片填写了所有者用户 ID 时，启动时按卡片写入访问策略：私聊白名单为所有者 + 允许的用户；群聊按「群聊 / 群 ID / 群内需要 @ / 群内发言人」写入（默认关闭）。留空所有者则不改已保存的策略。机器人不能自己进群，须由成员添加；默认隐私模式下 Telegram 只推送 @、回复和命令。
 - **代理**：卡片填写的 HTTP 代理只用于访问 `api.telegram.org`；留空沿用宿主与环境变量。
 - **路由与格式**（迁移自 profile `cordis.patch.yml` 的 channels-harness / channels-telegram）：默认智能体预设、通道级 / 会话级预设覆盖、路由模式、入站元数据前缀、出站格式（默认 HTML）。
 - **冲突保护**：profile 的 bundles 里仍有 `dsh-telegram-temp`（或 `@wsz987/dsh-channels`）、或宿主里已有其他插件提供的 `channels` / `channelControl` 服务时不启动，卡片显示「已由独立插件 dsh-telegram-temp 接管，请先移除该插件」等说明；运行中出现 Telegram 409（同一机器人被别处轮询）时立即停止轮询。

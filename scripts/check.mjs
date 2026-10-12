@@ -17,6 +17,7 @@ const entries = [
   'lib/local-loader-worker.mjs',
   'lib/component-sdk.mjs',
   'lib/channel-telegram.mjs',
+  'lib/gmail-server.mjs',
   'lib/client.js',
   'src/components/gamebot/src/gamebot/adapters/civilization/dsh_session_io.mjs',
 ]
@@ -81,7 +82,7 @@ for (const lang of ['en', 'zh']) {
     problems.push(`locale/${lang}.json: ${error.message}`)
   }
 }
-for (const need of ['locale/*.json', 'icon.svg', 'lib/index.mjs', 'lib/local-loader-worker.mjs', 'lib/component-sdk.mjs', 'lib/channel-telegram.mjs', 'lib/client.js', 'cordis.patch.yml']) {
+for (const need of ['locale/*.json', 'icon.svg', 'lib/index.mjs', 'lib/local-loader-worker.mjs', 'lib/component-sdk.mjs', 'lib/channel-telegram.mjs', 'lib/gmail-server.mjs', 'lib/client.js', 'cordis.patch.yml']) {
   if (!pkg.files?.includes(need)) problems.push(`package.json files[] lacks ${need}`)
 }
 
@@ -95,6 +96,22 @@ try {
   execFileSync(process.execPath, [join(root, 'scripts', 'test-update.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push(String(error.stderr || error.stdout || error.message).trim() || 'scripts/test-update.mjs failed')
+}
+
+// 「笔记」：存储、三级规则、删除确认、工具注册（node:test）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'notes', 'notes.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/notes/notes.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
+// Telegram 通道：群消息映射、授权用户工具闸门、群聊预设路由（node:test）。
+for (const file of ['group-inbound.test.mjs', 'owner-gate.test.mjs']) {
+  try {
+    execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'telegram', file)], { stdio: 'pipe' })
+  } catch (error) {
+    problems.push(`src/channels/telegram/${file} failed:\n` + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+  }
 }
 
 if (problems.length) {

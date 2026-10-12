@@ -16,12 +16,15 @@
  *     以及 /dsh-workbench/assets/*（插件 assets/ 下的静态文件；不要放入第三方界面截图或标志）。
  *  3. 会话控制（通用）：撤回 / 重试（按回合就地截断多帧 zstd，保留连续 seq，并清投影缓存）、熔断（取消；自动熔断再截掉失败尾轮）；API 在 /dsh-workbench/api/session/*。
  *  4. 多模态图片：`mm_send_image`（本地文件 → attachments.saveImage → Host attachmentId）。model 侧 render 只发 text+image（DeepSeek Messages 拒 type:'mm'）；MmCard 数据走 presentationMeta.mm，客户端用 meta / image fallback。
+ *     本地文件：`mm_send_file` 走同一套 MmCard。图片复用 kind:image，视频为 kind:video，其余为 kind:document。PDF、Markdown、Word、Excel、PowerPoint 抽出正文放进卡片。模型只看到文字；Telegram 仍按文档发送。群聊里只有授权用户能调用。
  *     地图工具（默认关闭）：设置页保存高德 Key 后注册 geo_resolve / place_search / place_detail / route / weather / map_card。
  *     route 在页面上发出可点击的路线图，打开高德导航页；另返回可在手机打开的分享链接（iOS 与 Android）与 amapuri 深链（Android、HarmonyOS）。
  *     可将分享链接通过 Telegram 或复制交给手机，不写入高德账号收藏夹。
  *     map_card 为 kind:place：页面预览可打开高德标点，Telegram 改发原生命置（WGS-84）。
  *     日历（默认开启）：calendar_show / calendar_event_save / calendar_event_delete。阴阳历与法定节假日离线计算，
  *     日程写在数据目录 calendar/events.json。天气预报走 Open-Meteo，只认设置里的城市名，未填写时不请求。
+ *     笔记（默认关闭）：note_browse / note_search / note_get / note_save / note_delete / note_category_save /
+ *     note_category_delete。三级结构（类型 › 类别 › 笔记），写在数据目录 notes/notes.json；只经工具召回，不注入提示。
  *     图片字节直接 saveImage，不读环境变量、不落地图文件。
  *     设置项 mapBypassProxy（默认开启）让高德请求直连，不使用系统代理。
  *
@@ -36,9 +39,13 @@ import { dataDir, dirSize, killProcessesUnder, managedPaths, migrateLegacyState,
 import { checkForUpdate, getUpdateJob, ignoreVersion, startApplyUpdate } from './updater.mjs'
 import { mountSessionControls, handleSessionApi } from './session-controls/index.mjs'
 import { createTelegramChannel, telegramSchemaShape } from './channels/telegram/index.mjs'
+import { classifyPreview, loadLocalFile, mmFileBlock, registerFilePreview, streamFilePreview, textPreview } from './channels/telegram/files.mjs'
+import { extractContentPreview } from './channels/telegram/office-preview.mjs'
 import { createMapFeature } from './map/index.mjs'
 import { handleCalendarApi } from './calendar/api.mjs'
 import { createCalendarFeature } from './calendar/index.mjs'
+import { handleNotesApi } from './notes/api.mjs'
+import { createNotesFeature } from './notes/index.mjs'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
@@ -129,9 +136,13 @@ export const SettingsSchema = z.object({
   windowsUrl: z.string().default('http://127.0.0.1:18765/mcp').description('HTTP 模式下的 Windows-MCP 地址（streamable-http）。'),
   windowsPackage: z.string().default('windows-mcp').description('Windows-MCP 的 pip 包名（入口 windows-mcp），「下载安装」时安装到 tools/windows。'),
   desktopEnabled: z.boolean().default(false).description('启动桌面控制（按控件操作键鼠和截图；仅 Windows）。插件自带，打开即可，无需下载。不含文件、注册表和 PowerShell。'),
+  desktopDock: z.boolean().default(false).description('右侧停靠：开启后，本窗口以最小宽度停靠于屏幕右侧，当前操作的窗口自动铺满左侧。关闭后恢复各窗口原有位置。'),
   notionEnabled: z.boolean().default(false).description('启动官方 Notion MCP（经 mcp-remote OAuth 桥；首次连接会弹出授权页）。'),
   notionUrl: z.string().default('https://mcp.notion.com/mcp').description('Notion MCP 远程地址。'),
   notionPackage: z.string().default('mcp-remote').description('OAuth 桥接用的 npm 包（默认 mcp-remote），「下载安装」时安装到 tools/notion；也可复用 %USERPROFILE%\.dsh\mcp-remote。'),
+  gmailEnabled: z.boolean().default(false).description('启动 Gmail（IMAP/SMTP）。地址和密码留空时沿用本机 TRIX 邮件已保存的 Gmail。'),
+  gmailAddress: z.string().default('').description('Gmail 地址。留空则使用 TRIX 邮件里已保存的地址。'),
+  gmailAppPassword: z.string().role('secret').default('').description('应用专用密码。留空则使用 TRIX 邮件里已保存的密码。'),
   cloudflareEnabled: z.boolean().default(false).description('启动官方 Cloudflare API MCP（经 mcp-remote OAuth 桥；scope=offline_access）。'),
   cloudflareUrl: z.string().default('https://mcp.cloudflare.com/mcp').description('Cloudflare API MCP 远程地址。'),
   cloudflarePackage: z.string().default('mcp-remote').description('OAuth 桥接用的 npm 包（默认 mcp-remote），「下载安装」时安装到 tools/cloudflare。'),
@@ -161,6 +172,7 @@ export const SettingsSchema = z.object({
   mapBypassProxy: z.boolean().default(true).description('绕过代理。开启后高德请求使用独立直连，不附带下载代理或环境变量中的 HTTP 代理。默认开启。'),
 
   calendarEnabled: z.boolean().default(true).description('启用日历工具（公历、农历、节气、法定节假日、日程、天气预报）。默认开启。关闭后卸下工具，已保存的日程仍保留。'),
+  notesEnabled: z.boolean().default(false).description('启用笔记工具：智能体把总结出的要点与知识库中没有的新知识按「类型 › 类别 › 笔记」三级整理，并在后续任务中检索复用。默认关闭。关闭后卸下工具，已保存的笔记仍保留。'),
   calendarCity: z.string().default('').description('日历天气预报使用的城市名，例如成都。留空则不请求天气。数据来自 Open-Meteo，不使用高德 Key。请求沿用当前进程的代理。'),
 
   ...telegramSchemaShape(z),
@@ -279,7 +291,8 @@ const IMAGE_VALUE_SCHEMA = {
  *   source?: { url?: string, href?: string }
  * Frontend lib/client.js: settled MmCard via conversation.chat.turnTail (turn data mmCards);
  * toolview shows pending/compact only. Prefers meta.mm, then content type:'mm' (legacy),
- * then type:'image'. kind 'place' opens an Amap marker page; video/webpage/document remain stubs.
+ * then type:'image'. kind 'place' opens an Amap marker page. kind 'video' and 'document'
+ * preview mm_send_file; webpage remains a stub.
  */
 function mmImageBlock(image, opts = {}) {
   return {
@@ -427,12 +440,13 @@ export function apply(ctx, config) {
   const telegram = createTelegramChannel(ctx, () => current)
   const map = createMapFeature(ctx, () => current)
   const calendar = createCalendarFeature(ctx, () => current)
+  const notes = createNotesFeature(ctx, () => current)
   const settings = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
   if (settings && typeof settings.register === 'function') {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync(); void map.sync(); void calendar.sync() })
+      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync(); void map.sync(); void calendar.sync(); void notes.sync() })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -480,6 +494,7 @@ export function apply(ctx, config) {
   void telegram.sync()
   void map.sync()
   void calendar.sync()
+  void notes.sync()
   // 宿主的凭据服务可能晚于本插件就绪：就绪时重新同步一次 Telegram（令牌从 credentials 读取）。
   ctx.inject?.(['credentials'], (credCtx) => {
     credCtx.effect?.(() => { void telegram.resync() }, 'dsh-workbench: telegram credentials')
@@ -493,6 +508,7 @@ export function apply(ctx, config) {
       try { await telegram.dispose() } catch {}
       try { await map.dispose() } catch {}
       try { await calendar.dispose() } catch {}
+      try { await notes.dispose() } catch {}
       try { await stopGamebotBody() } catch {}
     }
   }, 'dsh-workbench: components')
@@ -540,6 +556,7 @@ export function apply(ctx, config) {
             await telegram.sync()
             await map.sync()
             await calendar.sync()
+            await notes.sync()
             return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
           }
           if (sub === '/components' && req.method === 'GET') {
@@ -613,6 +630,19 @@ export function apply(ctx, config) {
           if (sub === '/calendar' || sub.startsWith('/calendar/')) {
             const handled = await handleCalendarApi(req, res, sub, { sendJson, readBody, getConfig: () => current })
             if (handled !== false) return
+          }
+          if (sub === '/notes' || sub.startsWith('/notes/')) {
+            const handled = await handleNotesApi(req, res, sub, { sendJson, readBody })
+            if (handled !== false) return
+          }
+          const filePreview = /^\/file-preview\/([a-f0-9]{32})$/.exec(sub)
+          if (filePreview && (req.method === 'GET' || req.method === 'HEAD')) {
+            if (req.headers['sec-fetch-site'] === 'cross-site') {
+              res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
+              res.end('cross-site request refused')
+              return
+            }
+            return streamFilePreview(req, res, filePreview[1])
           }
           if (sub.startsWith('/session')) {
             const handled = await handleSessionApi(ctx, sessionControls.circuit, req, res, sub, { sendJson, readBody, getConfig: () => current })
@@ -733,7 +763,118 @@ export function apply(ctx, config) {
       },
     }))
 
-
-
+    imgCtx.tools.register(defineTool({
+      name: 'mm_send_file',
+      description: 'Send a local file into this chat as a multimodal card. The DSH window previews it by type (image, video, audio, PDF, text; other types show a typed file card). On a Telegram session the same file is delivered as a document, up to 50MB. Pass an absolute or workspace-relative path. Does not fetch remote URLs. In a group, only an authorized user can call this.',
+      parameters: {
+        path: { type: 'string', required: true, description: 'Local file path. Not a remote URL. Maximum 50MB.' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            path: { type: 'string', required: true },
+            name: { type: 'string', required: true },
+            bytes: { type: 'integer', required: true },
+            mimeType: { type: 'string', required: true },
+            previewKind: { type: 'string', required: true },
+            previewId: { type: 'string', required: true },
+            text: { type: 'string' },
+            preview: { type: 'string' },
+            attachmentId: { type: 'string', required: true },
+            image: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                attachmentId: { type: 'string', required: true },
+                mediaType: { type: 'string', required: true },
+                bytes: { type: 'integer', required: true },
+                width: { type: 'integer' },
+                height: { type: 'integer' },
+                name: { type: 'string' },
+              },
+            },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: 'Sent file "' + value.name + '" (' + value.bytes + ' bytes, ' + value.previewKind + ').',
+        }],
+        presentationMeta: (_args, value) => ({
+          path: value.path,
+          title: value.name,
+          telegramFile: {
+            ...(value.attachmentId ? { attachmentId: value.attachmentId } : {}),
+            name: value.name,
+            bytes: value.bytes,
+            path: value.path,
+          },
+          mm: mmFileBlock(value),
+        }),
+      },
+      isConcurrencySafe: () => true,
+      async execute(args) {
+        const loaded = loadLocalFile(args.path)
+        const previewKind = classifyPreview(loaded.name)
+        const previewId = registerFilePreview({
+          path: loaded.full,
+          name: loaded.name,
+          mimeType: loaded.mimeType,
+          bytes: loaded.bytes,
+        })
+        const extracted = extractContentPreview(loaded.data, loaded.name)
+        const text = extracted?.text || textPreview(loaded.data, previewKind)
+        const previewBody = {}
+        if (extracted?.rows) previewBody.rows = extracted.rows
+        if (extracted?.slides) previewBody.slides = extracted.slides
+        const preview = Object.keys(previewBody).length ? JSON.stringify(previewBody) : ''
+        const attachments = imgCtx.get('attachments')
+        let attachmentId = ''
+        let image
+        if (previewKind === 'image' && attachments && typeof attachments.saveImage === 'function') {
+          try {
+            const ref = await attachments.saveImage({
+              data: loaded.data,
+              mediaType: loaded.mediaType,
+              name: loaded.name,
+            })
+            const id = String(ref?.attachmentId ?? '').trim()
+            if (id) {
+              image = {
+                attachmentId: id,
+                mediaType: ref.mediaType || loaded.mimeType,
+                bytes: Number(ref.bytes ?? loaded.bytes),
+                width: Number(ref.width ?? 0) || 0,
+                height: Number(ref.height ?? 0) || 0,
+                ...(ref.name || loaded.name ? { name: ref.name || loaded.name } : {}),
+              }
+            }
+          } catch { /* 图片附件存不下时，卡片改走预览地址 */ }
+        }
+        if (attachments && typeof attachments.saveFile === 'function') {
+          try {
+            const ref = await attachments.saveFile({ data: loaded.data, name: loaded.name })
+            attachmentId = String(ref?.attachmentId ?? '').trim()
+          } catch (error) {
+            const code = error && error.code
+            const message = String(error?.message ?? error)
+            if (code !== 'ATTACHMENT_FILES_UNSUPPORTED' && !message.includes('verbatim files')) throw error
+          }
+        }
+        return {
+          path: loaded.full,
+          name: loaded.name,
+          bytes: loaded.bytes,
+          mimeType: loaded.mimeType,
+          previewKind,
+          previewId,
+          ...(text ? { text } : {}),
+          ...(preview ? { preview } : {}),
+          attachmentId,
+          ...(image ? { image } : {}),
+        }
+      },
+    }))
   })
 }

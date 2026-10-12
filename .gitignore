@@ -32,3 +32,7 @@ src/components/desktop/**/dist/
 # Hand-made edit backups (lib/client.js.bak-before-…)
 *.bak
 *.bak-*
+
+# 构建产物（npm run build / build:desktop 生成）
+lib/gmail-server.mjs
+src/components/desktop/**/dist-build/

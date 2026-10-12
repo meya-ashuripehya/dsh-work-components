@@ -4,7 +4,7 @@
  * 复用 @wsz987/channel-core / channel-harness / channel-telegram 0.5.1（vendor/wsz987/ 下的打补丁副本，
  * 补丁见 vendor/wsz987/patches/）：
  *   - channel-telegram：getMe / deleteWebhook / 接收循环失败可无限退避重试、接收看门狗、单条更新处理预算；
- *   - channel-harness：流式工具循环正文去重、inboundPreempt 入站插队、工具结果图片（mm_send_image 等）转发为 Telegram 图片。
+ *   - channel-harness：流式工具循环正文去重、inboundPreempt 入站插队、工具结果图片（mm_send_image 等）转发为 Telegram 图片，工具结果文件（mm_send_file）转发为 Telegram 文档。
  *     地图标点（kind place）不转发预览图，改由本模块调用 sendVenue（坐标须已是 WGS-84）。
  *     日历（kind calendar）另发一条 HTML 月历，天气用表情符号。
  *
@@ -26,9 +26,17 @@ import { ProxyAgent, fetch as undiciFetch } from 'undici'
 import { join } from 'node:path'
 import { installMapPlaceDelivery } from './place.mjs'
 import { installCalendarDelivery } from './calendar.mjs'
+import { installFileDelivery } from './files.mjs'
+import { DENY_MESSAGE, createOwnerGate, installOwnerGate, setActiveGate, clearActiveGate, resolveAuthorizedIds } from './owner-gate.mjs'
+import { installGroupRoute, setGroupPreset } from './group-route.mjs'
 
 installMapPlaceDelivery(harness.ReplyRouter)
 installCalendarDelivery(harness.ReplyRouter)
+installFileDelivery(harness.ReplyRouter)
+installOwnerGate(harness.ReplyContextStore)
+installGroupRoute(harness.AgentRouter)
+
+export { DENY_MESSAGE, createOwnerGate, resolveAuthorizedIds, setGroupPreset }
 
 /** channel-harness 需要的宿主服务（与它自己的 inject 相同，去掉本 fork 提供的 channels）。 */
 export const HOST_SERVICES = harness.inject.filter((n) => n !== 'channels')
@@ -41,6 +49,8 @@ export const PATCH_MARKERS = {
   harnessImages: typeof harness.ReplyRouter?.prototype?.deliverTurnImages === 'function',
   mapPlace: harness.ReplyRouter?.prototype?.__dshMapPlace === true,
   calendarDelivery: harness.ReplyRouter?.prototype?.__dshCalendar === true,
+  ownerGate: harness.ReplyContextStore?.prototype?.__dshOwnerGate === true,
+  groupRoute: harness.AgentRouter?.prototype?.__dshGroupRoute === true,
   harnessPreempt: Object.prototype.hasOwnProperty.call(harness.Config({}), 'inboundPreempt'),
   harnessSegments: typeof harness.ReplyRouter?.prototype?.flushProcess === 'function',
   telegramDraftStream: typeof TelegramAdapter.prototype.resolveStreamingMode === 'function',
@@ -70,26 +80,63 @@ export function parseIdList(raw) {
   return [...new Set(String(raw ?? '').split(/[\s,，;；]+/).map((s) => s.trim()).filter(Boolean))]
 }
 
+function groupRule(senderPolicy, allowFrom, requireMention) {
+  const sender = senderPolicy === 'allowlist' ? 'allowlist' : 'open'
+  return {
+    enabled: true,
+    senderPolicy: sender,
+    allowFrom: sender === 'allowlist' ? [...allowFrom] : [],
+    requireMention: requireMention !== false,
+  }
+}
+
 /**
- * 由卡片里的「所有者 / 允许的用户」生成访问策略（仅私聊；群组规则沿用已存策略）。
- * ownerId 为空时返回 null：不改动已存策略。
+ * group 省略时沿用已存群规则。传入时以卡片为准：
+ * disabled 清空群；allowlist 为每个群 ID 写一条规则；open 只写 defaultGroupRule。
  */
-export function buildAccessPolicy(existing, ownerId, allowFromRaw) {
+function groupSection(existing, allowFrom, group) {
+  if (group == null) {
+    const groupPolicy = existing?.groupPolicy ?? 'disabled'
+    return {
+      groupPolicy,
+      groups: groupPolicy === 'open' ? {} : { ...(existing?.groups ?? {}) },
+      ...(groupPolicy === 'open' && existing?.defaultGroupRule ? { defaultGroupRule: existing.defaultGroupRule } : {}),
+    }
+  }
+  const policy = String(group.policy || 'disabled')
+  if (policy !== 'disabled' && policy !== 'allowlist' && policy !== 'open') {
+    throw new Error('群聊策略必须是关闭、指定群或所有群')
+  }
+  if (policy === 'disabled') return { groupPolicy: 'disabled', groups: {} }
+  if (policy === 'open') return { groupPolicy: 'open', groups: {}, defaultGroupRule: groupRule(group.senderPolicy, allowFrom, group.requireMention) }
+  const ids = parseIdList(group.chatIds)
+  for (const id of ids) {
+    if (!/^-?\d{1,20}$/.test(id)) throw new Error(`群 ID「${id}」不是 Telegram 数字聊天 ID`)
+  }
+  const groups = {}
+  for (const id of ids) groups[id] = groupRule(group.senderPolicy, allowFrom, group.requireMention)
+  return { groupPolicy: 'allowlist', groups }
+}
+
+/**
+ * 由卡片里的所有者、私聊白名单和群聊设置生成访问策略。
+ * ownerId 为空时返回 null：不改动已存策略（群聊设置同样不写入）。
+ * group 省略时群规则保持原样，供未带群聊参数的调用方使用。
+ */
+export function buildAccessPolicy(existing, ownerId, allowFromRaw, group) {
   const owner = String(ownerId ?? '').trim()
   if (!owner) return null
   if (!/^-?\d{1,20}$/.test(owner)) throw new Error('所有者 ID 必须是 Telegram 数字用户 ID')
   const extra = parseIdList(allowFromRaw).filter((id) => id !== owner)
   for (const id of extra) if (!/^-?\d{1,20}$/.test(id)) throw new Error(`允许的用户 ID「${id}」不是 Telegram 数字用户 ID`)
-  const groupPolicy = existing?.groupPolicy ?? 'disabled'
+  const allowFrom = [owner, ...extra]
   const policy = {
     version: 1,
     preset: extra.length ? 'allowlist' : 'owner-only',
     ownerId: owner,
     dmPolicy: 'allowlist',
-    allowFrom: [owner, ...extra],
-    groupPolicy,
-    groups: groupPolicy === 'open' ? {} : (existing?.groups ?? {}),
-    ...(groupPolicy === 'open' && existing?.defaultGroupRule ? { defaultGroupRule: existing.defaultGroupRule } : {}),
+    allowFrom,
+    ...groupSection(existing, allowFrom, group),
   }
   const parsed = channelAccessPolicySchema.safeParse(policy)
   if (!parsed.success) throw new Error('访问策略无效：' + parsed.error.message)
@@ -114,10 +161,10 @@ export async function readAccessPolicy() {
   }
 }
 
-/** 写访问策略（与已存相同时不写）。返回 'unchanged' | 'written' | 'kept'。 */
-export async function applyAccessPolicy(ownerId, allowFromRaw) {
+/** 写访问策略（与已存相同时不写）。返回 'unchanged' | 'written' | 'kept'。group 见 buildAccessPolicy。 */
+export async function applyAccessPolicy(ownerId, allowFromRaw, group) {
   const current = await readAccessPolicy()
-  const next = buildAccessPolicy(current.state === 'ok' ? current.policy : null, ownerId, allowFromRaw)
+  const next = buildAccessPolicy(current.state === 'ok' ? current.policy : null, ownerId, allowFromRaw, group)
   if (!next) return 'kept'
   if (current.state === 'ok' && JSON.stringify(current.policy) === JSON.stringify(next)) return 'unchanged'
   await policyStorage().set(accessPolicyStorageKey(CHANNEL_ID, ACCOUNT_ID), JSON.stringify(next))
@@ -215,7 +262,12 @@ export function startTelegram(ctx, options) {
     token, proxy, inboundPreempt, preset, onConflict,
     includeMetadataPrefix, routingMode, channelRoutes, conversationRoutes, format,
     streamMode, sendReasoning, showToolCalls, reasoningMaxChars,
+    groupPreset, authorizedIds = [], debugTrace = false,
   } = options
+  // 入站排查日志（~/.dsh/dsh-channels/telegram-inbound.log）只在卡片「排查日志」打开时写。
+  if (debugTrace === true) process.env.DSH_TELEGRAM_TRACE = '1'
+  else delete process.env.DSH_TELEGRAM_TRACE
+  setGroupPreset(groupPreset)
   const proxyUrl = validateProxy(proxy)
   const tgConfig = telegramAdapterConfig({ format, streamMode })
   const hConfig = harnessConfig({
@@ -273,8 +325,16 @@ export function startTelegram(ctx, options) {
       // ③ Telegram 适配器：等 channels 与宿主服务都就绪后再开始长轮询，避免 harness 未就绪时吞掉消息。
       sub.plugin({
         name: 'channel-telegram',
-        inject: ['channels', ...HOST_SERVICES],
+        // 'tools'：授权用户闸门必须先于长轮询就位；宿主没有 tools 服务时不开始接收（失败即关闭）。
+        inject: ['channels', 'tools', ...HOST_SERVICES],
         apply(c) {
+          const gate = createOwnerGate({
+            authorized: authorizedIds,
+            getAgent: (sessionId) => { try { return c.agents?.get?.(sessionId) } catch { return undefined } },
+          })
+          setActiveGate(gate)
+          const offGuard = c.tools.guard((exec) => gate.check(exec))
+          c.effect?.(() => () => { try { offGuard?.() } catch { /* ignore */ } clearActiveGate(gate) })
           adapter = new TelegramAdapter(tgConfig, {
             token,
             transport: new FetchTransport(tgConfig.baseUrl, { timeoutMs: tgConfig.timeoutMs, ...(fetchImpl ? { fetchImpl } : {}) }),

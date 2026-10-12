@@ -1,0 +1,38 @@
+name: CI
+
+# 上架清单：PR / push 证明可构建，并跑 check + smoke（真实调用 mm_send_image 等，不仅加载）。
+# 发布仍由 publish.yml（tag v*）负责 desktop --require + npm publish。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      # check.mjs 在 CI 下要求桌面经纪人 exe 存在（与 publish 一致）。
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - run: npm run build:desktop -- --require
+
+      - run: npm run build
+
+      - run: npm run check
+
+      - run: npm run smoke

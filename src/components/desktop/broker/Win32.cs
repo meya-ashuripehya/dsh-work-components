@@ -4,7 +4,7 @@ using System.Text;
 namespace DSHDesktopBroker;
 
 /// <summary>前台确认、SendInput、完整性与截图。坐标是 Per-Monitor V2 下的物理像素。</summary>
-static class Win32
+static partial class Win32
 {
     public const int IntegrityMedium = 0x2000;
     public const int IntegrityHigh = 0x3000;
@@ -163,8 +163,13 @@ static class Win32
         return root == IntPtr.Zero ? hwnd : root;
     }
 
-    public static void Click(int x, int y)
+    /// <summary>
+    /// 在物理像素上单击。按下和抬起先留在落点，等目标处理完再把系统光标送回。
+    /// 同一次输入里立刻移走光标时，点击会送到原来的位置。
+    /// </summary>
+    public static bool Click(int x, int y)
     {
+        var have = GetCursorPos(out var back);
         var (ax, ay) = ToAbsolute(x, y);
         const uint flags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
         var inputs = new[]
@@ -173,13 +178,17 @@ static class Win32
             Mouse(ax, ay, MOUSEEVENTF_LEFTDOWN | flags),
             Mouse(ax, ay, MOUSEEVENTF_LEFTUP | flags),
         };
-        _ = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (sent == inputs.Length) Thread.Sleep(70);
+        if (have) SetCursorPos(back.X, back.Y);
+        return sent == inputs.Length;
     }
 
-    /// <summary>把光标放到物理像素上，再按一格 120 发送滚轮。horizontal 为真时走水平滚轮。</summary>
-    public static void Wheel(int x, int y, int delta, bool horizontal)
+    /// <summary>在物理像素上滚一格 120，等滚轮送出后再把系统光标送回。horizontal 为真时走水平滚轮。</summary>
+    public static bool Wheel(int x, int y, int delta, bool horizontal)
     {
-        if (delta == 0) return;
+        if (delta == 0) return false;
+        var have = GetCursorPos(out var back);
         var (ax, ay) = ToAbsolute(x, y);
         const uint moveFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE;
         var wheelFlag = (horizontal ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL) | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
@@ -189,7 +198,10 @@ static class Win32
         inputs[0] = Mouse(ax, ay, moveFlags);
         for (var i = 0; i < count; i++)
             inputs[i + 1] = MouseWheel(ax, ay, step, wheelFlag);
-        _ = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (sent == inputs.Length) Thread.Sleep(40);
+        if (have) SetCursorPos(back.X, back.Y);
+        return sent == inputs.Length;
     }
 
     /// <summary>把滚轮发给 Chromium 内容子窗口，不发给顶层窗口。一格 120。</summary>
@@ -446,6 +458,8 @@ static class Win32
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
     [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT point);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
     [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);

@@ -99,5 +99,17 @@ await build({
   logLevel: 'info',
 })
 
+// Gmail：插件自带的 IMAP/SMTP 服务，单独成文件，由组件以 stdio 拉起。
+await build({
+  entryPoints: [join(root, 'src', 'components', 'gmail', 'server.mjs')],
+  outfile: join(root, 'lib', 'gmail-server.mjs'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+  banner: { js: '/* dsh-workbench Gmail IMAP/SMTP server. Original code: MIT. */' },
+  logLevel: 'info',
+})
+
 // 桌面控制经纪人：dist 缺失或源码更新时 dotnet publish；没有 dotnet 时提示并跳过（CI 发布用 npm run build:desktop -- --require）。
 execFileSync(process.execPath, [join(root, 'scripts', 'build-desktop.mjs')], { stdio: 'inherit' })

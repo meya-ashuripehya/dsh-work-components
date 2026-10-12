@@ -8,6 +8,10 @@ import { attachConsole, run } from '../src/tools.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 
+// 子进程（run() 拉起的 node）继承本进程 env；本机设了 NODE_USE_ENV_PROXY 等时 Node 会在 stderr 打实验性警告，
+// 被当成「最后一行进度」导致断言误报。冒烟只关心业务输出，统一关掉 Node 警告。
+process.env.NODE_NO_WARNINGS = '1'
+
 // 控制台输出进 live / 环形缓冲，不进日志；失败时把最后几行追加进日志。
 {
   const job = { log: [], live: '' }
@@ -239,10 +243,11 @@ console.log('settings secrets masked: GET hides, mask round-trip keeps, empty cl
   if (g.text.includes(tok) || g.json.value.telegramToken !== g.json.secretMask) throw new Error('GET /settings must return the mask for a saved telegramToken')
   await call('POST', { ...g.json.value })
   if (credStore.get('TELEGRAM_BOT_TOKEN') !== tok) throw new Error('posting the mask back must keep the saved bot token')
+  const tgForks = () => forks.filter((f) => f.name === 'dsh-workbench-telegram')
   const on = await call('POST', { telegramEnabled: true })
   if (on.status !== 200) throw new Error('enabling telegram failed: ' + on.json.error)
   tg = await tgItem()
-  if (tg.status !== 'disconnected' || tg.detail !== TAKEOVER || forks.length) throw new Error('with dsh-telegram-temp loaded telegram must not start; got ' + tg.status + ' / ' + tg.detail + ' / forks ' + forks.length)
+  if (tg.status !== 'disconnected' || tg.detail !== TAKEOVER || tgForks().length) throw new Error('with dsh-telegram-temp loaded telegram must not start; got ' + tg.status + ' / ' + tg.detail + ' / telegram forks ' + tgForks().length)
   console.log('telegram takeover guard ok:', tg.detail)
 
   // 移除独立插件后（这里改假 profile、关再开）才启动：动态加载 lib/channel-telegram.mjs，挂一个 fork；访问策略写到临时 DSH_HOME。
@@ -254,14 +259,15 @@ console.log('settings secrets masked: GET hides, mask round-trip keeps, empty cl
     const started = await call('POST', { telegramEnabled: true, telegramOwnerId: '10001', telegramAllowFrom: '10002, 10003' })
     if (started.status !== 200) throw new Error('enabling telegram failed: ' + started.json.error)
     tg = await tgItem()
-    if (forks.length !== 1 || forks[0].name !== 'dsh-workbench-telegram') throw new Error('telegram should mount exactly one fork, got ' + forks.length)
+    const mounted = tgForks()
+    if (mounted.length !== 1) throw new Error('telegram should mount exactly one fork, got ' + mounted.length + ' / ' + forks.map((f) => f.name).join(','))
     if (tg.status !== 'connecting' || !tg.connection) throw new Error('telegram should be connecting (host services missing in smoke), got ' + tg.status + ' / ' + tg.detail)
     const policyFile = join(process.env.DSH_HOME, 'dsh-channels', 'storage', 'access', 'policy', 'v1', 'telegram', 'main')
     if (!existsSync(policyFile)) throw new Error('access policy not written under DSH_HOME/dsh-channels/storage')
     const policy = JSON.parse(readFileSync(policyFile, 'utf8'))
-    if (policy.ownerId !== '10001' || policy.allowFrom.join() !== '10001,10002,10003' || policy.dmPolicy !== 'allowlist') throw new Error('access policy mismatch: ' + JSON.stringify(policy))
+    if (policy.ownerId !== '10001' || policy.allowFrom.join() !== '10001,10002,10003' || policy.dmPolicy !== 'allowlist' || policy.groupPolicy !== 'disabled' || Object.keys(policy.groups || {}).length) throw new Error('access policy mismatch: ' + JSON.stringify(policy))
     const off = await call('POST', { telegramEnabled: false })
-    if (off.status !== 200 || !forks[0].disposed || (await tgItem()).status !== 'off') throw new Error('disabling telegram must dispose its fork')
+    if (off.status !== 200 || !mounted[0].disposed || (await tgItem()).status !== 'off') throw new Error('disabling telegram must dispose its fork')
     console.log('telegram start/stop ok: one fork mounted then disposed; status', tg.status, '→ off; access policy written to scratch DSH_HOME')
   } finally {
     if (prevHome === undefined) delete process.env.DSH_HOME
@@ -272,6 +278,24 @@ console.log('settings secrets masked: GET hides, mask round-trip keeps, empty cl
   const red = rt.sanitizeLogLine([`GET https://api.telegram.org/bot${tok}/getUpdates failed`, new Error(`token ${tok}`)])
   if (red.includes(tok) || red.includes(tok.split(':')[1])) throw new Error('sanitizeLogLine must redact bot tokens')
   if (!rt.isPollingConflict('409: Conflict: terminated by other getUpdates request') || rt.isPollingConflict('sent 4096 bytes')) throw new Error('isPollingConflict mismatch')
+  const listed = rt.buildAccessPolicy(null, '10001', '10002', {
+    policy: 'allowlist', chatIds: '-100123, -100456', requireMention: true, senderPolicy: 'allowlist',
+  })
+  const rule = listed.groups['-100123']
+  if (listed.groupPolicy !== 'allowlist' || listed.defaultGroupRule || !rule || !listed.groups['-100456'] || rule.requireMention !== true || rule.senderPolicy !== 'allowlist' || rule.allowFrom.join() !== '10001,10002') {
+    throw new Error('allowlist group policy mismatch: ' + JSON.stringify(listed))
+  }
+  const opened = rt.buildAccessPolicy(null, '10001', '', { policy: 'open', chatIds: '-1', requireMention: false, senderPolicy: 'open' })
+  if (opened.groupPolicy !== 'open' || Object.keys(opened.groups).length || opened.defaultGroupRule?.enabled !== true || opened.defaultGroupRule.requireMention !== false || opened.defaultGroupRule.allowFrom.length) {
+    throw new Error('open group policy mismatch: ' + JSON.stringify(opened))
+  }
+  const closed = rt.buildAccessPolicy(listed, '10001', '', { policy: 'disabled', chatIds: '-100123', requireMention: true, senderPolicy: 'open' })
+  if (closed.groupPolicy !== 'disabled' || Object.keys(closed.groups).length || closed.defaultGroupRule) throw new Error('disabled group policy mismatch: ' + JSON.stringify(closed))
+  const kept = rt.buildAccessPolicy(listed, '10001', '')
+  if (kept.groupPolicy !== 'allowlist' || !kept.groups['-100123']) throw new Error('omitted group options should keep stored groups')
+  let rejected = false
+  try { rt.buildAccessPolicy(null, '10001', '', { policy: 'allowlist', chatIds: 'not-an-id', requireMention: true, senderPolicy: 'open' }) } catch { rejected = true }
+  if (!rejected) throw new Error('invalid group id should throw')
   const routes = rt.parseRouteMap('telegram:guest, qq:guest\n6153059771:lingsnow')
   if (routes.telegram?.preset !== 'guest' || routes['6153059771']?.preset !== 'lingsnow') throw new Error('parseRouteMap mismatch')
   const hc = rt.harnessConfig({

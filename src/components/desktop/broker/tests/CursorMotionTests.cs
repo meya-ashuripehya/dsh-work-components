@@ -52,4 +52,33 @@ public class CursorMotionTests
         Assert.InRange(MathF.Abs(y - midY), 0, 8);
         Assert.Equal(rest, heading, 0.2f);
     }
+
+    [Fact]
+    public void EntranceStaysNearTheEdgeAtTheStart()
+    {
+        var start = CursorMotion.OffscreenStart(960, 540, 0, 0, 1920, 1080);
+        var plan = CursorMotion.Build(start.x, start.y, 960, 540, start.departX, start.departY);
+        Assert.True(plan.Moves);
+        Assert.True(plan.Linear);
+        Assert.InRange(plan.DurationMs, 780, 1400);
+        CursorMotion.Sample(plan, 0f, out var x0, out var y0, out _);
+        CursorMotion.Sample(plan, 0.12f, out var x, out var y, out _);
+        Assert.True(y0 < 0f);
+        Assert.True(y < 160f);
+        var moved = MathF.Sqrt((x - x0) * (x - x0) + (y - y0) * (y - y0));
+        Assert.True(moved > 30f);
+    }
+
+    [Fact]
+    public void NearTheLeftEdgeTheVisibleStartIsOnScreen()
+    {
+        var start = CursorMotion.OffscreenStart(32, 532, 0, 0, 1920, 1080);
+        var plan = CursorMotion.Build(start.x, start.y, 32, 532, start.departX, start.departY);
+        var u = CursorMotion.FirstOnScreenU(plan, 0, 0, 1920, 1080);
+        CursorMotion.Sample(plan, u, out var x, out var y, out _);
+        Assert.True(u > 0.15f);
+        Assert.True(u < 1f);
+        Assert.InRange(x, 8f, 80f);
+        Assert.InRange(y, 480f, 620f);
+    }
 }

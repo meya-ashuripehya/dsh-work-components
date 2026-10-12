@@ -1,0 +1,14 @@
+diff --git a/lib/inbound.js b/lib/inbound.js
+index 7ce0ffc..d13e75e 100644
+--- a/lib/inbound.js
++++ b/lib/inbound.js
+@@ -6,6 +6,9 @@ import { dedupKey, isCallbackQueryUpdate, mapCallbackQuery, mapInbound, Telegram
+ const INBOUND_KINDS = ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query'];
+ /** Append one JSON line under ~/.dsh/dsh-channels. Never throws; never logs the token. */
+ function traceInbound(entry) {
++    // Opt-in: the Telegram card «排查日志» sets DSH_TELEGRAM_TRACE=1.
++    if (process.env.DSH_TELEGRAM_TRACE !== '1')
++        return;
+     try {
+         const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+         mkdirSync(dirname(file), { recursive: true });
