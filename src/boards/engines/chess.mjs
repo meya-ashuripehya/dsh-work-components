@@ -9,8 +9,8 @@ function square(file, rank) {
   return FILES[file] + String(rank)
 }
 
-export async function openChess(dir, root) {
-  const file = await bundleEntry(root, 'chess.mjs', {
+export async function openChess(dir) {
+  const file = await bundleEntry('chess', 'chess-engine', {
     entryPoints: [join(dir, 'src', 'index.ts')],
   })
   const mod = await import(pathToFileURL(file).href)

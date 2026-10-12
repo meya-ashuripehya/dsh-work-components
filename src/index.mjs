@@ -646,7 +646,7 @@ export function apply(ctx, config) {
             if (handled !== false) return
           }
           if (sub === '/boards' || sub.startsWith('/boards/')) {
-            const handled = await handleBoardsApi(req, res, sub, { sendJson, readBody, getConfig: () => current, root: dataDir() })
+            const handled = await handleBoardsApi(req, res, sub, { sendJson, readBody, getConfig: () => current })
             if (handled !== false) return
           }
           const filePreview = /^\/file-preview\/([a-f0-9]{32})$/.exec(sub)

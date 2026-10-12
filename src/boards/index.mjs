@@ -4,7 +4,7 @@
 import { closeSession } from './session.mjs'
 import { createBoardsTools } from './tools.mjs'
 
-export function createBoardsFeature(ctx, getConfig, options = {}) {
+export function createBoardsFeature(ctx, getConfig) {
   const log = ctx.logger ?? console
   const state = { status: 'off', detail: '未启用', fork: null, gen: 0 }
   let disposed = false
@@ -47,7 +47,7 @@ export function createBoardsFeature(ctx, getConfig, options = {}) {
         name: 'dsh-workbench-boards',
         apply(sub) {
           sub.inject(['tools'], (toolCtx) => {
-            for (const tool of createBoardsTools({ getConfig, root: options.root })) toolCtx.tools.register(tool)
+            for (const tool of createBoardsTools({ getConfig })) toolCtx.tools.register(tool)
           })
         },
       })

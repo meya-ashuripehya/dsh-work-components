@@ -1,26 +1,44 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { dataDir } from '../tools.mjs'
+import { boardsDir } from '../tools.mjs'
 import { BoardError } from './errors.mjs'
 import { assertMitLicense } from './license.mjs'
 import { BOARD_SOURCES, GAMES } from './sources.mjs'
 
-export function boardsRoot(root) {
-  return join(root || dataDir(), 'boards')
+/** 唯一的棋类根目录：<数据目录>/boards（见 ../tools.mjs boardsDir）。下载、读取、页面都走这里。 */
+export function boardsRoot() {
+  return boardsDir()
 }
 
-export function sourceDir(root, id) {
-  return join(boardsRoot(root), 'src', id)
+export function sourceDir(id) {
+  return join(boardsRoot(), 'src', id)
 }
 
-function markerFile(root, id) {
-  return join(boardsRoot(root), 'src', `${id}.commit`)
+function markerFile(id) {
+  return join(boardsRoot(), 'src', `${id}.commit`)
 }
 
-function readMarker(root, id) {
-  try { return readFileSync(markerFile(root, id), 'utf8').trim() } catch { return '' }
+function readMarker(id) {
+  try { return readFileSync(markerFile(id), 'utf8').trim() } catch { return '' }
+}
+
+/** 依赖这份源码的棋种。 */
+function gamesUsing(id) {
+  return Object.values(GAMES).filter((game) => game.sources.includes(id)).map((game) => game.id)
+}
+
+/** 删掉某棋种所有编译产物（runtime/<game>.mjs、runtime/<game>-<commit8>.mjs）。 */
+export function clearRuntime(game) {
+  const dir = join(boardsRoot(), 'runtime')
+  let names = []
+  try { names = readdirSync(dir) } catch { return }
+  for (const name of names) {
+    if (name === `${game}.mjs` || (name.startsWith(`${game}-`) && name.endsWith('.mjs'))) {
+      rmSync(join(dir, name), { force: true })
+    }
+  }
 }
 
 function git(args, cwd) {
@@ -55,9 +73,9 @@ export async function checkoutPinned(dir, repo, commit) {
   return revParse(dir)
 }
 
-export async function ensureSource(root, source) {
-  const dir = sourceDir(root, source.id)
-  const marked = readMarker(root, source.id)
+export async function ensureSource(source) {
+  const dir = sourceDir(source.id)
+  const marked = readMarker(source.id)
   if (marked === source.commit && existsSync(join(dir, 'LICENSE'))) {
     assertMitLicense(dir)
     return dir
@@ -67,12 +85,14 @@ export async function ensureSource(root, source) {
       const sha = await revParse(dir)
       if (sha === source.commit) {
         assertMitLicense(dir)
-        mkdirSync(join(boardsRoot(root), 'src'), { recursive: true })
-        writeFileSync(markerFile(root, source.id), source.commit + '\n', 'utf8')
+        mkdirSync(join(boardsRoot(), 'src'), { recursive: true })
+        writeFileSync(markerFile(source.id), source.commit + '\n', 'utf8')
         return dir
       }
     } catch { /* 重新检出 */ }
   }
+  // 重新下载：先清掉依赖这份源码的编译产物
+  for (const game of gamesUsing(source.id)) clearRuntime(game)
   rmSync(dir, { recursive: true, force: true })
   try {
     const sha = await checkoutPinned(dir, source.repo, source.commit)
@@ -86,30 +106,30 @@ export async function ensureSource(root, source) {
     if (error instanceof BoardError) throw error
     throw new BoardError(error?.message || '下载失败')
   }
-  mkdirSync(join(boardsRoot(root), 'src'), { recursive: true })
-  writeFileSync(markerFile(root, source.id), source.commit + '\n', 'utf8')
+  mkdirSync(join(boardsRoot(), 'src'), { recursive: true })
+  writeFileSync(markerFile(source.id), source.commit + '\n', 'utf8')
   return dir
 }
 
-export async function ensureGame(game, root) {
+export async function ensureGame(game) {
   const spec = GAMES[game]
   if (!spec) throw new BoardError('未知的棋种')
   const dirs = {}
-  for (const id of spec.sources) dirs[id] = await ensureSource(root, BOARD_SOURCES[id])
+  for (const id of spec.sources) dirs[id] = await ensureSource(BOARD_SOURCES[id])
   return dirs
 }
 
-function sourceReady(root, id) {
+function sourceReady(id) {
   const source = BOARD_SOURCES[id]
   if (!source) return false
-  return readMarker(root, id) === source.commit && existsSync(join(sourceDir(root, id), 'LICENSE'))
+  return readMarker(id) === source.commit && existsSync(join(sourceDir(id), 'LICENSE'))
 }
 
 /** 按棋种汇总。一类里的依赖全部就绪才算已下载。 */
-export function gameStatus(root) {
+export function gameStatus() {
   return Object.values(GAMES).map((game) => ({
     id: game.id,
     label: game.label,
-    ready: game.sources.every((id) => sourceReady(root, id)),
+    ready: game.sources.every((id) => sourceReady(id)),
   }))
 }

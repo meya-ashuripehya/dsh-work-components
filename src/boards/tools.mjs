@@ -10,10 +10,9 @@ function fail(error) {
   throw new BoardError(error?.message || '棋局操作失败')
 }
 
-/** @param {{ getConfig?: () => object, root?: string }} options */
+/** @param {{ getConfig?: () => object }} options */
 export function createBoardsTools(options = {}) {
   const getConfig = options.getConfig || (() => ({}))
-  const root = options.root
 
   const openTool = defineTool({
     name: 'board_open',
@@ -32,7 +31,6 @@ export function createBoardsTools(options = {}) {
         aiSide: args.aiSide,
         strict: args.strict,
         playerName: playerName(cfg.boardsPlayerName),
-        root,
       }).catch(fail)
     },
   })

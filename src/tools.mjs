@@ -121,6 +121,11 @@ export function toolsDir() {
   return adopted('tools') || join(dataDir(), 'tools')
 }
 
+/** 棋类数据根目录：固定为 <数据目录>/boards（与 tools/ 同一数据目录约定，不可自定义）。 */
+export function boardsDir() {
+  return join(dataDir(), 'boards')
+}
+
 /**
  * 用户本地兼容组件源码目录（ComponentModule，非 tools/ 安装产物）。
  * DSH_WORKBENCH_LOCAL_COMPONENTS_DIR → 沿用的旧目录 → <数据目录>/local-components。

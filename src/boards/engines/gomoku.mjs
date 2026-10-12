@@ -20,8 +20,8 @@ function parseCell(text) {
   return row * SIZE + col
 }
 
-export async function openGomoku(dir, root) {
-  const file = await bundleEntry(root, 'gomoku.mjs', {
+export async function openGomoku(dir) {
+  const file = await bundleEntry('gomoku', 'gomoku', {
     stdin: {
       contents: "export { advanceGame, createInitialState } from './game.ts'\n",
       resolveDir: join(dir, 'src', 'logic'),

@@ -42,10 +42,10 @@ function otherSide(game, side) {
   return pair[0] === side ? pair[1] : pair[0]
 }
 
-async function openEngine(game, dirs, root, options) {
+async function openEngine(game, dirs, options) {
   if (game === 'xiangqi') return openXiangqi(dirs.xiangqi)
-  if (game === 'chess') return openChess(dirs['chess-engine'], root)
-  if (game === 'gomoku') return openGomoku(dirs.gomoku, root)
+  if (game === 'chess') return openChess(dirs['chess-engine'])
+  if (game === 'gomoku') return openGomoku(dirs.gomoku)
   return openGo(dirs['go-board'], { strict: options.strict !== false, deadstonesDir: dirs.deadstones })
 }
 
@@ -93,9 +93,8 @@ export async function openSession(options = {}) {
   const aiSide = normalizeSide(game, options.aiSide)
   if (!aiSide) throw new BoardError('aiSide 只能是这盘棋的一方：红/黑、白/黑')
   const strict = options.strict !== false
-  const root = options.root
-  const dirs = options.dirs || await ensureGame(game, root)
-  const engine = await openEngine(game, dirs, root, { strict })
+  const dirs = options.dirs || await ensureGame(game)
+  const engine = await openEngine(game, dirs, { strict })
   current = {
     id: randomBytes(4).toString('hex'),
     game,

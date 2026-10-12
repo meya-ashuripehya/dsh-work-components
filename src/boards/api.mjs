@@ -26,10 +26,10 @@ function crossSite(req) {
 
 export async function handleBoardsApi(req, res, sub, helpers) {
   if (sub !== '/boards' && !sub.startsWith('/boards/')) return false
-  const { sendJson, readBody, getConfig, root } = helpers
+  const { sendJson, readBody, getConfig } = helpers
   try {
     if (sub === '/boards/status' && req.method === 'GET') {
-      sendJson(res, 200, { ok: true, games: gameStatus(root) })
+      sendJson(res, 200, { ok: true, games: gameStatus() })
       return true
     }
     if ((sub === '/boards/download' || sub === '/boards/download/') && req.method === 'POST') {
@@ -37,8 +37,8 @@ export async function handleBoardsApi(req, res, sub, helpers) {
       const body = JSON.parse(await readBody(req) || '{}')
       const game = String(body.game || '').trim()
       if (!GAMES[game]) throw new BoardError('game 只能是 xiangqi、chess、gomoku、go')
-      await ensureGame(game, root)
-      sendJson(res, 200, { ok: true, games: gameStatus(root) })
+      await ensureGame(game)
+      sendJson(res, 200, { ok: true, games: gameStatus() })
       return true
     }
     if (sub === '/boards/session' && req.method === 'GET') {
@@ -86,7 +86,7 @@ export function handleBoardsPage(req, res, sub) {
   if (!BOARD_SOURCES[id] || !rel || rel.includes('\0')) {
     res.writeHead(404); res.end('not found'); return true
   }
-  const root = sourceDir(undefined, id)
+  const root = sourceDir(id)
   const full = resolve(root, decodeURIComponent(rel))
   const nested = relative(root, full)
   if (nested.startsWith('..') || nested.includes(`..${sep}`) || !existsSync(full) || !statSync(full).isFile()) {

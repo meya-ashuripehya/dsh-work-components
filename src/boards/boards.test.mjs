@@ -1,12 +1,13 @@
 import { execFileSync } from 'node:child_process'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cpSync, mkdirSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createBoardsFeature } from './index.mjs'
-import { ensureSource, gameStatus, sourceDir } from './download.mjs'
+import { boardsRoot, clearRuntime, ensureSource, gameStatus, sourceDir } from './download.mjs'
+import { runtimeName } from './compile.mjs'
 import { openGo } from './engines/go.mjs'
 import { openGomoku } from './engines/gomoku.mjs'
 import { openXiangqi } from './engines/xiangqi.mjs'
@@ -52,11 +53,18 @@ async function emptyDir(prefix) {
   return mkdtemp(join(tmpdir(), prefix))
 }
 
+/** 棋类根目录固定在 <数据目录>/boards；测试用 DSH_WORKBENCH_DATA_DIR 指到临时目录。 */
+async function dataRoot(prefix) {
+  const root = await emptyDir(prefix)
+  process.env.DSH_WORKBENCH_DATA_DIR = root
+  return root
+}
+
 function placeSources(root) {
   mkdirSync(join(root, 'boards', 'src'), { recursive: true })
   for (const [id, folder] of Object.entries(FOLDERS)) {
     const from = join(MIRROR, folder)
-    const dest = sourceDir(root, id)
+    const dest = sourceDir(id)
     cpSync(from, dest, {
       recursive: true,
       filter: (src) => !src.split(/[\\/]/).includes('.git'),
@@ -70,26 +78,26 @@ function blank(n) {
 }
 
 test('download status is one row per game', async () => {
-  const root = await emptyDir('dsh-boards-status-')
+  const root = await dataRoot('dsh-boards-status-')
   try {
-    const empty = gameStatus(root)
+    const empty = gameStatus()
     assert.deepEqual(empty.map((game) => game.id), ['xiangqi', 'chess', 'gomoku', 'go'])
     assert.equal(empty.every((game) => game.ready === false), true)
     for (const id of GAMES.chess.sources) {
-      const dir = sourceDir(root, id)
+      const dir = sourceDir(id)
       mkdirSync(dir, { recursive: true })
       writeFileSync(join(dir, 'LICENSE'), MIT, 'utf8')
       writeFileSync(join(root, 'boards', 'src', `${id}.commit`), BOARD_SOURCES[id].commit + '\n', 'utf8')
     }
-    const chessReady = gameStatus(root)
+    const chessReady = gameStatus()
     assert.equal(chessReady.find((game) => game.id === 'chess').ready, true)
     assert.equal(chessReady.find((game) => game.id === 'go').ready, false)
     const partial = GAMES.go.sources[0]
-    const goDir = sourceDir(root, partial)
+    const goDir = sourceDir(partial)
     mkdirSync(goDir, { recursive: true })
     writeFileSync(join(goDir, 'LICENSE'), MIT, 'utf8')
     writeFileSync(join(root, 'boards', 'src', `${partial}.commit`), BOARD_SOURCES[partial].commit + '\n', 'utf8')
-    assert.equal(gameStatus(root).find((game) => game.id === 'go').ready, false)
+    assert.equal(gameStatus().find((game) => game.id === 'go').ready, false)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -106,17 +114,17 @@ test('names, license, engines, one session', async () => {
 
   const origin = await emptyDir('dsh-boards-origin-')
   const badOrigin = await emptyDir('dsh-boards-bad-')
-  const root = await emptyDir('dsh-boards-data-')
+  const root = await dataRoot('dsh-boards-data-')
   try {
     writeFileSync(join(origin, 'LICENSE'), MIT, 'utf8')
     git(['init'], origin)
     git(['add', 'LICENSE'], origin)
     git(['commit', '-m', 'mit'], origin)
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: origin, encoding: 'utf8' }).trim()
-    const installed = await ensureSource(root, { id: 'sample', label: '样例', repo: origin, commit: sha })
+    const installed = await ensureSource({ id: 'sample', label: '样例', repo: origin, commit: sha })
     assertMitLicense(installed)
     assert.equal(readLicenseText(installed).includes('MIT License'), true)
-    await ensureSource(root, { id: 'sample', label: '样例', repo: origin, commit: sha })
+    await ensureSource({ id: 'sample', label: '样例', repo: origin, commit: sha })
 
     writeFileSync(join(badOrigin, 'LICENSE'), 'GNU GENERAL PUBLIC LICENSE\n', 'utf8')
     git(['init'], badOrigin)
@@ -124,24 +132,24 @@ test('names, license, engines, one session', async () => {
     git(['commit', '-m', 'gpl'], badOrigin)
     const badSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: badOrigin, encoding: 'utf8' }).trim()
     await assert.rejects(
-      () => ensureSource(root, { id: 'rejected', label: '拒绝', repo: badOrigin, commit: badSha }),
+      () => ensureSource({ id: 'rejected', label: '拒绝', repo: badOrigin, commit: badSha }),
       /MIT/,
     )
 
     placeSources(root)
     resetSession()
 
-    const xiangqi = openXiangqi(sourceDir(root, 'xiangqi'))
+    const xiangqi = openXiangqi(sourceDir('xiangqi'))
     const before = xiangqi.view().fen
     xiangqi.play('炮2平5')
     assert.match(xiangqi.view().fen, /4C2C1/)
     assert.throws(() => xiangqi.play('4,9-4,7'), /合法/)
-    const fresh = openXiangqi(sourceDir(root, 'xiangqi'))
+    const fresh = openXiangqi(sourceDir('xiangqi'))
     assert.equal(fresh.view().fen, before)
     assert.throws(() => fresh.play('4,9-4,7'), /合法/)
     assert.equal(fresh.view().fen, before)
 
-    const tools = createBoardsTools({ root, getConfig: () => ({ boardsPlayerName: '  ' }) })
+    const tools = createBoardsTools({ getConfig: () => ({ boardsPlayerName: '  ' }) })
     const by = Object.fromEntries(tools.map((tool) => [tool.name, tool]))
     const opened = await by.board_open.execute({ game: 'chess', aiSide: 'white' })
     assert.equal(opened.playerName, 'user')
@@ -158,16 +166,16 @@ test('names, license, engines, one session', async () => {
     assert.equal(human.prompt, 'user下在了炮2平5,现在是你的回合')
     closeSession()
 
-    const gomoku = await openGomoku(sourceDir(root, 'gomoku'), root)
+    const gomoku = await openGomoku(sourceDir('gomoku'))
     await gomoku.play('A1')
     assert.throws(() => gomoku.play('A1'), /合法/)
     const line = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'D1', 'D2', 'E1']
-    const game = await openGomoku(sourceDir(root, 'gomoku'), root)
+    const game = await openGomoku(sourceDir('gomoku'))
     for (const move of line) await game.play(move)
     assert.equal(game.view().over.winner, 'black')
     assert.equal(game.view().over.reason, '五连')
 
-    const goDir = sourceDir(root, 'go-board')
+    const goDir = sourceDir('go-board')
     const suicide = blank(5)
     suicide[1][2] = -1
     suicide[2][1] = -1
@@ -210,6 +218,24 @@ test('names, license, engines, one session', async () => {
     resetSession()
     await rm(origin, { recursive: true, force: true })
     await rm(badOrigin, { recursive: true, force: true })
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('boards root is fixed under the data dir; runtime files carry the pinned commit', async () => {
+  const root = await dataRoot('dsh-boards-runtime-')
+  try {
+    assert.equal(boardsRoot(), join(root, 'boards'))
+    assert.equal(sourceDir('xiangqi'), join(root, 'boards', 'src', 'xiangqi'))
+    assert.equal(runtimeName('chess', BOARD_SOURCES['chess-engine'].commit), `chess-${BOARD_SOURCES['chess-engine'].commit.slice(0, 8)}.mjs`)
+    const dir = join(root, 'boards', 'runtime')
+    mkdirSync(dir, { recursive: true })
+    for (const name of ['chess.mjs', 'chess-deadbeef.mjs', 'gomoku-12345678.mjs']) writeFileSync(join(dir, name), '', 'utf8')
+    clearRuntime('chess')
+    assert.deepEqual(readdirSync(dir), ['gomoku-12345678.mjs'])
+    assert.equal(existsSync(join(dir, 'chess.mjs')), false)
+  } finally {
+    delete process.env.DSH_WORKBENCH_DATA_DIR
     await rm(root, { recursive: true, force: true })
   }
 })
