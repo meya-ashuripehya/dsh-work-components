@@ -49,7 +49,7 @@ test('events persist, edit, cover a date range, and delete', async () => {
     assert.equal(month.days.find((day) => day.date === '2026-10-10').events[0].title, '返程')
     assert.equal(month.days.find((day) => day.date === '2026-10-11').events[0].id, created.id)
     assert.equal(month.days.find((day) => day.date === '2026-10-12').events.length, 0)
-    assert.equal(month.weather, null)
+    assert.equal(month.weather, undefined)
     await deleteEvent(created.id, dir)
     assert.equal((await listEvents(dir)).length, 0)
     await assert.rejects(() => deleteEvent(created.id, dir), (error) => error.status === 404)

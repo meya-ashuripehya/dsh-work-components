@@ -41,7 +41,8 @@ export async function buildMonth(month, options = {}) {
     title: label,
     today: shanghaiToday(options.now),
     city,
-    weather,
+    // 无城市 / 无预报时省略 weather：工具输出 schema 里 weather 为可选 object，不接受 null（真实 DSH 运行时会判 INVALID_TOOL_OUTPUT）。
+    ...(weather ? { weather } : {}),
     days: days.map((day) => ({
       ...day,
       forecast: weather && !weather.error ? matchForecast(weather.forecasts, day.date) : null,
