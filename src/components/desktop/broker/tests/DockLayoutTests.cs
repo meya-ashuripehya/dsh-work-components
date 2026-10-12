@@ -120,4 +120,28 @@ public class DockLayoutTests
         Assert.Equal(507, outer.Right);
         Assert.Equal(707, outer.Bottom);
     }
+
+    [Theory]
+    [InlineData(0, false, 4)]
+    [InlineData(1, false, 4)]
+    [InlineData(2, false, 4)]
+    [InlineData(6, false, 4)]
+    [InlineData(7, false, 4)]
+    [InlineData(3, false, 3)]
+    [InlineData(2, true, 7)]
+    [InlineData(0, true, 4)]
+    public void SafeShowCmd_NeverHidesAndNeverMinimizesHost(int saved, bool allowMin, int expected)
+    {
+        var cmd = Win32.SafeShowCmd(saved, allowMin);
+        Assert.Equal(expected, cmd);
+        Assert.NotEqual(0, cmd);
+    }
+
+    [Theory]
+    [InlineData(0, 0, 0, 0, false)]
+    [InlineData(100, 100, 50, 300, false)]
+    [InlineData(-32000, -32000, -31840, -31972, false)]
+    [InlineData(0, 0, 800, 600, true)]
+    public void IsValidNormalRect_RejectsEmptyOrTiny(int l, int t, int r, int b, bool ok)
+        => Assert.Equal(ok, Win32.IsValidNormalRect(l, t, r, b));
 }

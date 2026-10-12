@@ -377,7 +377,7 @@ static class DockLayout
         {
             var list = new List<StateEntry>();
             var dsh = FindDshWindow();
-            if (_savedDsh is { } d && dsh != IntPtr.Zero) list.Add(new StateEntry(dsh.ToInt64(), true, d));
+            if (_savedDsh is { } d && dsh != IntPtr.Zero) list.Add(new StateEntry(dsh.ToInt64(), true, d, (uint)Win32.WindowPid(dsh)));
             foreach (var (k, p) in Saved) list.Add(new StateEntry(k, false, p, SavedPid.GetValueOrDefault(k)));
             Directory.CreateDirectory(Path.GetDirectoryName(StateFile)!);
             File.WriteAllText(StateFile, JsonSerializer.Serialize(list, JsonOpts));
@@ -409,9 +409,19 @@ static class DockLayout
         {
             if (!File.Exists(StateFile)) return;
             var list = JsonSerializer.Deserialize<List<StateEntry>>(File.ReadAllText(StateFile), JsonOpts) ?? new();
+            var dsh = FindDshWindow();
             foreach (var e in list)
             {
                 var h = new IntPtr(e.Hwnd);
+                if (e.IsDsh)
+                {
+                    // 只恢复同一个 DSH 窗口（句柄与进程号都对得上），且不同步、不隐藏、不最小化。
+                    if (h != IntPtr.Zero && h == dsh && (e.Pid == 0 || (uint)Win32.WindowPid(h) == e.Pid))
+                        Win32.RestoreHostWindow(h, e.P);
+                    continue;
+                }
+                // 旧句柄被复用成了 DSH 窗口：跳过，不能拿别的窗口的位置去摆 DSH。
+                if (h == dsh) continue;
                 // 旧文件没有 Pid 时只恢复仍可见的窗口，SafeRestorePlacement 不会显示隐藏窗口。
                 Win32.SafeRestorePlacement(h, e.P, e.Pid);
             }
@@ -422,15 +432,17 @@ static class DockLayout
 
     static void RestoreAllUnlocked()
     {
+        var dsh = FindDshWindow();
         if (_savedDsh is { } dshPlacement)
         {
-            var dsh = FindDshWindow();
-            if (dsh != IntPtr.Zero) Win32.TrySetPlacement(dsh, dshPlacement);
+            // 不用同步的 SetWindowPlacement：退出时 DSH 可能正等经纪人结束；保存的 showCmd 也可能是最小化。
+            if (dsh != IntPtr.Zero) Win32.RestoreHostWindow(dsh, dshPlacement);
             _savedDsh = null;
         }
         foreach (var (key, placement) in Saved)
         {
             var hwnd = new IntPtr(key);
+            if (hwnd == dsh) continue;
             Win32.SafeRestorePlacement(hwnd, placement, SavedPid.GetValueOrDefault(key));
         }
         Saved.Clear();

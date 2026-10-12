@@ -13,6 +13,7 @@ static partial class Win32
     const uint SWP_NOMOVE = 0x0002;
     const uint SWP_NOZORDER = 0x0004;
     const uint SWP_NOACTIVATE = 0x0010;
+    const uint SWP_ASYNCWINDOWPOS = 0x4000;
     const uint MONITOR_DEFAULTTONEAREST = 2;
     const uint TH32CS_SNAPPROCESS = 0x00000002;
 
@@ -112,10 +113,61 @@ static partial class Win32
         return IsWindowVisible(hwnd);
     }
 
+    /// <summary>保存的正常位置是否可用（非空、尺寸合理）。不可用时调用方应保持窗口原地不动。</summary>
+    internal static bool IsValidNormalRect(int left, int top, int right, int bottom)
+    {
+        var w = (long)right - left;
+        var h = (long)bottom - top;
+        return w >= 50 && h >= 50 && w <= 32767 && h <= 32767;
+    }
+
+    /// <summary>
+    /// 恢复用的 showCmd：只在“正常 / 最大化 / 最小化(仅 allowMinimize)”中选，且都不抢焦点；
+    /// 永不返回 SW_HIDE(0)。DSH 自身恢复时 allowMinimize=false：最小化会让托盘化的 DSH 直接消失。
+    /// </summary>
+    internal static int SafeShowCmd(int saved, bool allowMinimize) => saved switch
+    {
+        3 => 3,                                   // SW_SHOWMAXIMIZED
+        2 or 6 or 7 => allowMinimize ? 7 : 4,     // SW_SHOWMINNOACTIVE / SW_SHOWNOACTIVATE
+        _ => 4,                                   // SW_SHOWNOACTIVATE（含 0 / 1）
+    };
+
+    /// <summary>
+    /// 恢复 DSH 自身（本经纪人的宿主）的位置。全部用异步调用（SWP_ASYNCWINDOWPOS / ShowWindowAsync），
+    /// 不在 DSH 的 UI 线程上同步等待：经纪人退出时宿主可能正在等它结束，同步跨进程调用会互相卡死。
+    /// 从不隐藏、最小化或关闭窗口；保存值无效时保持原位。
+    /// </summary>
+    public static bool RestoreHostWindow(IntPtr hwnd, SavedPlacement placement)
+    {
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
+        if (!IsValidNormalRect(placement.NormalLeft, placement.NormalTop, placement.NormalRight, placement.NormalBottom)) return false;
+        if (SafeShowCmd(placement.ShowCmd, allowMinimize: false) == 3)
+            return IsZoomed(hwnd) || ShowWindowAsync(hwnd, 3);
+        // rcNormalPosition 是工作区坐标，SetWindowPos 要屏幕坐标。
+        var (l, t, r, b) = (placement.NormalLeft, placement.NormalTop, placement.NormalRight, placement.NormalBottom);
+        var nr = new RECT { Left = l, Top = t, Right = r, Bottom = b };
+        var mon = MonitorFromRect(ref nr, MONITOR_DEFAULTTONEAREST);
+        var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (mon != IntPtr.Zero && GetMonitorInfo(mon, ref mi))
+        {
+            var dx = mi.rcWork.Left - mi.rcMonitor.Left;
+            var dy = mi.rcWork.Top - mi.rcMonitor.Top;
+            l += dx; r += dx; t += dy; b += dy;
+        }
+        var c = ClampToWorkArea(l, t, r, b);
+        if (IsZoomed(hwnd) || IsIconic(hwnd)) _ = ShowWindowAsync(hwnd, 4);
+        return SetWindowPos(hwnd, IntPtr.Zero, c.Left, c.Top, c.Right - c.Left, c.Bottom - c.Top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+    }
+
+    [DllImport("user32.dll")]
+    static extern bool ShowWindowAsync(IntPtr hwnd, int nCmdShow);
+
     public static bool SafeRestorePlacement(IntPtr hwnd, SavedPlacement placement, uint expectedPid)
     {
         if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return false;
         if (expectedPid != 0 && (uint)WindowPid(hwnd) != expectedPid) return false;
+        if (!IsValidNormalRect(placement.NormalLeft, placement.NormalTop, placement.NormalRight, placement.NormalBottom)) return false;
         var fixedRect = ClampToWorkArea(placement.NormalLeft, placement.NormalTop, placement.NormalRight, placement.NormalBottom);
         placement = placement with
         {
@@ -127,12 +179,7 @@ static partial class Win32
             return SetWindowPos(hwnd, IntPtr.Zero, fixedRect.Left, fixedRect.Top,
                 fixedRect.Right - fixedRect.Left, fixedRect.Bottom - fixedRect.Top, SWP_NOZORDER | SWP_NOACTIVATE);
         }
-        var show = placement.ShowCmd switch
-        {
-            2 or 6 or 7 => 7,  // SW_SHOWMINNOACTIVE
-            3 => 3,            // SW_SHOWMAXIMIZED
-            _ => 4,            // SW_SHOWNOACTIVATE（含 0 / 1）
-        };
+        var show = SafeShowCmd(placement.ShowCmd, allowMinimize: true);
         return TrySetPlacement(hwnd, placement with { ShowCmd = show });
     }
 

@@ -25,6 +25,8 @@
  *     日程写在数据目录 calendar/events.json。天气预报走 Open-Meteo，只认设置里的城市名，未填写时不请求。
  *     笔记（默认关闭）：note_browse / note_search / note_get / note_save / note_delete / note_category_save /
  *     note_category_delete。三级结构（类型 › 类别 › 笔记），写在数据目录 notes/notes.json；只经工具召回，不注入提示。
+ *     棋类（默认关闭）：board_open / board_look / board_play / board_close。棋盘项目克隆在数据目录 boards/，
+ *     预览在 /dsh-workbench/boards/play。用户名留空时按 user。
  *     图片字节直接 saveImage，不读环境变量、不落地图文件。
  *     设置项 mapBypassProxy（默认开启）让高德请求直连，不使用系统代理。
  *
@@ -46,6 +48,8 @@ import { handleCalendarApi } from './calendar/api.mjs'
 import { createCalendarFeature } from './calendar/index.mjs'
 import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
+import { handleBoardsApi, handleBoardsPage } from './boards/api.mjs'
+import { createBoardsFeature } from './boards/index.mjs'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
@@ -173,6 +177,8 @@ export const SettingsSchema = z.object({
 
   calendarEnabled: z.boolean().default(true).description('启用日历工具（公历、农历、节气、法定节假日、日程、天气预报）。默认开启。关闭后卸下工具，已保存的日程仍保留。'),
   notesEnabled: z.boolean().default(false).description('启用笔记工具：智能体把总结出的要点与知识库中没有的新知识按「类型 › 类别 › 笔记」三级整理，并在后续任务中检索复用。默认关闭。关闭后卸下工具，已保存的笔记仍保留。'),
+  boardsEnabled: z.boolean().default(false).description('启用棋类工具：当前会话里的 AI 用 board_open / board_look / board_play / board_close 下中国象棋、国际象棋、五子棋或围棋。默认关闭。关闭后卸下工具并结束当前棋局，已下载的棋盘项目仍保留。'),
+  boardsPlayerName: z.string().default('').description('棋盘上你的名字。留空或只有空白时按 user。显示在棋盘你这一侧，并写进人落子后发给 AI 的那句话。'),
   calendarCity: z.string().default('').description('日历天气预报使用的城市名，例如成都。留空则不请求天气。数据来自 Open-Meteo，不使用高德 Key。请求沿用当前进程的代理。'),
 
   ...telegramSchemaShape(z),
@@ -441,12 +447,13 @@ export function apply(ctx, config) {
   const map = createMapFeature(ctx, () => current)
   const calendar = createCalendarFeature(ctx, () => current)
   const notes = createNotesFeature(ctx, () => current)
+  const boards = createBoardsFeature(ctx, () => current)
   const settings = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
   if (settings && typeof settings.register === 'function') {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync(); void map.sync(); void calendar.sync(); void notes.sync() })
+      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync(); void map.sync(); void calendar.sync(); void notes.sync(); void boards.sync() })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -495,6 +502,7 @@ export function apply(ctx, config) {
   void map.sync()
   void calendar.sync()
   void notes.sync()
+  void boards.sync()
   // 宿主的凭据服务可能晚于本插件就绪：就绪时重新同步一次 Telegram（令牌从 credentials 读取）。
   ctx.inject?.(['credentials'], (credCtx) => {
     credCtx.effect?.(() => { void telegram.resync() }, 'dsh-workbench: telegram credentials')
@@ -509,6 +517,7 @@ export function apply(ctx, config) {
       try { await map.dispose() } catch {}
       try { await calendar.dispose() } catch {}
       try { await notes.dispose() } catch {}
+      try { await boards.dispose() } catch {}
       try { await stopGamebotBody() } catch {}
     }
   }, 'dsh-workbench: components')
@@ -557,6 +566,7 @@ export function apply(ctx, config) {
             await map.sync()
             await calendar.sync()
             await notes.sync()
+            await boards.sync()
             return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
           }
           if (sub === '/components' && req.method === 'GET') {
@@ -635,6 +645,10 @@ export function apply(ctx, config) {
             const handled = await handleNotesApi(req, res, sub, { sendJson, readBody })
             if (handled !== false) return
           }
+          if (sub === '/boards' || sub.startsWith('/boards/')) {
+            const handled = await handleBoardsApi(req, res, sub, { sendJson, readBody, getConfig: () => current, root: dataDir() })
+            if (handled !== false) return
+          }
           const filePreview = /^\/file-preview\/([a-f0-9]{32})$/.exec(sub)
           if (filePreview && (req.method === 'GET' || req.method === 'HEAD')) {
             if (req.headers['sec-fetch-site'] === 'cross-site') {
@@ -681,7 +695,21 @@ export function apply(ctx, config) {
           }
         },
       })
-      return () => { offApi?.(); offAssets?.() }
+      const offBoards = webCtx.webServer.register({
+        kind: 'prefix',
+        path: '/dsh-workbench/boards',
+        handler: async (req, res) => {
+          try {
+            const url = new URL(req.url ?? '/', 'http://local')
+            const sub = url.pathname.slice('/dsh-workbench/boards'.length) || '/'
+            if (handleBoardsPage(req, res, sub)) return
+            res.writeHead(404); res.end('not found')
+          } catch (error) {
+            res.writeHead(500); res.end(String(error?.message ?? error))
+          }
+        },
+      })
+      return () => { offApi?.(); offAssets?.(); offBoards?.() }
     }, 'dsh-workbench: settings api')
   })
 
