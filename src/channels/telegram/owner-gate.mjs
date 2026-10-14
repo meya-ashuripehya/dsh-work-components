@@ -9,8 +9,9 @@
  *     任何监听都不能把拒绝改回允许。注册在插件上下文上 = 对所有 agent 生效，这里只拦本通道见过的会话。
  *
  * 判定按「当前这一轮」：会话从空闲到再次空闲之间收到的所有入站消息的发送者都必须是授权用户；
- * 其间只要有一条来自非授权用户（含插队消息），整轮的改动类工具都拒绝。未知发送者、
- * 没有正在进行的通道回合（例如定时任务唤醒）同样拒绝（失败即关闭）。
+ * 其间只要有一条来自非授权用户（含插队消息），整轮的改动类工具都拒绝；
+ * 本轮发送者未知同样拒绝（失败即关闭）。闸门只管「由 Telegram 入站消息触发的回合」：会话当前没有进行中的
+ * Telegram 回合时（桌面 / 本地界面在已绑定的会话里发话、其他通道、从未投递过的会话），不介入。
  */
 
 export const DENY_MESSAGE = '该请求来自非授权用户，无法使用会更改电脑的工具。'
@@ -18,6 +19,7 @@ export const DENY_MESSAGE = '该请求来自非授权用户，无法使用会更
 /**
  * 任何人触发的回合都可以用的工具：不读写本机文件、不执行命令、不操控桌面、不代发消息。
  * 不在此表中的工具（含所有 MCP 工具、子智能体、run_code、读本机文件 / 截图）一律视为改动类，仅授权用户可用。
+ * GPT Image 2 生图的 image_generate / image_edit 有意不列入：前者消耗 API 额度并写入数据目录，后者会读取本机任意图片并上传到第三方。
  */
 export const OPEN_TOOLS = new Set([
   'web_search',
@@ -30,6 +32,14 @@ export const OPEN_TOOLS = new Set([
   'group_memory',
   'read_channel_attachment',
   'mm_send_image',
+  // 棋类：只读 / 改内存里的棋局，不碰本机文件、命令或桌面。board_open（会下载棋库）、board_close 与 board_reset（会写 / 删本地存档）仍按改动类处理。
+  'board_look',
+  'board_play',
+  // 牌类：card_look 只读当前局面，card_play 只改内存里的这一手。card_open（会下载规则源）、card_close 与 card_reset（会写 / 删本地存档）仍按改动类处理。
+  'card_look',
+  'card_play',
+  // 只读分析：用已下载的辅助引擎算一次（时长上限 10 秒），不改棋局、不下载、不写文件。
+  'board_hint',
 ])
 
 export function isOpenTool(name) {
@@ -82,7 +92,10 @@ export function createOwnerGate({ authorized, getAgent } = {}) {
       const st = sessions.get(sid)
       if (!st) return undefined
       if (isOpenTool(exec?.name)) return undefined
-      if (!st.active || st.senders.size === 0) return DENY_MESSAGE
+      // No Telegram turn in progress: this turn was not triggered by a Telegram message (e.g. desktop UI
+      // typing into a channel-bound session, scheduled wake) -- not this gate's business.
+      if (!st.active) return undefined
+      if (st.senders.size === 0) return DENY_MESSAGE
       for (const sender of st.senders) if (!sender || !allow.has(sender)) return DENY_MESSAGE
       return undefined
     },

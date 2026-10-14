@@ -53,6 +53,7 @@
 | `tools/` | 「下载安装」落地的 uv / Python / Node.js / 各组件（可用 `DSH_WORKBENCH_TOOLS_DIR` 改） |
 | `local-components/` | 本地兼容组件源码（可用 `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR` 改） |
 | `gamebot/` | GameBot 的 Python 环境（`.venv`）与数据（`data/game-configs.json`、记忆等；含服务商密钥明文） |
+| `cards/` | 牌类规则源（`src/rlcard/`，用户从设置页下载，不随包分发）和按游戏、会话分开的存档（`saves/`） |
 
 从旧版本（直接在仓库目录里运行）升级时，首次启动会一次性迁移：仓库根的 `.dsh-workbench-settings.json` 移到 `settings.json`，`src/components/gamebot/data/` 移到 `gamebot/data/`；已有的 `tools/`、`local-components/` 里有绝对路径（venv），所以原地沿用并记录在 `legacy-locations.json`。迁移记录在 `migration.json`，不会重复执行。
 
@@ -62,7 +63,11 @@
 
 地图（默认关闭）：在设置页启用并保存高德 Web 服务 Key 后，提供地理编码、地点检索、路线规划、天气预报、地图标点卡片与可点击的路线图。标点卡片在页面上可打开高德地图；发到 Telegram 时改为原生命置，不再发送静态地图图片。路线图点开后进入高德导航页，并附带可在手机打开的网页分享链接与导航深链，坐标为 GCJ-02。可将分享链接通过 Telegram 发送，或复制到系统浏览器打开；该链接适用于 iOS 与 Android。导航深链（amapuri）供 Android 与 HarmonyOS 直接打开。上述方式不写入高德账号收藏夹。Key 只保存在设置页，不读取环境变量。设置项「绕过代理」默认开启，高德请求不使用系统或环境变量中的 HTTP 代理。静态地图预览经 `attachments.saveImage` 发出，不落盘缓存。媒体卡片中的图片可点击放大。
 
+GPT Image 2 生图（「多模态」分组，默认关闭）：在设置页填写 API Key、Base URL（默认 `https://api.openai.com/v1`）、模型（默认 `gpt-image-2`）与默认尺寸 / 质量并打开「启用」后，注册 `image_generate`（`POST {base}/images/generations`）与 `image_edit`（`POST {base}/images/edits`，multipart，1–16 张本地 png/jpg/webp 与可选 PNG 蒙版）。返回的 `b64_json` 或 `url` 图片保存到数据目录 `images/<YYYY-MM-DD>/`（上海时区），经 attachments 以图片块显示，并返回文件路径。「测试连接」只请求 `GET {base}/models`，不产生出图费用。API Key 为 secret 设置项，设置接口只返回掩码，错误信息中出现的 Key 会被打码。Telegram：两个工具都不在 `OPEN_TOOLS` 中，只有授权用户（所有者）触发的回合可用——`image_generate` 消耗付费额度，`image_edit` 会读取本机任意图片并上传到第三方。
+
 日历（默认开启）：`calendar_show`、`calendar_event_save`、`calendar_event_delete`。公历、农历、节气和中国法定节假日（含调休）由 `lunar-javascript` 离线计算，「今天」按 Asia/Shanghai。日程写在数据目录 `calendar/events.json`，不放进设置。天气预报来自 [Open-Meteo](https://open-meteo.com/)（CC BY 4.0），填写设置项「天气城市」后按接口能提供的最长天数查询，不使用高德 Key，请求沿用当前进程的代理。未填城市时历法与日程仍然可用。聊天卡片和设置页「日历」共用同一块月历，每种天气有一枚动态小图标。发到 Telegram 时，`calendar_show` 的卡片另成一条 HTML 月历（天气用对应表情），模型的文字回复仍走原通道。
+
+牌类（默认关闭）：`card_open`、`card_look`、`card_play`、`card_close`、`card_reset`。可打二十一点、勒杜克扑克、限注德州扑克、UNO（2 至 10 人）和斗地主。规则源是 [RLCard](https://github.com/datamllab/rlcard)（MIT，钉死提交），在设置页下载到数据目录，不随本插件分发，也不运行它的对局或智能体。牌桌在对话右侧；发到 Telegram 时每一步用新图片替换上一张。对手的暗牌在公开前不会出现在工具结果或图片里。
 
 ## 实装截图
 
@@ -80,6 +85,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
 | 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
 | 游戏 | Minecraft / 文明 VI / 视觉（徽标「已验证」与「实验性」，**默认关闭**） | 未启动 / 已启动 / 出错… | 共享 GameBot REST + 按游戏 MCP；仓库自带无需下载，首次启用准备 Python 环境 |
+| 游戏 | 牌类 | 未启用 / 已启用 | `card_open` 等；右侧牌桌；RLCard 在设置页按需下载，每种牌单独核对规则，不随包分发 |
 | 通用 | 桌面控制 / 会话控制 / uv / Node.js / 下载代理 | 已连接 / 可用 / 未安装 / 已设置… | 桌面控制随插件提供，打开「启用」即可；其余为会话能力、运行时与代理 |
 | 基础工具 | 添加工作组件 | 提示词工具 | Token 声明 + 可复制 AI 提示词：写成**本地**模块（不装进 `tools/`）。选型**功能最全优先**；应补可配置/必填参数（中文 label）；本地阶段 `keys` + `launch`/`spec` 硬编码默认，拟议 schema 写注释；自定义键未进 schema 前不持久化。模块就位后重启 DSH，再在设置页下载安装。 |
 
@@ -281,6 +287,44 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 
 **Vendor 与补丁（Telegram）：** `vendor/wsz987/<包>` 由 npm 上的 `@wsz987/channel-{core,harness,telegram}@0.5.1` 加上 `vendor/wsz987/patches/*.patch` 生成（`npm run vendor:channels`；`npm run check` 校验）。补丁涵盖长轮询停滞守护、流式正文去重、入站插队、工具结果图片转发等。发布包不携带 `vendor/wsz987/`，只携带已打好补丁的 `lib/channel-telegram.mjs`。细节见上文「通道 · Telegram」与 [NOTICE](./NOTICE)。
 
+### 牌类
+
+工具是 `card_open`、`card_look`、`card_play`、`card_close`、`card_reset`。`card_open` 的 `game` 可以是 `blackjack`（可省略）、`leduc`、`limit-holdem`、`uno`、`doudizhu`。规则源**不随本仓库或 npm 包分发**。设置页下载 [RLCard](https://github.com/datamllab/rlcard) 的钉死提交 `d7d0a957baf4cc7225a50522adb0164bf130a9d0`（MIT）到 `<数据目录>/cards/src/rlcard/`。一份检出给全部牌类用。许可证必须是声明的那一种，并且属于 MIT、BSD、ISC 或 Apache-2.0；GPL 等 copyleft、多份许可证混在一起、或正文对不上，都会拒绝装载。每种牌再核对自己的规则片段，缺哪一种就只拒绝那一种：
+
+| game | 牌 | 核对 |
+|---|---|---|
+| `blackjack` | 二十一点 | `rlcard/games/blackjack/`：A 计 11、十与花牌计 10、爆牌时把 A 减 10、庄家不足 17 点必须要牌、终局前藏起一张庄家牌、动作只有 hit 和 stand |
+| `leduc` | 勒杜克扑克 | `rlcard/games/leducholdem/`：黑桃/红桃的 J、Q、K，小盲 1，每轮最多加注 2 次，对子看手牌与公共牌点数 |
+| `limit-holdem` | 限注德州扑克 | `rlcard/games/limitholdem/`：小盲 1，每轮最多加注 4 次，四条街，`compare_hands` |
+| `uno` | UNO | `rlcard/games/uno/`：两人、每人 7 张、含 +4 |
+| `doudizhu` | 斗地主 | `rlcard/games/doudizhu/`：0 号是地主、可出牌生成器、牌序含 A、2、B、R |
+
+本插件的适配器自己发牌、判合法动作、走对手，**不调用 RLCard 的对局或智能体**。无限注德州（半池、一池、全下和边池）没有做，设置页也没有这一行。
+
+和钉死版本不完全相同、需要单独记住的地方：
+
+- 二十一点：玩家爆牌后庄家不再补牌；起手两张 21 是天成，天成高于后来凑成的 21，双方天成算和局。RLCard 把所有相同点数都当成平局，并且玩家爆牌后仍给庄家补牌。其余一致：一副牌，每手重新洗牌；不设分牌、加倍或保险；庄家软 17 也停牌。玩家凑满 21 且多于两张时不会自动停牌。
+- 勒杜克：6 张牌、两人、两轮限注。小盲先行动，公开牌后加注额从 2 变成 4。这副牌每种点数只有两张，双方同时对上公共牌发不出来；若局面真的如此，平分底池。RLCard 会把底池判给先扫到的那一家。
+- 限注德州：两人、52 张牌、四条街。翻牌前和小盲后的翻牌圈加注额是 2，转牌和河牌是 4。翻牌前小盲先行动，之后从上一轮收口处继续，不改成赌场常见的大盲先动。摊牌取七张里最好的五张。弃牌方的底牌保持隐藏；双方都没弃牌才摊开。奇数筹码的余数给 0 号座位。
+- UNO：2 至 10 人，默认 4 人，由设置项「UNO 人数」决定，座位 0 为玩家，其余座位由插件内置的对手补齐。新开的牌局按官方规则：发牌位为最后一个座位，座位 0 先出；起手翻到 +4 会塞回去重洗；起手的跳过令座位 1 先出，起手的反转改为逆时针并由发牌位先出，起手的 +2 由座位 0 摸两张并停一轮。跳过令下家停一轮；反转改变方向，两人局中等同跳过；+2 与 +4 令下家摸牌并停一轮。牌堆用尽时，将弃牌堆除顶牌以外的牌洗回。只有没有别的牌可出时才能出 +4。摸到同色数字、同色功能牌或万能牌会立刻打出，摸到异色才留在手里。先出完手牌者胜，其余每人记 -1。对手手牌只公开张数。旧版两人存档（存档中没有 `options`）仍按原先跟随 RLCard 两人局的走法重放：起手的 +2 补给发牌位且仍由发牌位出牌，反转轮到另一人。
+- 斗地主：叫分在钉死版本里被注释掉了，所以玩家固定当地主并先出牌，另外两家是农民。三张底牌公开。牌型按该版本的可出集合比较，不读取它的 27472 条动作表。炸弹大于普通牌，火箭最大。更长的顺子不会压过更短的顺子。
+
+同一时间右侧只有一张牌桌。二十一点的存档文件名仍是会话身份的摘要，和原来一样；其它牌类把游戏名一并算进文件名。正文只记种子和已经发生的动作（含对手走出的动作），不写每张牌，因此暗牌不会出现在存档文本里。桌面用当前会话 id；Telegram 用聊天 id 加话题 id。未完成的同一种牌在同一身份里 `card_open` 会续上。`card_reset` 只清这个身份的指定游戏；没写游戏时清当前牌桌的那一种。`lastResult` 只来自这一种牌、这一个身份的上一手。换一种牌、换一个会话，都看不到那一手，也看不到它的结果。
+
+发到 Telegram 时，每一步先发新的牌桌图片，再删掉上一张。图片标题只用点阵里有的字母（LED、HOLD、N1、DD）。群里只有发起这手的人可以直接行动。`card_look` 和 `card_play` 对非授权用户开放；`card_open`、`card_close`、`card_reset` 会下载或写存档，仍受授权用户闸门限制。
+
+### 棋类辅助引擎（按需下载，独立进程）
+
+下列引擎**不随本仓库或 npm 包分发，也不与本插件链接**。只有在设置页「棋类」里某一棋种的棋盘（本体）下载完成后，点该棋种的「下载辅助引擎」，才会从各项目的**官方 GitHub 发布页**下载钉死版本（`src/boards/assist/specs.mjs` 记有地址与 sha256，校验不符即放弃），解压到 `<数据目录>/boards/assist/<引擎>/`。运行时作为**独立子进程**，只经 stdin/stdout 文本协议通信（UCI、piskvork / Gomocup、KataGo analysis JSON）；每局一个长驻进程，`board_close`、关闭棋类、移除引擎或 DSH 退出时结束。引擎缺失或出错时只是不给提示，不影响棋局。下载棋盘本体不会下载辅助引擎。
+
+| 棋种 | 引擎 | 许可证 | 版本 / 资产 | 本插件中的用途 |
+|---|---|---|---|---|
+| 中国象棋 | [Pikafish](https://github.com/official-pikafish/Pikafish) | GPL-3.0（NNUE 权重见包内 NNUE-License.md） | `Pikafish-2026-09-06`，`Pikafish.2026-09-06.7z`（universal 构建，含 `pikafish.nnue`） | UCI，`MultiPV 3` + `UCI_ShowWDL`；着法转成与 `notation.mjs` 一致的中文记谱（如 炮二平五） |
+| 国际象棋 | [Stockfish](https://github.com/official-stockfish/Stockfish) | GPL-3.0 | `sf_19`，`stockfish-{windows,linux}-x86-64-universal`（运行时自选 AVX2 等指令集） | UCI，`MultiPV 3` + `UCI_ShowWDL`；UCI 着法（e2e4） |
+| 五子棋 | [Rapfi](https://github.com/dhbloo/rapfi) | GPL-3.0 | `250615`，`Rapfi-engine.7z`（官方包内含 [rapfi-networks](https://github.com/dhbloo/rapfi-networks) 的 mix9svq 权重与 config.toml）；先试 AVX2 版，起不来改用 SSE 版 | piskvork / Gomocup 协议，`YXBOARD` + `YXNBEST 3` 取前三，规则为无禁手（freestyle，与棋盘项目一致）；坐标如 H8 |
+| 围棋 | [KataGo](https://github.com/lightvector/KataGo) | 代码 MIT；网络权重为 [KataGo 网络许可证](https://katagotraining.org/network_license/) | `v1.18.1`（最近一个带 CPU / Eigen 构建的版本），`eigenavx2` 版起不来时改用 `eigen` 版；网络 `kata1-b15c192-s1672170752-d466197061`（[katagotraining.org](https://katagotraining.org/networks/)） | analysis 引擎 JSON，`reportAnalysisWinratesAs = SIDETOMOVE`；坐标如 D4 |
+
+解压 7z：Windows 用系统自带的 `tar.exe`（bsdtar / libarchive）；其他平台需要 PATH 上有 `bsdtar` 或 7-Zip（`7zz` / `7z`）。分析时长由设置项 `boardsHintMs`（默认 1000 毫秒，100–10000）决定。
 
 ## 游戏 · GameBot
 

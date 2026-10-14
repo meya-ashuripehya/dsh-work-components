@@ -61,6 +61,14 @@ lib/channel-telegram.mjs also bundles DeepSeek Harness packages
 (Copyright (c) Matteo Collina and Undici contributors, MIT), as resolved from
 the exact devDependencies versions in package.json.
 
+## Board image glyphs
+
+src/boards/render/glyphs.mjs holds small grayscale bitmaps of the xiangqi piece
+characters, chess piece symbols and coordinate letters, rasterized once by
+scripts/gen-board-glyphs.py from Noto Serif CJK SC Bold (Copyright 2017 Adobe,
+SIL Open Font License 1.1) and DejaVu Sans / Sans Bold (Bitstream Vera license
+with DejaVu changes, public domain). No font files are included.
+
 ## Names
 
 DeepSeek, DSH, and the names of the applications this plugin can launch are
@@ -70,3 +78,13 @@ DeepSeek or those other owners.
 
 The settings page uses generic stroke icons. It does not include third-party
 logos or screenshots of third-party user interfaces.
+
+## Card rules source
+
+RLCard (https://github.com/datamllab/rlcard, MIT, pinned commit
+d7d0a957baf4cc7225a50522adb0164bf130a9d0) is not included in this repository
+or the published package. A user downloads that commit from the settings page
+into the data directory. One checkout covers blackjack, Leduc hold'em, limit
+hold'em, two-player UNO, and doudizhu. This plugin supplies the adapter,
+tools, opponent policy, and table rendering, and does not run RLCard's game
+loop or agents. No-limit hold'em is not included.

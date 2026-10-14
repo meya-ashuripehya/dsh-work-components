@@ -21,7 +21,7 @@ import {
 } from './amap.mjs'
 import { gcj02ToWgs84 } from './wgs.mjs'
 
-const COORD = '坐标为 GCJ-02（经度,纬度）。'
+const COORD = 'Coordinates are GCJ-02 (longitude,latitude).'
 
 const IMAGE_SCHEMA = {
   type: 'object',
@@ -109,10 +109,10 @@ export function createMapTools(options) {
 
   const geo = defineTool({
     name: 'geo_resolve',
-    description: '把地址解析为 GCJ-02 坐标。必须带城市，避免同名地点配错城市。只返回格式化地址、行政区划和坐标。消耗高德基础 LBS 配额。',
+    description: 'Geocode an address to GCJ-02 coordinates. A city is required so same-named places are not matched in the wrong city. Returns only the formatted address, administrative divisions, and coordinates. Consumes AMap basic LBS quota.',
     parameters: {
-      address: { type: 'string', required: true, description: '街道地址或地名。' },
-      city: { type: 'string', required: true, description: '城市名或城市 adcode，用于限定解析范围。' },
+      address: { type: 'string', required: true, description: 'Street address or place name.' },
+      city: { type: 'string', required: true, description: 'City name or city adcode, used to scope the lookup.' },
     },
     output: {
       schema: {
@@ -137,13 +137,13 @@ export function createMapTools(options) {
 
   const search = defineTool({
     name: 'place_search',
-    description: '搜索地点。有坐标时按周边搜，否则按关键词搜。最多返回 5 条：名称、地址、坐标、距离、POI ID。消耗高德基础搜索配额。' + COORD,
+    description: 'Search for places. Does a nearby search when a location is given, otherwise a keyword search. Returns at most 5 results: name, address, coordinates, distance, POI ID. Consumes AMap basic search quota. ' + COORD,
     parameters: {
-      keywords: { type: 'string', description: '关键词。无坐标时必填；周边搜索时可和 types 二选一。' },
-      location: { type: 'string', description: '周边搜索中心，GCJ-02 经度,纬度。' },
-      radius: { type: 'string', description: '周边半径（米）。默认 2000。' },
-      types: { type: 'string', description: 'POI 类型编码，多个用 | 分隔。' },
-      city: { type: 'string', description: '关键词搜索时限定城市。' },
+      keywords: { type: 'string', description: 'Keywords. Required when no location is given; for nearby search, provide keywords or types (either is enough).' },
+      location: { type: 'string', description: 'Nearby-search center, GCJ-02 longitude,latitude.' },
+      radius: { type: 'string', description: 'Nearby-search radius in meters. Default 2000.' },
+      types: { type: 'string', description: 'POI type codes; separate multiple with |.' },
+      city: { type: 'string', description: 'City to restrict a keyword search to.' },
     },
     output: {
       schema: {
@@ -189,9 +189,9 @@ export function createMapTools(options) {
 
   const detail = defineTool({
     name: 'place_detail',
-    description: '按 POI ID 补地点详情（电话、类型）。只在 place_search 的结果不够时调用。消耗高德基础搜索配额。',
+    description: 'Fetch extra place details (phone, type) by POI ID. Call only when place_search results are insufficient. Consumes AMap basic search quota.',
     parameters: {
-      id: { type: 'string', required: true, description: 'place_search 返回的 POI ID。' },
+      id: { type: 'string', required: true, description: 'POI ID returned by place_search.' },
     },
     output: {
       schema: {
@@ -216,15 +216,15 @@ export function createMapTools(options) {
 
   const routeTool = defineTool({
     name: 'route',
-    description: '规划一种出行路线（driving、walking、cycling、transit 四选一），返回距离、耗时、过路费、摘要，并在页面上发出可点击的路线图。路线图打开 https://uri.amap.com/navigation 分享链接，适用于 iOS 与 Android。请把 share 通过 Telegram 发给手机，或复制到系统浏览器打开。deepLink（amapuri）供 Android 与 HarmonyOS 直接打开。不要生成二维码，不要为了比较而自动把四种方式都调一遍，也不要写入高德账号收藏夹。网页分享链接的途经点仅支持驾车且只含第一个，全部途经点在 deepLink 中。消耗高德路径规划配额；路线图另消耗一次静态地图配额。' + COORD,
+    description: 'Plan a route for one travel mode (one of driving, walking, cycling, transit). Returns distance, duration, tolls, and a summary, and posts a clickable route map on the page. The route map opens the https://uri.amap.com/navigation share link, which works on iOS and Android. Send share to the phone via Telegram, or copy it into a system browser. deepLink (amapuri) opens directly on Android and HarmonyOS. Do not generate QR codes, do not automatically call all four modes just to compare, and do not write to the AMap account\'s favorites. In the web share link, waypoints are supported only for driving and only the first one is included; all waypoints are in deepLink. Consumes AMap route-planning quota; the route map uses one additional static-map quota call. ' + COORD,
     parameters: {
-      mode: { type: 'string', required: true, description: 'driving、walking、cycling 或 transit。' },
-      origin: { type: 'string', required: true, description: '起点，GCJ-02 经度,纬度。' },
-      destination: { type: 'string', required: true, description: '终点，GCJ-02 经度,纬度。' },
-      originName: { type: 'string', description: '起点名称，写入分享链接与深链，便于手机端显示。' },
-      destinationName: { type: 'string', description: '终点名称，写入分享链接与深链，便于手机端显示。' },
-      waypoints: { type: 'string', description: '途经点，GCJ-02。多个点用英文分号分隔，每点为「经度,纬度」或「经度,纬度,名称」，最多 16 个。仅驾车路线会把途经点提交给路径规划接口。' },
-      city: { type: 'string', description: '公交（transit）必填：城市名或 adcode。' },
+      mode: { type: 'string', required: true, description: 'driving, walking, cycling, or transit.' },
+      origin: { type: 'string', required: true, description: 'Origin, GCJ-02 longitude,latitude.' },
+      destination: { type: 'string', required: true, description: 'Destination, GCJ-02 longitude,latitude.' },
+      originName: { type: 'string', description: 'Origin name, included in the share link and deep link for display on the phone.' },
+      destinationName: { type: 'string', description: 'Destination name, included in the share link and deep link for display on the phone.' },
+      waypoints: { type: 'string', description: 'Waypoints, GCJ-02. Separate multiple points with ASCII semicolons; each point is "lon,lat" or "lon,lat,name"; at most 16. Waypoints are sent to the route-planning API only for driving.' },
+      city: { type: 'string', description: 'Required for transit: city name or adcode.' },
     },
     output: {
       schema: {
@@ -236,9 +236,9 @@ export function createMapTools(options) {
           duration: { type: 'string', required: true },
           tolls: { type: 'string' },
           summary: { type: 'string', required: true },
-          share: { type: 'string', required: true, description: 'https://uri.amap.com/navigation 分享链接，不含 Key。' },
-          deepLink: { type: 'string', required: true, description: 'amapuri://route/plan/ 导航深链，不含 Key。' },
-          handoff: { type: 'string', required: true, description: '发至手机的方式说明。' },
+          share: { type: 'string', required: true, description: 'https://uri.amap.com/navigation share link, without the API key.' },
+          deepLink: { type: 'string', required: true, description: 'amapuri://route/plan/ navigation deep link, without the API key.' },
+          handoff: { type: 'string', required: true, description: 'Instructions for sending to a phone.' },
           image: {
             type: 'object',
             additionalProperties: false,
@@ -294,7 +294,8 @@ export function createMapTools(options) {
           })
           value.image = {
             attachmentId: String(ref.attachmentId),
-            mediaType: 'image/png',
+            // 宿主可能转码，读取时核对 mediaType，须用它返回的值。
+            mediaType: String(ref.mediaType || 'image/png'),
             bytes: Number(ref.bytes ?? png.length),
             width: Number(ref.width ?? size.width) || size.width,
             height: Number(ref.height ?? size.height) || size.height,
@@ -310,9 +311,9 @@ export function createMapTools(options) {
 
   const weatherTool = defineTool({
     name: 'weather',
-    description: '查询城市未来几天的天气预报摘要。消耗高德天气预报配额。',
+    description: 'Get a weather forecast summary for a city for the next few days. Consumes AMap weather-forecast quota.',
     parameters: {
-      city: { type: 'string', required: true, description: '城市名或 adcode。' },
+      city: { type: 'string', required: true, description: 'City name or adcode.' },
     },
     output: {
       schema: {
@@ -348,14 +349,14 @@ export function createMapTools(options) {
 
   const card = defineTool({
     name: 'map_card',
-    description: '生成地图标点卡片。页面上是可打开高德地图的卡片；发到 Telegram 时改为原生命置，不发送静态地图图片。传入地址（须带城市）或已有 GCJ-02 坐标。每次出卡都重新请求静态地图作为页面预览，不要复用上一张图。消耗高德基础 LBS 配额；若先解析地址，地理编码再计一次。' + COORD,
+    description: 'Create a map pin card. On the page it is a card that opens AMap; when sent to Telegram it becomes a native location (venue) instead of a static map image. Pass an address (with a city) or existing GCJ-02 coordinates. Every card fetches a fresh static map as the page preview; do not reuse a previous image. Consumes AMap basic LBS quota; if an address is geocoded first, that counts as one more call. ' + COORD,
     parameters: {
-      address: { type: 'string', description: '要标注的地址。与 location 二选一；用地址时必须同时给 city。' },
-      city: { type: 'string', description: '地址所在城市。用 address 时必填。' },
-      location: { type: 'string', description: '已有坐标，GCJ-02 经度,纬度。有则不再地理编码。' },
-      title: { type: 'string', description: '卡片标题。默认用解析出的地址或坐标。' },
-      caption: { type: 'string', description: '卡片说明。' },
-      zoom: { type: 'integer', description: '缩放 1–17，默认 16（门址）。城区可改小。' },
+      address: { type: 'string', description: 'Address to pin. Use either this or location; when using an address, city is also required.' },
+      city: { type: 'string', description: 'City of the address. Required when address is used.' },
+      location: { type: 'string', description: 'Existing coordinates, GCJ-02 longitude,latitude. If given, no geocoding is done.' },
+      title: { type: 'string', description: 'Card title. Defaults to the resolved address or the coordinates.' },
+      caption: { type: 'string', description: 'Card caption.' },
+      zoom: { type: 'integer', description: 'Zoom level 1–17, default 16 (street-address level). Use a smaller value for a district/city-area view.' },
     },
     output: {
       schema: {

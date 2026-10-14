@@ -14,6 +14,9 @@
  *     POST /dsh-workbench/api/components/godot/addon { project }（把同版本的 Godot AI 插件装进 Godot 项目），
  *     GET/POST /dsh-workbench/api/update/check|apply|ignore|status（自更新检测与应用；状态在数据目录 update-state.json），
  *     以及 /dsh-workbench/assets/*（插件 assets/ 下的静态文件；不要放入第三方界面截图或标志）。
+ *  3a. 网关核验（通用）：聊天输入栏「核验」开关（按会话保存）；开启后每回合的模型调用经 llm/stream 只读采集，
+ *     用设置页下载到 <数据目录>/tools/llm-gateway-bench 的 llm-gateway-bench（未下载时不显示开关，下载后无需重启）判定回包模型、流式真实性、Token 计数、中文完整性、缓存，
+ *     结果在 /dsh-workbench/api/trust/*，客户端在「用量」右侧显示。
  *  3. 会话控制（通用）：撤回 / 重试（按回合就地截断多帧 zstd，保留连续 seq，并清投影缓存）、熔断（取消；自动熔断再截掉失败尾轮）；API 在 /dsh-workbench/api/session/*。
  *  4. 多模态图片：`mm_send_image`（本地文件 → attachments.saveImage → Host attachmentId）。model 侧 render 只发 text+image（DeepSeek Messages 拒 type:'mm'）；MmCard 数据走 presentationMeta.mm，客户端用 meta / image fallback。
  *     本地文件：`mm_send_file` 走同一套 MmCard。图片复用 kind:image，视频为 kind:video，其余为 kind:document。PDF、Markdown、Word、Excel、PowerPoint 抽出正文放进卡片。模型只看到文字；Telegram 仍按文档发送。群聊里只有授权用户能调用。
@@ -25,9 +28,19 @@
  *     日程写在数据目录 calendar/events.json。天气预报走 Open-Meteo，只认设置里的城市名，未填写时不请求。
  *     笔记（默认关闭）：note_browse / note_search / note_get / note_save / note_delete / note_category_save /
  *     note_category_delete。三级结构（类型 › 类别 › 笔记），写在数据目录 notes/notes.json；只经工具召回，不注入提示。
- *     棋类（默认关闭）：board_open / board_look / board_play / board_close。棋盘项目克隆在数据目录 boards/，
+ *     棋类（默认关闭）：board_open / board_look / board_play / board_close / board_reset / board_hint；每种棋的存档在 boards/saves/。棋盘项目克隆在数据目录 boards/，
+ *     辅助引擎（Pikafish / Stockfish / Rapfi / KataGo）在设置页按需下载到 boards/assist/，作为独立进程运行，装了才在 board_* 结果里附 hints。
  *     预览在 /dsh-workbench/boards/play。用户名留空时按 user。
+ *     牌类（默认关闭）：card_open / card_look / card_play / card_close / card_reset。
+ *     可打二十一点、勒杜克、限注德州、UNO 和斗地主。规则源按需下载到数据目录 cards/，不随包分发；
+ *     存档按游戏和桌面会话或 Telegram 聊天分开，在 cards/saves/。
+ *     预览在 /dsh-workbench/cards/play。对手暗牌在公开前不会出现在工具结果或图片里。
  *     图片字节直接 saveImage，不读环境变量、不落地图文件。
+ *     GPT Image 2 生图（默认关闭）：设置页保存 API Key 后注册 image_generate / image_edit（OpenAI 兼容 Images API），
+ *     图片写入数据目录 images/<日期>/；「测试连接」只请求 GET {base}/models。两个工具不在 Telegram OPEN_TOOLS，仅授权用户可用。
+ *     聊天室（默认关闭）：设置里的席位列表（DSH 服务商 + 模型 + 可选预设人设）与用户同处一个房间轮流发言，记录只追加写在数据目录 chatroom/rooms/；
+ *     调用经 DSH 服务商层 ctx.llm.stream，本插件不保存密钥；服务商在 DSH「设置 › 模型」中添加。
+ *     核心在 ./chatroom/（不依赖界面，第二阶段 Telegram 群桥复用），接口 /dsh-workbench/api/chatroom/*。
  *     设置项 mapBypassProxy（默认开启）让高德请求直连，不使用系统代理。
  *
  * 前端设置页与工具卡片在 lib/client.js。
@@ -44,12 +57,18 @@ import { createTelegramChannel, telegramSchemaShape } from './channels/telegram/
 import { classifyPreview, loadLocalFile, mmFileBlock, registerFilePreview, streamFilePreview, textPreview } from './channels/telegram/files.mjs'
 import { extractContentPreview } from './channels/telegram/office-preview.mjs'
 import { createMapFeature } from './map/index.mjs'
+import { createGptImageFeature, handleGptImageApi } from './gpt-image/index.mjs'
 import { handleCalendarApi } from './calendar/api.mjs'
 import { createCalendarFeature } from './calendar/index.mjs'
 import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
 import { handleBoardsApi, handleBoardsPage } from './boards/api.mjs'
 import { createBoardsFeature } from './boards/index.mjs'
+import { handleCardsApi, handleCardsPage } from './cards/api.mjs'
+import { createCardsFeature } from './cards/index.mjs'
+import { createDshCatalog } from './dsh-catalog.mjs'
+import { createGatewayTrust } from './gateway-trust/index.mjs'
+import { chatroomSchemaShape, createChatroomFeature, migrateLegacyChatroom, LEGACY_CHATROOM_KEYS, CHATROOM_SEATS_KEY } from './chatroom/index.mjs'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
@@ -63,7 +82,8 @@ export const inject = ['tools', 'agents', 'sessions', 'sessionController']
 const NAMESPACE = 'dsh-workbench'
 const API_PREFIX = '/dsh-workbench/api'
 const ASSETS_PREFIX = '/dsh-workbench/assets'
-const BODY_LIMIT = 16 * 1024
+// 设置页 POST /settings 回传完整设置（席位、GameBot 字段等，已超过 16 KB），上限放宽到 1 MiB。
+const BODY_LIMIT = 1024 * 1024
 
 // File used when ctx.settings is absent (Desktop profiles often lack the settings service): settingsFilePath() in ./tools.mjs.
 
@@ -173,13 +193,26 @@ export const SettingsSchema = z.object({
 
   mapEnabled: z.boolean().default(false).description('启用地图工具（地理编码、地点检索、路线规划、天气预报、静态地图卡片、可点击路线图）。路线图打开高德导航页，分享链接可发至手机，不写入高德账号收藏夹。默认关闭。'),
   gaodeApiKey: z.string().role('secret').default('').description('高德 Web 服务 Key。只保存在本设置里，不读取环境变量。'),
+  gptImageEnabled: z.boolean().default(false).description('启用 GPT Image 2 生图工具（image_generate / image_edit）。默认关闭。关闭后工具从会话中卸下，已生成的图片仍保留在数据目录 images/。'),
+  gptImageApiKey: z.string().role('secret').default('').description('GPT Image 2 生图使用的 API Key。只保存在本设置里，不读取环境变量，不会在接口或日志中以明文返回。'),
+  gptImageBaseUrl: z.string().default('https://api.openai.com/v1').description('OpenAI 兼容接口的 Base URL，默认 https://api.openai.com/v1。'),
+  gptImageModel: z.string().default('gpt-image-2').description('生图模型名称，默认 gpt-image-2。'),
+  gptImageSize: z.string().default('auto').description('默认图片尺寸：auto、1024x1024、1536x1024 或 1024x1536。工具调用时可单独指定。'),
+  gptImageQuality: z.string().default('auto').description('默认图片质量：auto、low、medium 或 high。工具调用时可单独指定。'),
+  gptImageTimeoutSec: z.natural().min(30).max(900).default(300).description('单次生图请求的超时时间（秒），30–900，默认 300。'),
   mapBypassProxy: z.boolean().default(true).description('绕过代理。开启后高德请求使用独立直连，不附带下载代理或环境变量中的 HTTP 代理。默认开启。'),
 
   calendarEnabled: z.boolean().default(true).description('启用日历工具（公历、农历、节气、法定节假日、日程、天气预报）。默认开启。关闭后卸下工具，已保存的日程仍保留。'),
   notesEnabled: z.boolean().default(false).description('启用笔记工具：智能体把总结出的要点与知识库中没有的新知识按「类型 › 类别 › 笔记」三级整理，并在后续任务中检索复用。默认关闭。关闭后卸下工具，已保存的笔记仍保留。'),
-  boardsEnabled: z.boolean().default(false).description('启用棋类工具：当前会话里的 AI 用 board_open / board_look / board_play / board_close 下中国象棋、国际象棋、五子棋或围棋。默认关闭。关闭后卸下工具并结束当前棋局，已下载的棋盘项目仍保留。'),
+  boardsEnabled: z.boolean().default(false).description('启用棋类工具：当前会话里的 AI 用 board_open / board_look / board_play / board_close / board_reset / board_hint 下中国象棋、国际象棋、五子棋或围棋。默认关闭。关闭后卸下工具并结束当前棋局，已下载的棋盘项目仍保留。'),
+  boardsHintMs: z.number().default(1000).description('辅助引擎每次分析的时长（毫秒），100–10000，默认 1000。只在下载了辅助引擎时生效。'),
   boardsPlayerName: z.string().default('').description('棋盘上你的名字。留空或只有空白时按 user。显示在棋盘你这一侧，并写进人落子后发给 AI 的那句话。'),
+  cardsEnabled: z.boolean().default(false).description('启用牌类工具：当前会话里的 AI 用 card_open / card_look / card_play / card_close / card_reset 打二十一点、勒杜克、限注德州、UNO 或斗地主。默认关闭。关闭后卸下工具并收起当前牌桌，已下载的规则源和各会话存档仍保留。'),
+  cardsUnoPlayers: z.number().default(4).description('UNO 人数（含您本人），可设 2 至 10 人，默认 4 人。其余座位由插件内置的对手补齐。仅对新开的牌局生效；已有存档按存档中的人数续局。'),
+  cardsPlayerName: z.string().default('').description('牌桌上你的名字。留空或只有空白时按 user。你出牌后发给 AI 的句子会带上这个名字。'),
   calendarCity: z.string().default('').description('日历天气预报使用的城市名，例如成都。留空则不请求天气。数据来自 Open-Meteo，不使用高德 Key。请求沿用当前进程的代理。'),
+
+  ...chatroomSchemaShape(z),
 
   ...telegramSchemaShape(z),
 
@@ -395,8 +428,9 @@ function readBody(req) {
     req.on('data', (c) => {
       size += c.length
       if (size > BODY_LIMIT) {
-        reject(new Error('body too large'))
-        req.destroy()
+        // 不 destroy：断开连接时浏览器只报「Failed to fetch」；丢弃剩余数据，由调用方回 413。
+        chunks.length = 0
+        reject(Object.assign(new Error('body too large'), { status: 413 }))
         return
       }
       chunks.push(c)
@@ -445,15 +479,21 @@ export function apply(ctx, config) {
   // 「通道」分组：Telegram（默认关闭；启用后才动态加载 lib/channel-telegram.mjs）。
   const telegram = createTelegramChannel(ctx, () => current)
   const map = createMapFeature(ctx, () => current)
+  const gptImage = createGptImageFeature(ctx, () => current)
   const calendar = createCalendarFeature(ctx, () => current)
   const notes = createNotesFeature(ctx, () => current)
   const boards = createBoardsFeature(ctx, () => current)
+  const cards = createCardsFeature(ctx, () => current)
+  const dshCatalog = createDshCatalog(ctx)
+  // 网关核验：会话级开关，llm/stream 只读采集 + llm-gateway-bench 判定（见 ./gateway-trust）。
+  const gatewayTrust = createGatewayTrust(ctx, () => current)
+  const chatroom = createChatroomFeature(ctx, () => current, { saveSeats: (seats) => applyPatch({ [CHATROOM_SEATS_KEY]: seats }), savePatch: (patch) => applyPatch(patch) })
   const settings = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
   if (settings && typeof settings.register === 'function') {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync(); void map.sync(); void calendar.sync(); void notes.sync(); void boards.sync() })
+      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync(); void map.sync(); void gptImage.sync(); void calendar.sync(); void notes.sync(); void boards.sync(); void cards.sync(); void chatroom.sync() })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -496,13 +536,44 @@ export function apply(ctx, config) {
   }
   const settingsPersisted = () => scope !== null || filePersist
 
+  /** 程序内写设置（不经设置页表单）：ctx.settings 范围或数据目录 settings.json。 */
+  async function applyPatch(patch) {
+    if (scope) {
+      await scope.update(patch)
+      current = { ...scope.get(), ...pickLocalEnabled(current) }
+    } else {
+      current = RuntimeSettingsSchema({ ...current, ...patch })
+      if (filePersist) await saveFileSettings(persistableSettings(current))
+    }
+    await chatroom.sync()
+  }
+  // 聊天室旧版设置（固定四席位 + 插件内 API Key）→ 席位数组；旧键（含密钥）从设置中清除，密钥不迁移。
+  {
+    const legacy = migrateLegacyChatroom(current)
+    if (legacy.present.length) {
+      const cleared = Object.fromEntries(legacy.present.map((k) => [k, /ApiKey$|BaseUrl$|Proxy$/.test(k) ? '' : undefined]))
+      const patch = legacy.seats ? { [CHATROOM_SEATS_KEY]: legacy.seats } : {}
+      current = RuntimeSettingsSchema({ ...current, ...patch })
+      for (const k of legacy.present) delete current[k]
+      const snapshot = current
+      void (async () => {
+        if (scope) await scope.update({ ...cleared, ...patch })
+        else if (filePersist) await saveFileSettings(persistableSettings(snapshot))
+        ctx.logger?.info?.(`dsh-workbench: chatroom settings migrated (${legacy.seats ? legacy.seats.length + ' seats' : 'seats kept'}; ${legacy.present.length} legacy keys removed; keys not migrated)`)
+      })().catch((error) => ctx.logger?.warn?.('dsh-workbench: chatroom settings migration persist failed', error?.message || error))
+    }
+  }
+
   // ── 工作组件：各自 fork 一个 dsh-mcp-client 子插件（不写进 profile，随本插件卸载）──
   components.sync()
   void telegram.sync()
   void map.sync()
+  void gptImage.sync()
   void calendar.sync()
   void notes.sync()
   void boards.sync()
+  void cards.sync()
+  void chatroom.sync()
   // 宿主的凭据服务可能晚于本插件就绪：就绪时重新同步一次 Telegram（令牌从 credentials 读取）。
   ctx.inject?.(['credentials'], (credCtx) => {
     credCtx.effect?.(() => { void telegram.resync() }, 'dsh-workbench: telegram credentials')
@@ -515,12 +586,20 @@ export function apply(ctx, config) {
       components.dispose()
       try { await telegram.dispose() } catch {}
       try { await map.dispose() } catch {}
+      try { await gptImage.dispose() } catch {}
       try { await calendar.dispose() } catch {}
       try { await notes.dispose() } catch {}
       try { await boards.dispose() } catch {}
+      try { await cards.dispose() } catch {}
+      try { await chatroom.dispose() } catch {}
       try { await stopGamebotBody() } catch {}
     }
   }, 'dsh-workbench: components')
+
+  ctx.effect?.(() => {
+    const off = gatewayTrust.install()
+    return async () => { off(); try { await gatewayTrust.flush() } catch {} gatewayTrust.dispose() }
+  }, 'dsh-workbench: gateway-trust')
 
   const sessionControls = mountSessionControls(ctx, () => current)
   ctx.effect?.(() => () => sessionControls.dispose?.(), 'dsh-workbench: session-controls')
@@ -542,6 +621,10 @@ export function apply(ctx, config) {
             if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
             // Telegram 令牌：写进宿主凭据（credentials 引用），不进插件设置。
             const patch = unmaskPatch(await telegram.absorbSecretPatch(JSON.parse(await readBody(req) || '{}'), SECRET_MASK))
+            // 聊天室席位只经 PUT /chatroom/seats 改（表单回传的是旧快照）；旧版聊天室键（含密钥）不再接受。
+            delete patch[CHATROOM_SEATS_KEY]
+            delete patch.chatroomRules // 只经 PUT /chatroom/config 保存
+            for (const k of LEGACY_CHATROOM_KEYS) delete patch[k]
             const localEnabled = pickLocalEnabled({ ...current, ...patch })
             const next = RuntimeSettingsSchema({ ...current, ...patch, ...localEnabled })
             // 启动门控：未安装 / 正在安装的组件不能从停用改为启用（builtin 组件不受限）。
@@ -564,9 +647,12 @@ export function apply(ctx, config) {
             await components.sync()
             await telegram.sync()
             await map.sync()
+            await gptImage.sync()
             await calendar.sync()
             await notes.sync()
             await boards.sync()
+            await cards.sync()
+            await chatroom.sync()
             return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
           }
           if (sub === '/components' && req.method === 'GET') {
@@ -637,6 +723,10 @@ export function apply(ctx, config) {
             return sendJson(res, 200, { ok: true, job: getUpdateJob() })
           }
           if (sub === '/health') return sendJson(res, 200, { ok: true, name, persisted: settingsPersisted() })
+          if (sub.startsWith('/gpt-image/')) {
+            const handled = await handleGptImageApi(req, res, sub, { sendJson, getConfig: () => current, feature: gptImage })
+            if (handled !== false) return
+          }
           if (sub === '/calendar' || sub.startsWith('/calendar/')) {
             const handled = await handleCalendarApi(req, res, sub, { sendJson, readBody, getConfig: () => current })
             if (handled !== false) return
@@ -645,8 +735,18 @@ export function apply(ctx, config) {
             const handled = await handleNotesApi(req, res, sub, { sendJson, readBody })
             if (handled !== false) return
           }
+          if (sub === '/dsh/presets' && req.method === 'GET') {
+            return sendJson(res, 200, { ok: true, ...await dshCatalog.presets() })
+          }
+          if (sub === '/chatroom' || sub.startsWith('/chatroom/')) {
+            if (await chatroom.handleApi(req, res, sub, { sendJson, readBody })) return
+          }
           if (sub === '/boards' || sub.startsWith('/boards/')) {
             const handled = await handleBoardsApi(req, res, sub, { sendJson, readBody, getConfig: () => current })
+            if (handled !== false) return
+          }
+          if (sub === '/cards' || sub.startsWith('/cards/')) {
+            const handled = await handleCardsApi(req, res, sub, { sendJson, readBody, getConfig: () => current })
             if (handled !== false) return
           }
           const filePreview = /^\/file-preview\/([a-f0-9]{32})$/.exec(sub)
@@ -657,6 +757,10 @@ export function apply(ctx, config) {
               return
             }
             return streamFilePreview(req, res, filePreview[1])
+          }
+          if (sub.startsWith('/trust/')) {
+            const handled = await gatewayTrust.handleApi(req, res, sub, { sendJson, readBody })
+            if (handled !== false) return
           }
           if (sub.startsWith('/session')) {
             const handled = await handleSessionApi(ctx, sessionControls.circuit, req, res, sub, { sendJson, readBody, getConfig: () => current })
@@ -709,7 +813,21 @@ export function apply(ctx, config) {
           }
         },
       })
-      return () => { offApi?.(); offAssets?.(); offBoards?.() }
+      const offCards = webCtx.webServer.register({
+        kind: 'prefix',
+        path: '/dsh-workbench/cards',
+        handler: async (req, res) => {
+          try {
+            const url = new URL(req.url ?? '/', 'http://local')
+            const sub = url.pathname.slice('/dsh-workbench/cards'.length) || '/'
+            if (handleCardsPage(req, res, sub)) return
+            res.writeHead(404); res.end('not found')
+          } catch (error) {
+            res.writeHead(500); res.end(String(error?.message ?? error))
+          }
+        },
+      })
+      return () => { offApi?.(); offAssets?.(); offBoards?.(); offCards?.() }
     }, 'dsh-workbench: settings api')
   })
 

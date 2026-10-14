@@ -26,11 +26,11 @@ const tick = () => new Promise((r) => setTimeout(r, 0))
 
 installOwnerGate(ReplyContextStore)
 
-function harnessTurn(store, sessionId, senderId, text = '帮我执行命令') {
+function harnessTurn(store, sessionId, senderId, text = '帮我执行命令', conversationType = 'group') {
   // The bridge registers the reply context (sender from the platform identity) strictly before followup.
   store.register(`m-${Math.random()}`, {
     sessionId,
-    context: { conversationType: 'group', senderId, replyToMessageId: '1', raw: { text }, runId: 'r' },
+    context: { conversationType, senderId, replyToMessageId: '1', raw: { text }, runId: 'r' },
   })
 }
 
@@ -85,8 +85,8 @@ test('mixed turn: a non-owner message during an owner turn taints the whole turn
   assert.equal(gate.check(exec('bash')), DENY_MESSAGE, 'still the same run')
   agents.finish(GROUP_SESSION)
   await tick(); await tick()
-  // Idle: no channel turn is running — fail closed (e.g. a scheduled wake).
-  assert.equal(gate.check(exec('bash')), DENY_MESSAGE)
+  // Idle: no Telegram turn is running, so the next turn (e.g. desktop UI on this bound session) is not gated.
+  assert.equal(gate.check(exec('bash')), undefined)
   harnessTurn(store, GROUP_SESSION, OWNER)
   await tick()
   assert.equal(gate.check(exec('bash')), undefined, 'fresh owner turn')
@@ -135,4 +135,34 @@ test('routing: group chats use the group preset, private chats and explicit over
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-100999' }), { preset: 'explicit' })
   setGroupPreset('')
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-1003435238151' }), { preset: 'private-preset' })
+})
+test('matrix: desktop allowed, telegram private/group decided by the real sender, unknown sender denied', async () => {
+  const agents = fakeAgents()
+  const gate = createOwnerGate({ authorized: [OWNER], getAgent: (id) => agents.get(id) })
+  setActiveGate(gate)
+  const store = new ReplyContextStore()
+  // Desktop / local UI session: never delivered by Telegram.
+  assert.equal(gate.check(exec('bash', 'desktop-1')), undefined, 'desktop session allowed')
+  // Telegram private chat with the owner.
+  harnessTurn(store, 'ch-dm-owner', OWNER, 'run it', 'direct')
+  assert.equal(gate.check(exec('bash', 'ch-dm-owner')), undefined, 'telegram private owner allowed')
+  // Telegram private chat with a stranger.
+  harnessTurn(store, 'ch-dm-stranger', STRANGER, 'run it', 'direct')
+  assert.equal(gate.check(exec('bash', 'ch-dm-stranger')), DENY_MESSAGE, 'telegram private stranger denied')
+  // Telegram group.
+  harnessTurn(store, 'ch-g1', STRANGER)
+  assert.equal(gate.check(exec('bash', 'ch-g1')), DENY_MESSAGE, 'telegram group non-owner denied')
+  harnessTurn(store, 'ch-g2', OWNER)
+  assert.equal(gate.check(exec('bash', 'ch-g2')), undefined, 'telegram group owner allowed')
+  harnessTurn(store, 'ch-g3', undefined)
+  assert.equal(gate.check(exec('bash', 'ch-g3')), DENY_MESSAGE, 'telegram unknown sender denied')
+  // Sessions are independent: a stranger turn elsewhere does not leak into desktop or owner sessions.
+  assert.equal(gate.check(exec('bash', 'desktop-1')), undefined)
+  assert.equal(gate.check(exec('bash', 'ch-g2')), undefined)
+  // After the Telegram turn ends, desktop UI typing into the same bound session is not gated.
+  await tick()
+  agents.finish('ch-g1')
+  await tick(); await tick()
+  assert.equal(gate.check(exec('bash', 'ch-g1')), undefined, 'desktop turn on a telegram-bound session allowed')
+  clearActiveGate(gate)
 })

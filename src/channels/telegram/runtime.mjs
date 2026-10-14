@@ -29,12 +29,16 @@ import { installCalendarDelivery } from './calendar.mjs'
 import { installFileDelivery } from './files.mjs'
 import { DENY_MESSAGE, createOwnerGate, installOwnerGate, setActiveGate, clearActiveGate, resolveAuthorizedIds } from './owner-gate.mjs'
 import { installGroupRoute, setGroupPreset } from './group-route.mjs'
+import { installBoardsLink, mountBoardsBridge } from './boards-link.mjs'
+import { installCardsLink } from './cards-link.mjs'
 
 installMapPlaceDelivery(harness.ReplyRouter)
 installCalendarDelivery(harness.ReplyRouter)
 installFileDelivery(harness.ReplyRouter)
 installOwnerGate(harness.ReplyContextStore)
 installGroupRoute(harness.AgentRouter)
+installBoardsLink(harness.ReplyContextStore, harness.ChannelHarnessBridge)
+installCardsLink(harness.ChannelHarnessBridge)
 
 export { DENY_MESSAGE, createOwnerGate, resolveAuthorizedIds, setGroupPreset }
 
@@ -51,6 +55,8 @@ export const PATCH_MARKERS = {
   calendarDelivery: harness.ReplyRouter?.prototype?.__dshCalendar === true,
   ownerGate: harness.ReplyContextStore?.prototype?.__dshOwnerGate === true,
   groupRoute: harness.AgentRouter?.prototype?.__dshGroupRoute === true,
+  boardsLink: harness.ReplyContextStore?.prototype?.__dshBoardsLink === true && harness.ChannelHarnessBridge?.prototype?.__dshBoardsInbound === true,
+  cardsLink: harness.ChannelHarnessBridge?.prototype?.__dshCardsInbound === true,
   harnessPreempt: Object.prototype.hasOwnProperty.call(harness.Config({}), 'inboundPreempt'),
   harnessSegments: typeof harness.ReplyRouter?.prototype?.flushProcess === 'function',
   telegramDraftStream: typeof TelegramAdapter.prototype.resolveStreamingMode === 'function',
@@ -339,6 +345,9 @@ export function startTelegram(ctx, options) {
             token,
             transport: new FetchTransport(tgConfig.baseUrl, { timeoutMs: tgConfig.timeoutMs, ...(fetchImpl ? { fetchImpl } : {}) }),
           })
+          // 棋类：来自本通道的棋局由插件自动发棋盘图（同一个适配器上游，同一令牌与代理）。
+          const offBoards = mountBoardsBridge(adapter.upstream)
+          c.effect?.(() => () => { try { offBoards() } catch { /* ignore */ } })
           mountChannelAdapter(c, adapter, (signal) => {
             const base = c.channels.createAdapterContext({ channelId: CHANNEL_ID, signal })
             return {

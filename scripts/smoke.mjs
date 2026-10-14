@@ -149,6 +149,11 @@ const ctx = {
   effect: (fn) => { const off = fn(); if (typeof off === 'function') disposers.push(off); return off },
   logger: console,
 }
+// 聊天室旧版设置（固定席位 + 插件内 API Key）：启动时应迁移为席位数组，旧密钥从设置文件中清除。
+const legacyChatroomKey = `cr-legacy-${Math.random().toString(36).slice(2, 10)}`
+if (!existsSync(process.env.DSH_WORKBENCH_SETTINGS_FILE)) {
+  writeFileSync(process.env.DSH_WORKBENCH_SETTINGS_FILE, JSON.stringify({ chatroomOrder: 'grok', chatroomGrokEnabled: true, chatroomGrokModel: 'grok-4.7', chatroomGrokApiKey: legacyChatroomKey }))
+}
 mod.apply(ctx, {})
 console.log('registered tools:', tools.map((t) => t.name).join(', '))
 if (tools.some((t) => t.name === 'mm_image_demo')) throw new Error('mm_image_demo should not be registered')
@@ -224,6 +229,79 @@ if (stored.githubToken !== secret) throw new Error('posting the mask back must k
 const cleared = await call('POST', { githubToken: '' })
 if (cleared.json.value.githubToken !== '') throw new Error('empty string should clear a secret')
 console.log('settings secrets masked: GET hides, mask round-trip keeps, empty clears [values not printed]')
+// 设置页 POST 回传完整设置（已超过 16 KB）：大请求体要能保存，超限回 413 而不是断开连接（浏览器会只报 Failed to fetch）。
+{
+  const rules = '规则'.repeat(6000)
+  const big = await call('POST', { ...(await call('GET')).json.value, _bodyLimitPad: rules })
+  if (big.status !== 200) throw new Error('POST /settings with a >16 KB body failed: ' + big.status)
+  const huge = await call('POST', { _bodyLimitPad: 'x'.repeat(1100 * 1024) })
+  if (huge.status !== 413) throw new Error('oversized POST /settings should answer 413, got ' + huge.status)
+  // 附加房间规则只经 PUT /chatroom/config 保存（不随整份设置回传）
+  const ruled = await call('PUT', { rules }, '/chatroom/config')
+  if (ruled.status !== 200 || ruled.json.rules !== rules) throw new Error('PUT /chatroom/config with long rules failed: ' + ruled.status + ' ' + ruled.text.slice(0, 200))
+  const viaForm = await call('POST', { chatroomRules: 'stale form value' })
+  if (viaForm.json.value.chatroomRules !== rules) throw new Error('/settings must not overwrite chatroomRules')
+  await call('PUT', { rules: '' }, '/chatroom/config')
+  console.log('settings large body: >16 KB saved, >1 MiB answered 413')
+}
+
+// ── 聊天室：席位经 DSH 服务商层（假 ctx.llm / ctx.agentPresets），旧版设置迁移（旧密钥被清除、不迁移、不打印），记录写进临时数据目录 ──
+{
+  const llmCalls = []
+  services.llm = {
+    listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }, { id: 'xai', name: 'xAI' }],
+    listConfigurableProviders: () => [{ provider: 'openai', displayName: 'OpenAI', settingsNs: 'llm-pi-ai', settingsPath: ['openai'] }],
+    listModels: async (id) => (id === 'deepseek' ? [{ provider: id, id: 'deepseek-flash', name: 'DeepSeek Flash' }] : [{ provider: id, id: 'grok-4.7', name: 'Grok 4.7' }]),
+    async * stream(o) {
+      llmCalls.push({ provider: o.provider, model: o.model, system: o.system, roles: o.messages.map((m) => m.role).join(',') })
+      const text = o.provider === 'xai' ? 'Grok 收到' : '[PASS]'
+      for (const ch of text) yield { type: 'text-delta', index: 0, text: ch }
+      yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 6 } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  services.agentPresets = {
+    defaultId: 'lingsnow',
+    list: async () => [{ id: 'lingsnow', name: 'Deepseek大人' }, { id: 'guest', name: '访客' }],
+    readDocument: async (id) => ({ agentPreset: id, content: id === 'lingsnow' ? "- name: '@deepseek-ai/dsh-persona'\n  config:\n    prefix: 你是凌雪。\n" : '[]\n' }),
+  }
+  await new Promise((r) => setTimeout(r, 50)) // 启动时的迁移写盘
+  const settingsText = readFileSync(process.env.DSH_WORKBENCH_SETTINGS_FILE, 'utf8')
+  if (settingsText.includes(legacyChatroomKey) || /chatroom\w+ApiKey/.test(settingsText)) throw new Error('legacy chatroom key still in settings file')
+  const migrated = (await call('GET')).json.value
+  if (JSON.stringify(migrated).includes(legacyChatroomKey) || !Array.isArray(migrated.chatroomSeats) || migrated.chatroomSeats[0]?.provider !== 'xai' || migrated.chatroomSeats[0]?.model !== 'grok-4.7') throw new Error('legacy chatroom seats not migrated: ' + JSON.stringify(migrated.chatroomSeats))
+  const rejected = await call('POST', { chatroomEnabled: true, chatroomGrokApiKey: legacyChatroomKey, chatroomSeats: [] })
+  if (rejected.text.includes(legacyChatroomKey) || rejected.json.value.chatroomSeats.length !== 1) throw new Error('/settings accepted legacy chatroom key or clobbered seats')
+  const cat = (await call('GET', undefined, '/chatroom/catalog')).json
+  if (cat.llm.providers.map((p) => p.id + ':' + p.models.map((m) => m.id)).join(',') !== 'deepseek:deepseek-flash,xai:grok-4.7' || cat.llm.dormant[0]?.id !== 'openai' || cat.presets.defaultId !== 'lingsnow') throw new Error('chatroom catalog unexpected: ' + JSON.stringify(cat))
+  const pres = (await call('GET', undefined, '/dsh/presets')).json
+  if (pres.presets.map((p) => p.id).join(',') !== 'lingsnow,guest') throw new Error('/dsh/presets unexpected')
+  const seats = (await call('PUT', { seats: [
+    { id: 'grok', name: 'Grok', provider: 'xai', model: 'grok-4.7', enabled: true },
+    { id: 'ds', name: '凌雪', provider: 'deepseek', model: 'deepseek-flash', preset: 'lingsnow', enabled: true },
+    { id: 'gpt', name: 'GPT', provider: 'openai', model: 'gpt-x', enabled: false },
+  ] }, '/chatroom/seats')).json
+  if (seats.seats.map((x) => `${x.id}:${x.ready}`).join(',') !== 'grok:true,ds:true,gpt:false') throw new Error('chatroom seats overview unexpected: ' + JSON.stringify(seats.seats))
+  const room = (await call('POST', { title: 'smoke' }, '/chatroom/rooms')).json.room
+  if (!room?.id) throw new Error('chatroom room not created')
+  const posted = await call('POST', { text: '大家好' }, `/chatroom/rooms/${room.id}/messages`)
+  if (!posted.json.started) throw new Error('chatroom run did not start: ' + posted.text)
+  let got
+  for (let i = 0; i < 200; i++) {
+    got = (await call('GET', undefined, `/chatroom/rooms/${room.id}`)).json
+    if (!got.running) break
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  const line = got.messages.map((m) => `${m.speaker.id}:${m.status}:${m.text}`).join(' | ')
+  // 默认主答 DeepSeek（凌雪）先答（PASS 静默），之后 Grok 补充；有人补充 → 再问一圈（不让刚发言的 Grok 连续发言）
+  if (line !== 'user:ok:大家好 | ds:pass:[PASS] | grok:ok:Grok 收到 | ds:pass:[PASS]') throw new Error('chatroom transcript unexpected: ' + line)
+  if (llmCalls.map((c) => `${c.provider}/${c.model}`).join(',') !== 'deepseek/deepseek-flash,xai/grok-4.7,deepseek/deepseek-flash' || !llmCalls[0].system.includes('你是凌雪。') || !llmCalls[0].system.includes('NOT the implementer') || llmCalls[0].roles !== 'user') throw new Error('chatroom llm calls unexpected: ' + JSON.stringify(llmCalls))
+  const file = join(process.env.DSH_WORKBENCH_DATA_DIR, 'chatroom', 'rooms', room.id, 'messages.jsonl')
+  if (readFileSync(file, 'utf8').trim().split('\n').length !== 4) throw new Error('chatroom log not persisted as 4 jsonl lines')
+  await call('POST', { chatroomEnabled: false })
+  if ((await call('POST', { text: 'x' }, `/chatroom/rooms/${room.id}/messages`)).status !== 409) throw new Error('chatroom disabled gate missing')
+  console.log('chatroom ok: legacy seats migrated + old keys purged, catalog/presets via DSH services, seats CRUD, calls via ctx.llm.stream with preset persona, jsonl persisted, disabled gate [keys not printed]')
+}
 
 // ── 「通道」› Telegram：默认关闭；令牌只进宿主凭据（不回传、不落设置文件）；dsh-telegram-temp 在时不启动 ──
 {

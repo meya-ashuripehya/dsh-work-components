@@ -7,81 +7,81 @@ namespace DSHDesktopBroker;
 [McpServerToolType]
 public static class DesktopTools
 {
-    [McpServerTool(Name = "status"), Description("报告经纪人路径、完整性级别，以及令牌上的 UIAccess 位。UIAccess 为 false 时不能操作权限更高的窗口。")]
+    [McpServerTool(Name = "status"), Description("Report the broker path, integrity level, and the UIAccess bit on its token. When UIAccess is false, windows running at a higher privilege level cannot be operated.")]
     public static string Status() => DesktopSession.Status();
 
-    [McpServerTool(Name = "list_windows"), Description("列出可见顶层窗口。hwnd 是十六进制字符串。bounds 与后续点击都使用物理像素。")]
+    [McpServerTool(Name = "list_windows"), Description("List visible top-level windows. hwnd is a hex string. bounds and all later clicks use physical pixels.")]
     public static string ListWindows() => DesktopSession.ListWindows();
 
-    [McpServerTool(Name = "reveal_window"), Description("显示被隐藏或最小化的窗口（恢复、移到屏幕内并切到前台），不会关闭或隐藏任何窗口。常用于微信小程序打开后窗口没出现：list_windows 的 hiddenMiniPrograms 会列出这类窗口。hwnd 和 title 都不给时，显示所有隐藏的小程序窗口。")]
+    [McpServerTool(Name = "reveal_window"), Description("Show a hidden or minimized window (restore it, move it on-screen, and bring it to the foreground). Never closes or hides any window. Typically used when a WeChat Mini Program was opened but its window did not appear; list_windows reports such windows in hiddenMiniPrograms. If neither hwnd nor title is given, all hidden Mini Program windows are shown.")]
     public static string RevealWindow(
-        [Description("可选。窗口句柄，十进制或 0x 开头。")] string hwnd = "",
-        [Description("可选。窗口标题子串，只匹配隐藏或最小化的窗口。")] string title = "") =>
+        [Description("Optional. Window handle, decimal or 0x-prefixed hex.")] string hwnd = "",
+        [Description("Optional. Window title substring; matches only hidden or minimized windows.")] string title = "") =>
         DesktopSession.RevealWindow(hwnd, title);
 
-    [McpServerTool(Name = "inspect"), Description("读取一个窗口的 UI Automation 树，并给每个元素一个本次有效的 ref。Chromium 会同时挂到内容子窗口。ref 在下次 inspect 后失效。hwnd 与 title 至少给一个。")]
+    [McpServerTool(Name = "inspect"), Description("Read a window's UI Automation tree and assign each element a ref valid for this snapshot. For Chromium windows, the content child window is attached as well. Refs become invalid after the next inspect. Provide at least one of hwnd or title.")]
     public static string Inspect(
-        [Description("顶层窗口句柄，十进制或 0x 开头。")] string hwnd = "",
-        [Description("窗口标题子串。")] string title = "") => DesktopSession.Inspect(hwnd, title);
+        [Description("Top-level window handle, decimal or 0x-prefixed hex.")] string hwnd = "",
+        [Description("Window title substring.")] string title = "") => DesktopSession.Inspect(hwnd, title);
 
-    [McpServerTool(Name = "invoke"), Description("对 inspect 给出的元素调用 Invoke、Toggle 或 Selection。成功与否看操作后的控件状态。")]
-    public static string Invoke([Description("inspect 返回的 ref。")] string element) => DesktopSession.Invoke(element);
+    [McpServerTool(Name = "invoke"), Description("Trigger Invoke, Toggle, or Selection on an element from inspect. Judge success by the control's state afterwards.")]
+    public static string Invoke([Description("Element ref returned by inspect.")] string element) => DesktopSession.Invoke(element);
 
-    [McpServerTool(Name = "type"), Description("向元素输入文字。普通输入框用 Value；Chromium 输入框向内容子窗口发送 WM_CHAR。找不到该子窗口时退回前台确认后的键入，via 为 sendinput-fallback。写完会读回。")]
+    [McpServerTool(Name = "type"), Description("Type text into an element. Standard inputs use the Value pattern; Chromium inputs receive WM_CHAR sent to the content child window. If that child window cannot be found, falls back to keystrokes after confirming the window is in the foreground (via = sendinput-fallback). The value is read back after writing.")]
     public static string Type(
-        [Description("inspect 返回的 ref。")] string element,
-        [Description("要写入的文字。")] string text) => DesktopSession.Type(element, text);
+        [Description("Element ref returned by inspect.")] string element,
+        [Description("Text to write.")] string text) => DesktopSession.Type(element, text);
 
-    [McpServerTool(Name = "key"), Description("向元素发送按键：enter、tab、backspace、delete、escape、left、up、right、down、space。")]
+    [McpServerTool(Name = "key"), Description("Send a key press to an element: enter, tab, backspace, delete, escape, left, up, right, down, space.")]
     public static string Key(
-        [Description("inspect 返回的 ref。")] string element,
-        [Description("按键名。")] string key,
-        [Description("次数，1 到 20。")] int times = 1) => DesktopSession.Key(element, key, times);
+        [Description("Element ref returned by inspect.")] string element,
+        [Description("Key name.")] string key,
+        [Description("Repeat count, 1 to 20.")] int times = 1) => DesktopSession.Key(element, key, times);
 
-    [McpServerTool(Name = "click"), Description("点击 inspect 给出的元素。有 Invoke、Toggle 或 Selection 时走控件操作，否则在前台确认后点击边界中心。前台确认失败不会发鼠标。")]
-    public static string Click([Description("inspect 返回的 ref。")] string element) => DesktopSession.Click(element);
+    [McpServerTool(Name = "click"), Description("Click an element from inspect. Uses the control pattern if Invoke, Toggle, or Selection is available; otherwise clicks the center of its bounds after confirming the window is in the foreground. If foreground confirmation fails, no mouse input is sent.")]
+    public static string Click([Description("Element ref returned by inspect.")] string element) => DesktopSession.Click(element);
 
-    [McpServerTool(Name = "scroll"), Description("滚动 inspect 给出的元素。有 Scroll 模式时走控件并核对滚动位置。Chromium 内容子窗口发送 WM_MOUSEWHEEL。否则在前台确认后，于边界中心发送滚轮，确认失败不滚动。direction 为 up、down、left、right。up 看到更上面的内容。notches 为 1 到 20，一格 120。")]
+    [McpServerTool(Name = "scroll"), Description("Scroll an element from inspect. Uses the Scroll pattern when available and verifies the scroll position. Chromium content child windows receive WM_MOUSEWHEEL. Otherwise sends wheel input at the center of its bounds after confirming the window is in the foreground; no scroll if confirmation fails. direction: up, down, left, right (up reveals content above). notches: 1 to 20; one notch = 120 wheel units.")]
     public static string Scroll(
-        [Description("inspect 返回的 ref。小程序只有骨架时，用 Chrome Legacy Window 或 Pane 的 ref。")] string element,
-        [Description("up、down、left、right。")] string direction,
-        [Description("格数，1 到 20。")] int notches = 1) => DesktopSession.Scroll(element, direction, notches);
+        [Description("Element ref returned by inspect. If a Mini Program shows only a skeleton tree, use the ref of the Chrome Legacy Window or Pane.")] string element,
+        [Description("up, down, left, or right.")] string direction,
+        [Description("Number of notches, 1 to 20.")] int notches = 1) => DesktopSession.Scroll(element, direction, notches);
 
-    [McpServerTool(Name = "scroll_screen"), Description("在虚拟屏幕的物理像素上滚动。目标有 Chromium 内容子窗口时把 WM_MOUSEWHEEL 发给该子窗口。否则先确认前台，再发送滚轮，确认失败不滚动。direction 为 up、down、left、right。")]
+    [McpServerTool(Name = "scroll_screen"), Description("Scroll at a physical-pixel point on the virtual screen. If the target has a Chromium content child window, WM_MOUSEWHEEL is sent to it. Otherwise the window is confirmed to be in the foreground before sending wheel input; no scroll if confirmation fails. direction: up, down, left, right.")]
     public static string ScrollScreen(
-        [Description("物理像素 x。")] int x,
-        [Description("物理像素 y。")] int y,
-        [Description("up、down、left、right。")] string direction,
-        [Description("格数，1 到 20。")] int notches = 1,
-        [Description("可选。目标顶层窗口句柄。留空则用该坐标上的窗口。")] string hwnd = "") => DesktopSession.ScrollScreen(x, y, direction, notches, hwnd);
+        [Description("x in physical pixels.")] int x,
+        [Description("y in physical pixels.")] int y,
+        [Description("up, down, left, or right.")] string direction,
+        [Description("Number of notches, 1 to 20.")] int notches = 1,
+        [Description("Optional. Target top-level window handle. If empty, the window at that point is used.")] string hwnd = "") => DesktopSession.ScrollScreen(x, y, direction, notches, hwnd);
 
-    [McpServerTool(Name = "click_screen"), Description("点击虚拟屏幕上的物理像素。只在控件树为空（自绘窗口）时使用。会先把目标窗口拉到前台，确认失败则不点击。")]
+    [McpServerTool(Name = "click_screen"), Description("Click a physical-pixel point on the virtual screen. Use only when the control tree is empty (custom-drawn windows). Brings the target window to the foreground first; does not click if confirmation fails.")]
     public static string ClickScreen(
-        [Description("物理像素 x。")] int x,
-        [Description("物理像素 y。")] int y,
-        [Description("可选。要拉到前台的顶层窗口句柄。")] string hwnd = "") => DesktopSession.ClickScreen(x, y, hwnd);
+        [Description("x in physical pixels.")] int x,
+        [Description("y in physical pixels.")] int y,
+        [Description("Optional. Handle of the top-level window to bring to the foreground.")] string hwnd = "") => DesktopSession.ClickScreen(x, y, hwnd);
 
 
-    [McpServerTool(Name = "dock"), Description("右侧停靠：本窗口以最小宽度停靠于屏幕右侧，当前操作的窗口自动铺满左侧。mode 为 on、off 或 status。关闭后恢复各窗口原有位置。")]
+    [McpServerTool(Name = "dock"), Description("Right-side docking: this app's window docks at minimum width on the right edge of the screen, and the window being operated automatically fills the left side. mode: on, off, or status. Turning it off restores all windows to their original positions.")]
     public static string Dock(
-        [Description("on、off 或 status。")] string mode = "status",
-        [Description("可选。要铺在左侧的目标窗口句柄。on 时若省略，则只进入停靠模式，等下次操作再铺。")] string hwnd = "") =>
+        [Description("on, off, or status.")] string mode = "status",
+        [Description("Optional. Handle of the target window to fill the left side. If omitted with on, only docking mode is entered; the left side is filled on the next operation.")] string hwnd = "") =>
         DesktopSession.Dock(mode, hwnd);
 
-    [McpServerTool(Name = "elements"), Description("列出窗口里主要的可见元素及其屏幕中心坐标（物理像素，与 click_screen 同一套坐标），按从上到下、从左到右排序。来源 src：uia（UI Automation，含 Chromium / 微信小程序当前页；无名但可点击的节点给合成标签，如“图标按钮 add-cart-icon（近：…）”）、ocr（Windows OCR 补 UIA 没有的文字）、visual（视觉检测的红/橙色圆形按钮，常见“+”加购）。conf：high / mid / low，low 为推测，点后应截图确认。默认紧凑行“x,y 名称 [src/conf] [遮挡]”；detail=true 返回对象（含 bounds、note）。结果分页：nextOffset 不为空时用 offset 取下一页，或用 region / query 缩小。[遮挡] 表示中心被其他窗口盖住，需先把窗口调到前面。拿到 x、y 后直接 click_screen(x, y, hwnd)。hwnd 与 title 至少给一个。")]
+    [McpServerTool(Name = "elements"), Description("List the main visible elements in a window with their on-screen center coordinates (physical pixels, same coordinate space as click_screen), sorted top-to-bottom, left-to-right. Sources (src): uia (UI Automation, including the current page of Chromium / WeChat Mini Programs; unnamed but clickable nodes get a synthesized label such as “图标按钮 add-cart-icon（近：…）” [icon button, near: …]), ocr (Windows OCR, adds text UIA lacks), visual (visually detected red/orange round buttons, commonly a “+” add-to-cart). conf: high / mid / low; low is a guess, so take a screenshot after clicking to confirm. Default output is compact lines “x,y name [src/conf] [遮挡]”; detail=true returns objects (with bounds and note). Results are paged: when nextOffset is non-empty, pass it as offset for the next page, or narrow with region / query. [遮挡] (occluded) means the center is covered by another window; bring the window to the front first. With x and y in hand, call click_screen(x, y, hwnd) directly. Provide at least one of hwnd or title.")]
     public static string Elements(
-        [Description("顶层窗口句柄，十进制或 0x 开头。")] string hwnd = "",
-        [Description("窗口标题子串。")] string title = "",
-        [Description("可选。只返回名称（含合成标签）包含该文字的元素，不区分大小写，如 “去结算”、“+”、“add-cart”。")] string query = "",
-        [Description("可选。只看该屏幕区域，格式 x,y,w,h（物理像素）。")] string region = "",
-        [Description("每页条数，默认 80，上限 200。")] int limit = 80,
-        [Description("分页起点，取上次结果的 nextOffset。")] int offset = 0,
-        [Description("auto（默认，UIA + OCR + 视觉）、uia 或 ocr。")] string source = "auto",
-        [Description("true 时每项返回对象（name、x、y、role、src、conf、bounds、note、occluded）；默认紧凑行。")] bool detail = false) =>
+        [Description("Top-level window handle, decimal or 0x-prefixed hex.")] string hwnd = "",
+        [Description("Window title substring.")] string title = "",
+        [Description("Optional. Return only elements whose name (including synthesized labels) contains this text, case-insensitive, e.g. “去结算” (checkout), “+”, “add-cart”.")] string query = "",
+        [Description("Optional. Restrict to this screen region, formatted x,y,w,h (physical pixels).")] string region = "",
+        [Description("Items per page, default 80, max 200.")] int limit = 80,
+        [Description("Paging start; use nextOffset from the previous result.")] int offset = 0,
+        [Description("auto (default: UIA + OCR + visual), uia, or ocr.")] string source = "auto",
+        [Description("If true, each item is an object (name, x, y, role, src, conf, bounds, note, occluded); default is compact lines.")] bool detail = false) =>
         DesktopSession.Elements(hwnd, title, query, region, limit, offset, source, detail);
 
-    [McpServerTool(Name = "screenshot"), Description("截取窗口或整个虚拟屏幕，返回 PNG。像素与 click_screen、元素 bounds 是同一套物理坐标。")]
-    public static CallToolResult Screenshot([Description("可选。窗口句柄。留空则截虚拟屏幕。")] string hwnd = "")
+    [McpServerTool(Name = "screenshot"), Description("Capture a window or the entire virtual screen as a PNG. Pixels share the same physical coordinate space as click_screen and element bounds.")]
+    public static CallToolResult Screenshot([Description("Optional. Window handle. If empty, the whole virtual screen is captured.")] string hwnd = "")
     {
         var shot = DesktopSession.Capture(hwnd);
         if (shot == null)
