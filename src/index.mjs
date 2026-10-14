@@ -53,7 +53,7 @@ import { gamebotSchemaShape, legacyConfigCandidates, legacyImportPatch } from '.
 import { dataDir, dirSize, killProcessesUnder, managedPaths, migrateLegacyState, pluginRoot, settingsFilePath, toolsDir } from './tools.mjs'
 import { checkForUpdate, getUpdateJob, ignoreVersion, startApplyUpdate } from './updater.mjs'
 import { mountSessionControls, handleSessionApi } from './session-controls/index.mjs'
-import { createTelegramChannel, telegramSchemaShape } from './channels/telegram/index.mjs'
+import { createTelegramChannel, telegramSchemaShape, TELEGRAM_BOTS_KEY } from './channels/telegram/index.mjs'
 import { classifyPreview, loadLocalFile, mmFileBlock, registerFilePreview, streamFilePreview, textPreview } from './channels/telegram/files.mjs'
 import { extractContentPreview } from './channels/telegram/office-preview.mjs'
 import { createMapFeature } from './map/index.mjs'
@@ -440,6 +440,12 @@ function readBody(req) {
   })
 }
 
+/** 本机开关：显示设置页中隐藏的实验性功能（不写进设置、不进 git）。 */
+function showExperimental() {
+  if (process.env.DSH_WORK_SHOW_EXPERIMENTAL === '1') return true
+  try { return existsSync(join(dataDir(), 'show-experimental')) } catch { return false }
+}
+
 function sendJson(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
   res.end(JSON.stringify(body))
@@ -477,7 +483,13 @@ export function apply(ctx, config) {
   let filePersist = false
   const components = createComponentManager(ctx, () => current)
   // 「通道」分组：Telegram（默认关闭；启用后才动态加载 lib/channel-telegram.mjs）。
-  const telegram = createTelegramChannel(ctx, () => current)
+  const telegramSave = { bots: null }
+  const telegram = createTelegramChannel(ctx, () => current, {
+    persistBots: (bots) => {
+      if (!telegramSave.bots) throw Object.assign(new Error('当前环境无法保存设置'), { status: 501 })
+      return telegramSave.bots(bots)
+    },
+  })
   const map = createMapFeature(ctx, () => current)
   const gptImage = createGptImageFeature(ctx, () => current)
   const calendar = createCalendarFeature(ctx, () => current)
@@ -547,6 +559,7 @@ export function apply(ctx, config) {
     }
     await chatroom.sync()
   }
+  telegramSave.bots = (bots) => applyPatch({ [TELEGRAM_BOTS_KEY]: bots })
   // 聊天室旧版设置（固定四席位 + 插件内 API Key）→ 席位数组；旧键（含密钥）从设置中清除，密钥不迁移。
   {
     const legacy = migrateLegacyChatroom(current)
@@ -615,7 +628,7 @@ export function apply(ctx, config) {
           const url = new URL(req.url ?? '/', 'http://local')
           const sub = url.pathname.slice(API_PREFIX.length) || '/'
           if (sub === '/settings' && req.method === 'GET') {
-            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
+            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
           }
           if (sub === '/settings' && req.method === 'POST') {
             if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
@@ -623,6 +636,7 @@ export function apply(ctx, config) {
             const patch = unmaskPatch(await telegram.absorbSecretPatch(JSON.parse(await readBody(req) || '{}'), SECRET_MASK))
             // 聊天室席位只经 PUT /chatroom/seats 改（表单回传的是旧快照）；旧版聊天室键（含密钥）不再接受。
             delete patch[CHATROOM_SEATS_KEY]
+            delete patch[TELEGRAM_BOTS_KEY]
             delete patch.chatroomRules // 只经 PUT /chatroom/config 保存
             for (const k of LEGACY_CHATROOM_KEYS) delete patch[k]
             const localEnabled = pickLocalEnabled({ ...current, ...patch })
@@ -653,7 +667,7 @@ export function apply(ctx, config) {
             await boards.sync()
             await cards.sync()
             await chatroom.sync()
-            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
+            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
           }
           if (sub === '/components' && req.method === 'GET') {
             // 顺带探测已启动组件的连接（有缓存、不并发）；最多等 1.5 秒，没探完的下次请求再带上。
@@ -737,6 +751,9 @@ export function apply(ctx, config) {
           }
           if (sub === '/dsh/presets' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, ...await dshCatalog.presets() })
+          }
+          if (sub === '/telegram/bots' || sub.startsWith('/telegram/bots/')) {
+            if (await telegram.handleApi(req, res, sub, { sendJson, readBody })) return
           }
           if (sub === '/chatroom' || sub.startsWith('/chatroom/')) {
             if (await chatroom.handleApi(req, res, sub, { sendJson, readBody })) return

@@ -9,6 +9,8 @@ export function contextKey({ sessionId, origin } = {}) {
     const chat = String(origin.chatId ?? '').trim()
     if (!chat) return ''
     const thread = origin.threadId ? String(origin.threadId).trim() : ''
+    const account = String(origin.accountId ?? '').trim()
+    if (account && account !== 'main') return `telegram:${account}:${chat}:${thread}`
     return `telegram:${chat}:${thread}`
   }
   const sid = String(sessionId ?? '').trim()

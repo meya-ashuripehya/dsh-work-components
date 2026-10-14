@@ -5,7 +5,7 @@ import { AgentRouter } from '../../../vendor/wsz987/channel-harness/lib/agent-ro
 import {
   DENY_MESSAGE, createOwnerGate, installOwnerGate, setActiveGate, clearActiveGate, resolveAuthorizedIds, isOpenTool,
 } from './owner-gate.mjs'
-import { installGroupRoute, setGroupPreset } from './group-route.mjs'
+import { installGroupRoute, setGroupPreset, setGroupPresets } from './group-route.mjs'
 
 const OWNER = '6153059771'
 const STRANGER = '7000000001'
@@ -135,6 +135,20 @@ test('routing: group chats use the group preset, private chats and explicit over
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-100999' }), { preset: 'explicit' })
   setGroupPreset('')
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-1003435238151' }), { preset: 'private-preset' })
+})
+
+test('routing: each bot account keeps its own private and group preset', () => {
+  installGroupRoute(AgentRouter)
+  const router = new AgentRouter({
+    agent: { default: { preset: 'main-private' } },
+    routing: { mode: 'conversation', overrides: { account: { claude: { preset: 'claude-private' } }, conversation: {} } },
+  })
+  setGroupPresets({ main: 'main-group', claude: 'claude-group' })
+  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-1001' }), { preset: 'main-group' })
+  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'claude', conversationId: '-1001' }), { preset: 'claude-group' })
+  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'claude', conversationId: OWNER }), { preset: 'claude-private' })
+  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'grok', conversationId: '-1001' }), { preset: 'main-private' })
+  setGroupPresets({})
 })
 test('matrix: desktop allowed, telegram private/group decided by the real sender, unknown sender denied', async () => {
   const agents = fakeAgents()

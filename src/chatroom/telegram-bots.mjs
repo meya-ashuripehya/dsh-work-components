@@ -169,7 +169,8 @@ export function createTelegramBots({ resolveToken, getSeats, getProxy = () => ''
     if (!c) { status.error = `${seat.name} 未保存机器人令牌`; return status }
     try {
       const other = await conflictToken?.()
-      if (other && other === c.token) { status.error = '接收机器人与「通道 › Telegram」使用同一令牌，会互相抢占消息（409）。请为聊天室使用单独的机器人。'; return status }
+      const banned = Array.isArray(other) ? other : (other ? [other] : [])
+      if (banned.includes(c.token)) { status.error = '接收机器人与「通道 › Telegram」使用同一令牌，会互相抢占消息（409）。请为聊天室使用单独的机器人。'; return status }
     } catch {}
     const ctl = new AbortController()
     poll = { ctl }

@@ -7,6 +7,7 @@
  * 授权用户闸门照旧：这里不登记、不放宽任何工具；转给 AI 的那句仍按原发送者计入本轮。
  */
 import { clearTelegramBridge, getBoardsInbound, setTelegramBridge } from '../../boards/telegram-bridge.mjs'
+import { UPDATE_ACCOUNT_KEY } from './accounts.mjs'
 
 const origins = new Map()
 const MAX_SESSIONS = 500
@@ -24,11 +25,13 @@ export function originFromContext(context) {
   const message = messageOf(context?.raw)
   const chatId = message?.chat?.id
   if (chatId === undefined || chatId === null) return null
+  const accountId = String(context?.raw?.[UPDATE_ACCOUNT_KEY] || '').trim()
   return {
     chatId: String(chatId),
     ...(message.is_topic_message && message.message_thread_id !== undefined ? { threadId: String(message.message_thread_id) } : {}),
     senderId: context?.senderId === undefined ? '' : String(context.senderId),
     conversationType: context?.conversationType === 'group' ? 'group' : 'dm',
+    ...(accountId && accountId !== 'main' ? { accountId } : {}),
   }
 }
 
@@ -66,7 +69,7 @@ export function installBoardsLink(ReplyContextStore, ChannelHarnessBridge) {
         let result = null
         try {
           const chatId = messageOf(event.raw)?.chat?.id ?? event.conversation?.id
-          result = await hook({ chatId: String(chatId), senderId: String(event.sender?.id ?? ''), conversationType: event.conversation?.type, text })
+          result = await hook({ chatId: String(chatId), senderId: String(event.sender?.id ?? ''), conversationType: event.conversation?.type, accountId: event.accountId, text })
         } catch { result = null }
         if (result?.notice) {
           try { await this.sendCommandNotice(event, result.notice) } catch { /* ignore */ }
@@ -86,30 +89,43 @@ export function installBoardsLink(ReplyContextStore, ChannelHarnessBridge) {
   }
 }
 
-/** 把适配器的 Bot API 上游包成棋类要的几个方法。upstream.requestOk(endpoint, body) 接受 JSON 或 FormData。 */
+function resolveUpstream(source, accountId) {
+  if (source instanceof Map) {
+    const id = String(accountId || 'main')
+    return source.get(id) || source.get('main') || source.values().next().value || null
+  }
+  return source
+}
+
+/** 把适配器的 Bot API 上游包成棋类要的几个方法。upstream.requestOk(endpoint, body) 接受 JSON 或 FormData。传入 Map 时按 accountId 选机器人。 */
 export function createBoardsTelegramBridge(upstream) {
   const photo = (png) => new Blob([png], { type: 'image/png' })
+  async function request(accountId, endpoint, body) {
+    const target = resolveUpstream(upstream, accountId)
+    if (!target) throw new Error('没有可发送的 Telegram 机器人')
+    return target.requestOk(endpoint, body)
+  }
   return {
     lookup: lookupSessionOrigin,
-    async sendPhoto({ chatId, threadId, png, caption }) {
+    async sendPhoto({ chatId, threadId, png, caption, accountId }) {
       const form = new FormData()
       form.append('chat_id', String(chatId))
       if (threadId) form.append('message_thread_id', String(threadId))
       form.append('photo', photo(png), 'board.png')
       if (caption) form.append('caption', caption)
-      const envelope = await upstream.requestOk('sendPhoto', form)
+      const envelope = await request(accountId, 'sendPhoto', form)
       return envelope?.data?.result?.message_id
     },
-    async deletePhoto({ chatId, messageId }) {
-      await upstream.requestOk('deleteMessage', { chat_id: String(chatId), message_id: Number(messageId) })
+    async deletePhoto({ chatId, messageId, accountId }) {
+      await request(accountId, 'deleteMessage', { chat_id: String(chatId), message_id: Number(messageId) })
     },
-    async editPhoto({ chatId, messageId, png, caption }) {
+    async editPhoto({ chatId, messageId, png, caption, accountId }) {
       const form = new FormData()
       form.append('chat_id', String(chatId))
       form.append('message_id', String(messageId))
       form.append('media', JSON.stringify({ type: 'photo', media: 'attach://board', ...(caption ? { caption } : {}) }))
       form.append('board', photo(png), 'board.png')
-      await upstream.requestOk('editMessageMedia', form)
+      await request(accountId, 'editMessageMedia', form)
     },
   }
 }

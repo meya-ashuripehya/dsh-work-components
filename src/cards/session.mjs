@@ -64,6 +64,7 @@ function copyOrigin(origin) {
     threadId: origin.threadId ? String(origin.threadId) : '',
     conversationType: origin.conversationType === 'group' ? 'group' : 'dm',
     starterId: origin.starterId ? String(origin.starterId) : '',
+    ...(origin.accountId ? { accountId: String(origin.accountId) } : {}),
     messageId: origin.messageId ? String(origin.messageId) : null,
   }
 }

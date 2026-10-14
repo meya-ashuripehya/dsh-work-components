@@ -28,7 +28,9 @@ import { installMapPlaceDelivery } from './place.mjs'
 import { installCalendarDelivery } from './calendar.mjs'
 import { installFileDelivery } from './files.mjs'
 import { DENY_MESSAGE, createOwnerGate, installOwnerGate, setActiveGate, clearActiveGate, resolveAuthorizedIds } from './owner-gate.mjs'
-import { installGroupRoute, setGroupPreset } from './group-route.mjs'
+import { installGroupRoute, setGroupPreset, setGroupPresets } from './group-route.mjs'
+import { MAIN_ACCOUNT, accountRouteLines, groupPresetMap } from './accounts.mjs'
+import { createTelegramFanout } from './fanout.mjs'
 import { installBoardsLink, mountBoardsBridge } from './boards-link.mjs'
 import { installCardsLink } from './cards-link.mjs'
 
@@ -167,14 +169,24 @@ export async function readAccessPolicy() {
   }
 }
 
-/** 写访问策略（与已存相同时不写）。返回 'unchanged' | 'written' | 'kept'。group 见 buildAccessPolicy。 */
-export async function applyAccessPolicy(ownerId, allowFromRaw, group) {
+/** 写访问策略（与已存相同时不写）。返回 'unchanged' | 'written' | 'kept'。group 见 buildAccessPolicy。accountIds 里的每个账号各写一份，缺了策略的机器人会把消息全部丢掉。 */
+export async function applyAccessPolicy(ownerId, allowFromRaw, group, accountIds) {
+  const ids = [...new Set((accountIds?.length ? accountIds : [ACCOUNT_ID]).map((id) => String(id || '').trim()).filter(Boolean))]
   const current = await readAccessPolicy()
   const next = buildAccessPolicy(current.state === 'ok' ? current.policy : null, ownerId, allowFromRaw, group)
   if (!next) return 'kept'
-  if (current.state === 'ok' && JSON.stringify(current.policy) === JSON.stringify(next)) return 'unchanged'
-  await policyStorage().set(accessPolicyStorageKey(CHANNEL_ID, ACCOUNT_ID), JSON.stringify(next))
-  return 'written'
+  const body = JSON.stringify(next)
+  const storage = policyStorage()
+  let wrote = false
+  for (const id of ids) {
+    const key = accessPolicyStorageKey(CHANNEL_ID, id)
+    let same = false
+    try { same = await storage.get(key) === body } catch { same = false }
+    if (same) continue
+    await storage.set(key, body)
+    wrote = true
+  }
+  return wrote ? 'written' : 'unchanged'
 }
 
 export function validateProxy(proxy) {
@@ -202,12 +214,13 @@ export function parseRouteMap(raw) {
   return out
 }
 
-export function telegramAdapterConfig({ format = 'html', streamMode = 'auto' } = {}) {
+export function telegramAdapterConfig({ format = 'html', streamMode = 'auto', accountId = ACCOUNT_ID } = {}) {
   const mode = FORMAT_MODES.has(String(format || '').trim()) ? String(format).trim() : 'html'
   const sm = ['auto', 'draft', 'edit'].includes(String(streamMode || '').trim()) ? String(streamMode).trim() : 'auto'
+  const account = String(accountId || ACCOUNT_ID).trim() || ACCOUNT_ID
   return TelegramConfig({
     enabled: true,
-    accountId: ACCOUNT_ID,
+    accountId: account,
     baseUrl: 'https://api.telegram.org',
     tokenRef: 'TELEGRAM_BOT_TOKEN',
     timeoutMs: 30000,
@@ -228,6 +241,7 @@ export function harnessConfig({
   routingMode = 'conversation',
   channelRoutes = '',
   conversationRoutes = '',
+  accountRoutes = '',
   sendReasoning = false,
   showToolCalls = true,
   reasoningMaxChars = 1500,
@@ -238,6 +252,7 @@ export function harnessConfig({
     : 'conversation'
   const channel = parseRouteMap(channelRoutes)
   const conversation = parseRouteMap(conversationRoutes)
+  const account = parseRouteMap(accountRoutes)
   const maxChars = Math.max(200, Number(reasoningMaxChars) || 1500)
   return harness.Config({
     inboundPreempt: inboundPreempt !== false,
@@ -247,6 +262,7 @@ export function harnessConfig({
       mode,
       overrides: {
         ...(Object.keys(channel).length ? { channel } : {}),
+        ...(Object.keys(account).length ? { account } : {}),
         ...(Object.keys(conversation).length ? { conversation } : {}),
       },
     },
@@ -259,26 +275,54 @@ export function harnessConfig({
   })
 }
 
+function botsToStart(options) {
+  if (Array.isArray(options.accounts) && options.accounts.length) {
+    return options.accounts.filter((a) => a?.token).map((a) => ({
+      id: String(a.id || MAIN_ACCOUNT).trim() || MAIN_ACCOUNT,
+      name: String(a.name || a.id || MAIN_ACCOUNT),
+      token: a.token,
+      preset: String(a.preset || ''),
+      groupPreset: String(a.groupPreset || ''),
+    }))
+  }
+  if (options.token) {
+    return [{ id: MAIN_ACCOUNT, name: '主机器人', token: options.token, preset: String(options.preset || ''), groupPreset: String(options.groupPreset || '') }]
+  }
+  return []
+}
+
 /**
- * 启动 Telegram 通道。token 由调用方经 ctx.credentials 解析后传入（不落盘、不记日志）。
+ * 启动 Telegram 通道。每个机器人的 token 由调用方经 ctx.credentials 解析后传入（不落盘、不记日志）。
+ * 多个机器人共用一个通道桥，按账号把消息送进各自的 DSH 会话。
  * @returns {{ dispose: () => Promise<void>, snapshot: () => Promise<object> }}
  */
 export function startTelegram(ctx, options) {
   const {
-    token, proxy, inboundPreempt, preset, onConflict,
+    proxy, inboundPreempt, onConflict,
     includeMetadataPrefix, routingMode, channelRoutes, conversationRoutes, format,
     streamMode, sendReasoning, showToolCalls, reasoningMaxChars,
-    groupPreset, authorizedIds = [], debugTrace = false,
+    authorizedIds = [], debugTrace = false, skipped = [],
   } = options
+  const bots = botsToStart(options)
+  if (!bots.length) throw new Error('没有可启动的机器人')
+  const primary = bots.find((b) => b.id === MAIN_ACCOUNT)
+  const defaultPreset = primary ? primary.preset : String(options.preset || '')
   // 入站排查日志（~/.dsh/dsh-channels/telegram-inbound.log）只在卡片「排查日志」打开时写。
   if (debugTrace === true) process.env.DSH_TELEGRAM_TRACE = '1'
   else delete process.env.DSH_TELEGRAM_TRACE
-  setGroupPreset(groupPreset)
+  setGroupPresets(groupPresetMap(bots))
   const proxyUrl = validateProxy(proxy)
-  const tgConfig = telegramAdapterConfig({ format, streamMode })
   const hConfig = harnessConfig({
-    inboundPreempt, preset, includeMetadataPrefix, routingMode, channelRoutes, conversationRoutes,
-    sendReasoning, showToolCalls, reasoningMaxChars,
+    inboundPreempt,
+    preset: defaultPreset,
+    includeMetadataPrefix,
+    routingMode,
+    channelRoutes,
+    conversationRoutes,
+    accountRoutes: accountRouteLines(bots),
+    sendReasoning,
+    showToolCalls,
+    reasoningMaxChars,
   })
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : null
   const fetchImpl = dispatcher ? (url, init) => undiciFetch(url, { ...init, dispatcher }) : undefined
@@ -292,25 +336,25 @@ export function startTelegram(ctx, options) {
     conflict: false,
     disposed: false,
   }
-  let adapter = null
+  let fanout = null
 
-  const record = (level, args) => {
+  const record = (accountId, level, args) => {
     const line = sanitizeLogLine(args)
     if (!line) return
     if (level === 'error' || level === 'warn') {
       state.lastError = line
       state.lastErrorAt = Date.now()
     }
-    if (!state.conflict && isPollingConflict(line)) {
+    if (isPollingConflict(line) && fanout?.markConflict(accountId)) {
       state.conflict = true
       try { onConflict?.(line) } catch { /* ignore */ }
     }
   }
-  const wrapLogger = (logger) => new Proxy(logger, {
+  const wrapLogger = (logger, accountId) => new Proxy(logger, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver)
       if ((prop === 'warn' || prop === 'error') && typeof value === 'function') {
-        return (...args) => { record(prop, args); return value.apply(target, args) }
+        return (...args) => { record(accountId, prop, args); return value.apply(target, args) }
       }
       return typeof value === 'function' ? value.bind(target) : value
     },
@@ -320,6 +364,26 @@ export function startTelegram(ctx, options) {
     if (event.type === 'auth.changed') state.auth = event.state
     else if (event.type === 'connection.changed') state.connection = event.state
   }
+  const entries = bots.map((bot) => {
+    const tgConfig = telegramAdapterConfig({ format, streamMode, accountId: bot.id })
+    return {
+      id: bot.id,
+      name: bot.name,
+      adapter: new TelegramAdapter(tgConfig, {
+        token: bot.token,
+        transport: new FetchTransport(tgConfig.baseUrl, { timeoutMs: tgConfig.timeoutMs, ...(fetchImpl ? { fetchImpl } : {}) }),
+      }),
+    }
+  })
+  fanout = createTelegramFanout(entries, {
+    decorateContext(base, accountId) {
+      return {
+        ...base,
+        logger: wrapLogger(base.logger, accountId),
+        emit: (event) => { observe(event); return base.emit(event) },
+      }
+    },
+  })
 
   const fork = ctx.plugin({
     name: 'dsh-workbench-telegram',
@@ -341,21 +405,11 @@ export function startTelegram(ctx, options) {
           setActiveGate(gate)
           const offGuard = c.tools.guard((exec) => gate.check(exec))
           c.effect?.(() => () => { try { offGuard?.() } catch { /* ignore */ } clearActiveGate(gate) })
-          adapter = new TelegramAdapter(tgConfig, {
-            token,
-            transport: new FetchTransport(tgConfig.baseUrl, { timeoutMs: tgConfig.timeoutMs, ...(fetchImpl ? { fetchImpl } : {}) }),
-          })
-          // 棋类：来自本通道的棋局由插件自动发棋盘图（同一个适配器上游，同一令牌与代理）。
-          const offBoards = mountBoardsBridge(adapter.upstream)
+          // 棋类 / 牌类：按收到消息的机器人把图片发回去。
+          const upstreams = new Map(entries.map((e) => [e.id, e.adapter.upstream]))
+          const offBoards = mountBoardsBridge(upstreams)
           c.effect?.(() => () => { try { offBoards() } catch { /* ignore */ } })
-          mountChannelAdapter(c, adapter, (signal) => {
-            const base = c.channels.createAdapterContext({ channelId: CHANNEL_ID, signal })
-            return {
-              ...base,
-              logger: wrapLogger(base.logger),
-              emit: (event) => { observe(event); return base.emit(event) },
-            }
-          })
+          mountChannelAdapter(c, fanout, (signal) => c.channels.createAdapterContext({ channelId: CHANNEL_ID, signal }))
           state.mounted = true
           c.effect?.(() => () => { state.mounted = false })
         },
@@ -371,15 +425,20 @@ export function startTelegram(ctx, options) {
       if (dispatcher) { try { await dispatcher.close() } catch { /* ignore */ } }
     },
     async snapshot() {
-      let health = null
-      if (adapter && state.mounted) {
-        try { health = await adapter.getHealth() } catch { health = null }
+      let described = null
+      if (fanout && state.mounted) {
+        try { described = await fanout.describe() } catch { described = null }
       }
+      const botsLive = described?.bots || []
+      const names = botsLive.filter((b) => b.health?.status === 'ok' && b.username).map((b) => '@' + b.username)
       const missing = HOST_SERVICES.filter((n) => { try { return ctx.get(n) == null } catch { return true } })
       return {
         ...state,
-        health,
-        bot: adapter?.botIdentity?.username ? '@' + adapter.botIdentity.username : null,
+        health: described?.health || null,
+        auth: botsLive.some((b) => b.health?.authenticated) ? 'authenticated' : state.auth,
+        bot: names.length ? names.join('、') : null,
+        bots: botsLive,
+        skipped,
         missing,
         proxy: proxyUrl ? 'custom' : 'host',
       }

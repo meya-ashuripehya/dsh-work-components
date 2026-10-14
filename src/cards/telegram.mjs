@@ -5,6 +5,7 @@ import { renderTable } from './render.mjs'
 import { activeContextKey, lookSession, onSessionChange, playSession, saveSessionNow, sessionOrigin } from './session.mjs'
 import { clearCardsInbound, setCardsInbound } from './telegram-bridge.mjs'
 import { getTelegramBridge } from '../boards/telegram-bridge.mjs'
+import { sameAccount } from '../channels/telegram/accounts.mjs'
 
 export const ILLEGAL_NOTICE = '只能说 hit、stand、要牌或停牌'
 export const NOT_PLAYER_NOTICE = '只有发起这手的人可以要牌或停牌'
@@ -21,6 +22,7 @@ export function telegramOriginFor(sessionId) {
     ...(hit.threadId ? { threadId: String(hit.threadId) } : {}),
     conversationType: hit.conversationType === 'group' ? 'group' : 'dm',
     starterId: hit.senderId ? String(hit.senderId) : '',
+    ...(hit.accountId ? { accountId: String(hit.accountId) } : {}),
     messageId: null,
   }
 }
@@ -67,12 +69,13 @@ export async function publishTable(event, { timeoutMs = 15000 } = {}) {
   const messageId = await withTimeout(Promise.resolve(bridge.sendPhoto({
     chatId: origin.chatId,
     ...(origin.threadId ? { threadId: origin.threadId } : {}),
+    ...(origin.accountId ? { accountId: origin.accountId } : {}),
     png,
     caption,
   })), timeoutMs)
   if (messageId !== undefined && messageId !== null) origin.messageId = String(messageId)
   if (previous && previous !== origin.messageId && typeof bridge.deletePhoto === 'function') {
-    try { await withTimeout(Promise.resolve(bridge.deletePhoto({ chatId: origin.chatId, messageId: previous })), timeoutMs) } catch { /* keep */ }
+    try { await withTimeout(Promise.resolve(bridge.deletePhoto({ chatId: origin.chatId, messageId: previous, ...(origin.accountId ? { accountId: origin.accountId } : {}) })), timeoutMs) } catch { /* keep */ }
   }
   return 'sent'
 }
@@ -81,9 +84,10 @@ function sentence(text) {
   return /[。！？!?…~～.]$/.test(text) ? text : `${text}。`
 }
 
-export async function handleCardInbound({ chatId, senderId, text }) {
+export async function handleCardInbound({ chatId, senderId, accountId, text }) {
   const origin = sessionOrigin()
   if (!origin || origin.channel !== 'telegram' || String(chatId) !== origin.chatId) return null
+  if (!sameAccount(origin.accountId, accountId)) return null
   const key = activeContextKey()
   if (!key || contextKey({ origin }) !== key) return null
   let view

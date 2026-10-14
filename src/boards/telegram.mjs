@@ -15,6 +15,7 @@ import { displayMove, looksLikeMove, splitLeadingMove } from './notation.mjs'
 import { renderBoard } from './render.mjs'
 import { lookSession, onSessionChange, playSession, saveSessionNow, sessionLabel, sessionOrigin } from './session.mjs'
 import { clearBoardsInbound, getTelegramBridge, setBoardsInbound } from './telegram-bridge.mjs'
+import { sameAccount } from '../channels/telegram/accounts.mjs'
 
 export const ILLEGAL_NOTICE = '这步不在合法着法里'
 export const NOT_PLAYER_NOTICE = '只有发起这局的人（或指定的对手）可以走棋'
@@ -34,6 +35,7 @@ export function telegramOriginFor(sessionId, opponent) {
     ...(hit.threadId ? { threadId: String(hit.threadId) } : {}),
     conversationType: hit.conversationType === 'group' ? 'group' : 'dm',
     starterId: hit.senderId ? String(hit.senderId) : '',
+    ...(hit.accountId ? { accountId: String(hit.accountId) } : {}),
     ...(/^-?\d{1,20}$/.test(opp) ? { opponentId: opp } : {}),
     messageId: null,
   }
@@ -75,13 +77,14 @@ export async function publishBoard(event, { timeoutMs = 15000 } = {}) {
   const messageId = await withTimeout(Promise.resolve(bridge.sendPhoto({
     chatId: origin.chatId,
     ...(origin.threadId ? { threadId: origin.threadId } : {}),
+    ...(origin.accountId ? { accountId: origin.accountId } : {}),
     png,
     caption,
   })), timeoutMs)
   if (messageId !== undefined && messageId !== null) origin.messageId = String(messageId)
   if (previous && previous !== origin.messageId && typeof bridge.deletePhoto === 'function') {
     // 超过 48 小时、群里没有删除权限、已被手动删掉：都留着不管。
-    try { await withTimeout(Promise.resolve(bridge.deletePhoto({ chatId: origin.chatId, messageId: previous })), timeoutMs) } catch { /* keep */ }
+    try { await withTimeout(Promise.resolve(bridge.deletePhoto({ chatId: origin.chatId, messageId: previous, ...(origin.accountId ? { accountId: origin.accountId } : {}) })), timeoutMs) } catch { /* keep */ }
   }
   return 'sent'
 }
@@ -95,9 +98,10 @@ function sentence(text) {
  * 整句是一步：照旧。开头一步 + 分隔符 + 一句话：合法则落子并连同这句话转给 AI；不合法回「这步不在合法着法里」不转发；
  * 混合消息遇到不是玩家 / 不是人的回合时当普通聊天放过（null），免得把聊天吞掉。
  */
-export async function handleBoardInbound({ chatId, senderId, text }) {
+export async function handleBoardInbound({ chatId, senderId, accountId, text }) {
   const origin = sessionOrigin()
   if (!origin || origin.channel !== 'telegram' || String(chatId) !== origin.chatId) return null
+  if (!sameAccount(origin.accountId, accountId)) return null
   let view
   try { view = lookSession() } catch { return null }
   if (view.over) return null

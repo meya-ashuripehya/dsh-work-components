@@ -22,7 +22,7 @@ export function installCardsLink(ChannelHarnessBridge) {
       let result = null
       try {
         const chatId = messageOf(event.raw)?.chat?.id ?? event.conversation?.id
-        result = await hook({ chatId: String(chatId), senderId: String(event.sender?.id ?? ''), conversationType: event.conversation?.type, text })
+        result = await hook({ chatId: String(chatId), senderId: String(event.sender?.id ?? ''), conversationType: event.conversation?.type, accountId: event.accountId, text })
       } catch { result = null }
       if (result?.notice) {
         try { await this.sendCommandNotice(event, result.notice) } catch { /* ignore */ }

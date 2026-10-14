@@ -21,6 +21,7 @@ import { createStore, ChatroomError } from './store.mjs'
 import { createModerator } from './moderator.mjs'
 import { callSeat } from './providers.mjs'
 import { resolveSeats, normalizeSeats, CHATROOM_SEATS_KEY, DEFAULT_OWNER_TELEGRAM_ID, DEFAULT_CURSOR_AGENT } from './seats.mjs'
+import { channelTokenRefs } from '../channels/telegram/accounts.mjs'
 import { createTelegramBots } from './telegram-bots.mjs'
 import { runCursorAgent, cursorDeeplink } from './cursor.mjs'
 import { createDiscovered } from './discovered.mjs'
@@ -127,7 +128,16 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
     resolveToken,
     getSeats: () => roomConfig().seats,
     getProxy: () => { const c = getConfig() || {}; return String(c.chatroomTelegramProxy || c.telegramProxy || '').trim() },
-    conflictToken: async () => { const c = getConfig() || {}; return c.telegramEnabled ? resolveToken(String(c.telegramTokenRef || 'TELEGRAM_BOT_TOKEN')) : undefined },
+    conflictToken: async () => {
+      const c = getConfig() || {}
+      if (c.telegramEnabled !== true) return []
+      const out = []
+      for (const ref of channelTokenRefs(c)) {
+        const value = await resolveToken(ref)
+        if (value) out.push(value)
+      }
+      return out
+    },
     fetchImpl: options.telegramFetch,
     logger: ctx?.logger,
     onDiscover: async (d) => { if (!chatMap.has(d.chatId)) await discovered.record(d) },

@@ -216,8 +216,9 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 「通道」分组的 Telegram 卡片把机器人私聊和已允许的群聊接到 DSH 会话，功能与独立插件 `dsh-telegram-temp` 相同（文字、图片、流式回复，以及多模态工具结果图片转发）。地图标点卡片改为 Telegram 原生命置（`sendVenue`，坐标由 GCJ-02 转为 WGS-84），不发送静态地图图片。
 
 - **默认关闭**；关闭时不加载任何通道代码。打开「启用」后才动态加载 `lib/channel-telegram.mjs`，在本插件 ctx 下挂一个 fork（channel-core → channel-harness → Telegram 适配器）；关闭开关或插件卸载时随 fork 一起清理（`ctx.effect`）。不直接写会话日志：入站经宿主 `agents` 服务进入会话。
-- **令牌**写进宿主凭据（默认引用名 `TELEGRAM_BOT_TOKEN`，与 `dsh-telegram-temp` 共用，切换时无需重新填写），不写入本插件设置；`GET /settings` 只回传占位值。
-- **会话绑定与访问策略**沿用 `~/.dsh/dsh-channels`（`bindings.json`、`storage/access/policy/v1/telegram/main`）。卡片填写了所有者用户 ID 时，启动时按卡片写入访问策略：私聊白名单为所有者 + 允许的用户；群聊按「群聊 / 群 ID / 群内需要 @ / 群内发言人」写入（默认关闭）。留空所有者则不改已保存的策略。机器人不能自己进群，须由成员添加；默认隐私模式下 Telegram 只推送 @、回复和命令。
+- **令牌**写进宿主凭据（主机器人默认引用名 `TELEGRAM_BOT_TOKEN`，与 `dsh-telegram-temp` 共用，切换时无需重新填写），不写入本插件设置；`GET /settings` 只回传占位值。卡片下方可以再加机器人：每个机器人单独的令牌、账号标识和预设，各自长轮询。同一个令牌不能给两个机器人或聊天室接收机器人用。
+- **会话**按「通道 + 账号 + 聊天」分开。主机器人仍是账号 `main`，原有私聊和群会话不变。你和另一个机器人的私聊是另一条 DSH 会话，并用那个机器人自己的预设；改预设只影响之后新建的会话，已绑定的要在该会话里 `/new`。
+- **会话绑定与访问策略**沿用 `~/.dsh/dsh-channels`（`bindings.json`、`storage/access/policy/v1/telegram/<账号>`）。卡片填写了所有者用户 ID 时，启动时按卡片给每个正在连接的机器人写入同一份访问策略：私聊白名单为所有者 + 允许的用户；群聊按「群聊 / 群 ID / 群内需要 @ / 群内发言人」写入（默认关闭）。留空所有者则不改已保存的策略。机器人不能自己进群，须由成员添加；默认隐私模式下 Telegram 只推送 @、回复和命令。
 - **代理**：卡片填写的 HTTP 代理只用于访问 `api.telegram.org`；留空沿用宿主与环境变量。
 - **路由与格式**（迁移自 profile `cordis.patch.yml` 的 channels-harness / channels-telegram）：默认智能体预设、通道级 / 会话级预设覆盖、路由模式、入站元数据前缀、出站格式（默认 HTML）。
 - **冲突保护**：profile 的 bundles 里仍有 `dsh-telegram-temp`（或 `@wsz987/dsh-channels`）、或宿主里已有其他插件提供的 `channels` / `channelControl` 服务时不启动，卡片显示「已由独立插件 dsh-telegram-temp 接管，请先移除该插件」等说明；运行中出现 Telegram 409（同一机器人被别处轮询）时立即停止轮询。

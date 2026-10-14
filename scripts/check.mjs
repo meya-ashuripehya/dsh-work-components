@@ -121,7 +121,7 @@ try {
 }
 
 // Telegram 通道：群消息映射、授权用户工具闸门、群聊预设路由（node:test）。
-for (const file of ['group-inbound.test.mjs', 'owner-gate.test.mjs']) {
+for (const file of ['group-inbound.test.mjs', 'owner-gate.test.mjs', 'accounts.test.mjs']) {
   try {
     execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'telegram', file)], { stdio: 'pipe' })
   } catch (error) {
