@@ -46,4 +46,13 @@ jobs:
 
       - run: npm run check
 
-      - run: npm publish --access public --provenance
+      # 预发布版本（含 "-"，如 0.4.0-beta.1）发到 beta 等 dist-tag，不移动 latest。
+      - name: npm publish
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          case "$VERSION" in
+            *-*) TAG=$(echo "${VERSION#*-}" | cut -d. -f1) ;;
+            *) TAG=latest ;;
+          esac
+          echo "publishing $VERSION with --tag $TAG"
+          npm publish --access public --provenance --tag "$TAG"
