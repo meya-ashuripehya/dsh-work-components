@@ -353,6 +353,12 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 
 按版本从新到旧整理，依据 git 标签、提交记录与 [GitHub Releases](https://github.com/meya-ashuripehya/dsh-work-components/releases)。
 
+### 0.4.0（2026-10-14）
+
+- 新增：正式版，包含 0.4.0-beta.1 与 0.4.0-beta.2 的全部功能：「游戏」分组的牌类（5 种牌类游戏）与棋类（4 种棋）组件，「多模态」分组的「GPT Image 2 生图」，「通用」分组的「网关核验」。
+- 修改：「通道 › Telegram」同时接入多个机器人仍为实验性，未验证，不建议使用；多 AI 聊天室仍为实验性，默认关闭且不在设置页显示。
+- 修改：需要 Node.js `^22.19 || >=24`。
+
 ### 0.4.0-beta.2（预览版，2026-10-14）
 
 - 新增：在「游戏」分组中新增牌类组件，在设置页下载 RLCard 后可玩 5 种牌类游戏（二十一点、勒杜克扑克、限注德州扑克、UNO、斗地主）。启用后可在聊天中让 AI 开局并对打，进度自动存档，Telegram 中以图片显示牌桌。
