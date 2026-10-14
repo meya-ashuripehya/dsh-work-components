@@ -33,6 +33,10 @@ export async function openChess(dir) {
 
   return {
     list,
+    /** 当前局面的 FEN（给辅助引擎用）。 */
+    fen() {
+      return game.exportFEN()
+    },
     play(text) {
       const cfg = config()
       if (cfg.isFinished) throw new BoardError('这局已经结束')

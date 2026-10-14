@@ -212,7 +212,7 @@ test('names, license, engines, one session', async () => {
     cfg = { boardsEnabled: true }
     await feature.sync()
     assert.equal(feature.state().status, 'on')
-    assert.deepEqual(registered, ['board_open', 'board_look', 'board_play', 'board_close'])
+    assert.deepEqual(registered, ['board_open', 'board_look', 'board_play', 'board_close', 'board_reset', 'board_hint'])
     await feature.dispose()
   } finally {
     resetSession()

@@ -6,6 +6,7 @@ import { playerName } from './names.mjs'
 import { boardsPage } from './page.mjs'
 import { lookSession, playSession, setPlayerName } from './session.mjs'
 import { BOARD_SOURCES, GAMES } from './sources.mjs'
+import { assistStatus, cancelAssistDownload, removeAssist, startAssistDownload } from './assist/install.mjs'
 
 const TYPES = {
   '.js': 'text/javascript; charset=utf-8',
@@ -24,12 +25,43 @@ function crossSite(req) {
   return req.headers['sec-fetch-site'] === 'cross-site'
 }
 
+function withAssist(games) {
+  const assist = assistStatus()
+  return games.map((g) => ({ ...g, assist: assist[g.id] || null }))
+}
+
 export async function handleBoardsApi(req, res, sub, helpers) {
   if (sub !== '/boards' && !sub.startsWith('/boards/')) return false
   const { sendJson, readBody, getConfig } = helpers
   try {
     if (sub === '/boards/status' && req.method === 'GET') {
-      sendJson(res, 200, { ok: true, games: gameStatus() })
+      sendJson(res, 200, { ok: true, games: withAssist(gameStatus()) })
+      return true
+    }
+    if (sub === '/boards/assist/download' && req.method === 'POST') {
+      if (crossSite(req)) { sendJson(res, 403, { ok: false, error: 'cross-site request refused' }); return true }
+      const body = JSON.parse(await readBody(req) || '{}')
+      const game = String(body.game || '').trim()
+      if (!GAMES[game]) throw new BoardError('game 只能是 xiangqi、chess、gomoku、go')
+      // 后台下载，页面轮询 /boards/status 取进度
+      startAssistDownload(game).catch(() => {})
+      sendJson(res, 200, { ok: true, games: withAssist(gameStatus()) })
+      return true
+    }
+    if (sub === '/boards/assist/cancel' && req.method === 'POST') {
+      if (crossSite(req)) { sendJson(res, 403, { ok: false, error: 'cross-site request refused' }); return true }
+      const body = JSON.parse(await readBody(req) || '{}')
+      cancelAssistDownload(String(body.game || '').trim())
+      sendJson(res, 200, { ok: true, games: withAssist(gameStatus()) })
+      return true
+    }
+    if (sub === '/boards/assist/remove' && req.method === 'POST') {
+      if (crossSite(req)) { sendJson(res, 403, { ok: false, error: 'cross-site request refused' }); return true }
+      const body = JSON.parse(await readBody(req) || '{}')
+      const game = String(body.game || '').trim()
+      if (!GAMES[game]) throw new BoardError('game 只能是 xiangqi、chess、gomoku、go')
+      await removeAssist(game)
+      sendJson(res, 200, { ok: true, games: withAssist(gameStatus()) })
       return true
     }
     if ((sub === '/boards/download' || sub === '/boards/download/') && req.method === 'POST') {
@@ -37,8 +69,9 @@ export async function handleBoardsApi(req, res, sub, helpers) {
       const body = JSON.parse(await readBody(req) || '{}')
       const game = String(body.game || '').trim()
       if (!GAMES[game]) throw new BoardError('game 只能是 xiangqi、chess、gomoku、go')
+      // 只下载棋盘本体；辅助引擎另行下载
       await ensureGame(game)
-      sendJson(res, 200, { ok: true, games: gameStatus() })
+      sendJson(res, 200, { ok: true, games: withAssist(gameStatus()) })
       return true
     }
     if (sub === '/boards/session' && req.method === 'GET') {

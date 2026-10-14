@@ -1,7 +1,9 @@
 /**
  * 棋类：默认关闭。启用时挂上 board_* 工具，关闭时卸下并结束当前棋局；已下载的仓库仍留在数据目录。
  */
-import { closeSession } from './session.mjs'
+import { stopAllEngines, stopEngine } from './assist/hints.mjs'
+import { closeSession, onSessionChange } from './session.mjs'
+import { installBoardsTelegram } from './telegram.mjs'
 import { createBoardsTools } from './tools.mjs'
 
 export function createBoardsFeature(ctx, getConfig) {
@@ -10,10 +12,17 @@ export function createBoardsFeature(ctx, getConfig) {
   let disposed = false
   let snapshot = ''
 
+  let offTelegram = null
+  // 关闭棋盘时结束辅助引擎进程（下次需要时再起）。
+  let offEngines = null
+
   async function stop() {
     const fork = state.fork
     state.fork = null
     closeSession()
+    stopAllEngines()
+    if (offEngines) { try { offEngines() } catch { /* ignore */ } offEngines = null }
+    if (offTelegram) { try { offTelegram() } catch { /* ignore */ } offTelegram = null }
     if (fork) {
       try { await fork.dispose?.() } catch (error) {
         log.warn?.('dsh-workbench: boards stop failed', error?.name || 'error')
@@ -55,6 +64,15 @@ export function createBoardsFeature(ctx, getConfig) {
         await stop()
         return
       }
+      // 来自 Telegram 的棋局：每步自动发棋盘图、接管文字走子。非 Telegram 会话不受影响。
+      offTelegram = installBoardsTelegram({ logger: log })
+      offEngines = onSessionChange((event) => {
+        if (event?.type === 'close') stopAllEngines()
+        else if (event?.type === 'open' && event.view?.game) {
+          // 换了棋种：结束其他棋种的引擎
+          for (const game of ['xiangqi', 'chess', 'gomoku', 'go']) if (game !== event.view.game) stopEngine(game)
+        }
+      })
       snapshot = snap
       state.status = 'on'
       state.detail = '已启用'
