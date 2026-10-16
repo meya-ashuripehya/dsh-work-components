@@ -41,7 +41,7 @@
 
 卸载：`plugin_manager` 的 `remove_bundle`。数据目录（设置、已下载的工具、GameBot 数据）不随包删除，需要时手动删掉。
 
-要求：DSH Desktop（Node ≥ 22.15 运行时，会话控制要用 zstd）；Office / Photoshop / Windows / 桌面控制等组件只在 Windows 上可用。桌面控制随插件提供，不需要单独下载或安装 .NET。装好后可用设置页打开「启用」并调用 `mm_send_image` 等工具做一次冒烟；仓库 CI（`.github/workflows/ci.yml`）在 PR / push 时跑 `check` + `smoke`。
+要求：DSH Desktop（运行时 Node `^22.19 || >=24`，与 package.json 的 engines 一致；会话控制要用 zstd）；Office / Photoshop / Windows / 桌面控制等组件只在 Windows 上可用。桌面控制随插件提供，不需要单独下载或安装 .NET。装好后可用设置页打开「启用」并调用 `mm_send_image` 等工具做一次冒烟；仓库 CI（`.github/workflows/ci.yml`）在 PR / push 时跑 `check` + `smoke`。
 
 ## 数据目录
 
@@ -352,6 +352,13 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 ## 更新日志
 
 按版本从新到旧整理，依据 git 标签、提交记录与 [GitHub Releases](https://github.com/meya-ashuripehya/dsh-work-components/releases)。
+
+### 0.4.1（2026-10-16）
+
+- 修复：聊天室「所有者 Telegram 用户 ID」不再有内置默认值；留空时，Telegram 上的所有者操作（「批准 +N」「执行」、/bind、/unbind）一律拒绝，本机桌面端仍视为所有者。
+- 修复：「cursor-agent 路径」不再有内置默认值；留空时自动在 PATH 和常见安装位置查找，找不到时提示「未找到 cursor-agent」。
+- 修改：设置页示例改为通用占位（如「例：123456789」「例：D:\projects\my-app」）；聊天室中您的名字留空时显示为「用户」。
+- 修改：package.json 的简介改为英文；README 中的 Node 版本要求与 engines 一致（`^22.19 || >=24`）。
 
 ### 0.4.0（2026-10-14）
 

@@ -256,7 +256,7 @@ test('moderator: GPT leader cursor_handoff (native tool call) → brief awaiting
     let msgs = await f.store.readMessages(f.room.id)
     const brief = msgs.find((m) => m.kind === 'brief')
     assert.match(brief.deeplink, /^cursor:\/\/anysphere\.cursor-deeplink\/prompt\?text=Implement/)
-    assert.ok(f.relayed.some((r) => /任务书 #.*待 Shiro 回复「执行」/.test(r.text)))
+    assert.ok(f.relayed.some((r) => /任务书 #.*待所有者回复「执行」/.test(r.text)))
     // 非所有者「执行」
     await f.mod.post(f.room.id, '执行', { owner: false, source: 'telegram', fromId: '1', userName: 'X' })
     assert.equal(runs.length, 0)

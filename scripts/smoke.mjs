@@ -374,14 +374,14 @@ console.log('settings secrets masked: GET hides, mask round-trip keeps, empty cl
   let rejected = false
   try { rt.buildAccessPolicy(null, '10001', '', { policy: 'allowlist', chatIds: 'not-an-id', requireMention: true, senderPolicy: 'open' }) } catch { rejected = true }
   if (!rejected) throw new Error('invalid group id should throw')
-  const routes = rt.parseRouteMap('telegram:guest, qq:guest\n6153059771:lingsnow')
-  if (routes.telegram?.preset !== 'guest' || routes['6153059771']?.preset !== 'lingsnow') throw new Error('parseRouteMap mismatch')
+  const routes = rt.parseRouteMap('telegram:guest, qq:guest\n123456789:lingsnow')
+  if (routes.telegram?.preset !== 'guest' || routes['123456789']?.preset !== 'lingsnow') throw new Error('parseRouteMap mismatch')
   const hc = rt.harnessConfig({
     inboundPreempt: true, preset: 'lingsnow', includeMetadataPrefix: true, routingMode: 'conversation',
-    channelRoutes: 'telegram:guest, qq:guest, weixin:guest', conversationRoutes: 'B4C6E62A8A0919E62678494F20F30530:lingsnow, 6153059771:lingsnow',
+    channelRoutes: 'telegram:guest, qq:guest, weixin:guest', conversationRoutes: 'B4C6E62A8A0919E62678494F20F30530:lingsnow, 123456789:lingsnow',
   })
   if (!hc.includeMetadataPrefix || hc.agent?.default?.preset !== 'lingsnow' || hc.routing?.mode !== 'conversation') throw new Error('harnessConfig migration mismatch')
-  if (hc.routing.overrides.channel.telegram.preset !== 'guest' || hc.routing.overrides.conversation['6153059771'].preset !== 'lingsnow') throw new Error('harnessConfig routes mismatch')
+  if (hc.routing.overrides.channel.telegram.preset !== 'guest' || hc.routing.overrides.conversation['123456789'].preset !== 'lingsnow') throw new Error('harnessConfig routes mismatch')
   const tc = rt.telegramAdapterConfig({ format: 'html' })
   if (tc.formatting?.mode !== 'html') throw new Error('telegramAdapterConfig format mismatch')
   for (const [name, ok] of Object.entries(rt.PATCH_MARKERS)) if (!ok) throw new Error('telegram patch marker missing: ' + name)

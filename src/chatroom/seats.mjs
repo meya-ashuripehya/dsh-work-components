@@ -16,8 +16,9 @@ export const MAX_SEATS = 12
 export const CHATROOM_KEYS = ['chatroomEnabled', 'chatroomUserName', 'chatroomDefaultMain', 'chatroomTurnBudget', 'chatroomMaxHistory', 'chatroomMaxOutputTokens', 'chatroomOwnerTelegramId', 'chatroomTelegramProxy', 'chatroomCursorAgentPath', 'chatroomCursorRepo', 'chatroomCursorTimeoutSec']
 /** 由聊天室面板单独保存（PUT /chatroom/config），不经通用表单：长文本经整份设置回传时曾出现「Failed to fetch」。 */
 export const CHATROOM_PANEL_KEYS = ['chatroomRules']
-export const DEFAULT_OWNER_TELEGRAM_ID = '6153059771'
-export const DEFAULT_CURSOR_AGENT = 'C:\\Users\\10917\\AppData\\Local\\cursor-agent\\cursor-agent.cmd'
+/** 所有者 Telegram ID 与 cursor-agent 路径都没有内置默认值：所有者留空时 Telegram 上的所有者操作一律拒绝；路径留空时自动查找（cursor.mjs resolveCursorAgent）。 */
+export const DEFAULT_OWNER_TELEGRAM_ID = ''
+export const DEFAULT_CURSOR_AGENT = ''
 export const CHATROOM_SEATS_KEY = 'chatroomSeats'
 
 // ── 旧版扁平键（只用于迁移） ──
@@ -33,16 +34,16 @@ export const LEGACY_CHATROOM_KEYS = ['chatroomOrder', 'chatroomProxy', ...LEGACY
 export function chatroomSchemaShape(z) {
   return {
     chatroomEnabled: z.boolean().default(false).description('（实验性，默认关闭，设置页暂不显示）启用聊天室：多个 AI 成员与您在同一房间协作讨论。默认关闭。关闭后停止进行中的发言，记录仍保留在数据目录 chatroom/。'),
-    chatroomUserName: z.string().default('Shiro').description('您在聊天室中的名字。'),
+    chatroomUserName: z.string().default('').description('您在聊天室中的名字。留空时显示为「用户」。'),
     chatroomDefaultMain: z.string().default('deepseek').description('默认主答成员（名字或编号），默认 DeepSeek。消息中 @ 某位成员时，该成员成为本任务的主答。'),
     chatroomTurnBudget: z.natural().min(1).max(100).default(10).description('每个任务所有 AI 合计的发言回合上限，默认 10。用尽后由主答汇报进度，您回复「批准 +N」即可追加。'),
     chatroomAutoRounds: z.natural().min(1).max(10).default(1).description('（旧版设置，已由回合预算取代。）'),
     chatroomMaxHistory: z.natural().min(0).max(2000).default(60).description('每次调用最多带上的历史消息条数；0 为不限。默认 60。'),
     chatroomMaxOutputTokens: z.natural().min(64).max(32000).default(1024).description('每次发言的最大输出 token 数，默认 1024。'),
     chatroomRules: z.string().default('').description('追加的房间规则（所有成员共用）。在聊天室面板中单独保存。'),
-    chatroomOwnerTelegramId: z.string().default(DEFAULT_OWNER_TELEGRAM_ID).description('所有者的 Telegram 数字用户 ID。只有该用户（或本机桌面端）可以批准追加回合与执行 Cursor 任务。'),
+    chatroomOwnerTelegramId: z.string().default(DEFAULT_OWNER_TELEGRAM_ID).description('所有者的 Telegram 数字用户 ID。只有该用户（或本机桌面端）可以批准追加回合与执行 Cursor 任务。留空时 Telegram 上的这些所有者操作一律拒绝（本机桌面端仍视为所有者）。'),
     chatroomTelegramProxy: z.string().default('').description('聊天室机器人访问 Telegram Bot API 的 HTTP 代理，例如 http://127.0.0.1:7890；留空时沿用 Telegram 通道的代理设置。'),
-    chatroomCursorAgentPath: z.string().default(DEFAULT_CURSOR_AGENT).description('cursor-agent 命令的完整路径（headless 模式）。'),
+    chatroomCursorAgentPath: z.string().default(DEFAULT_CURSOR_AGENT).description('cursor-agent 命令的完整路径（headless 模式）。留空时自动在 PATH 和常见安装位置查找。'),
     chatroomCursorRepo: z.string().default('').description('Cursor 任务默认的目标仓库目录。任务书未指定目录时使用。'),
     chatroomCursorTimeoutSec: z.natural().min(60).max(14400).default(1800).description('单次 Cursor 任务的超时时间（秒），超时后结束整个进程树。默认 1800。'),
     chatroomSeats: z.array(z.any()).default([]).description('成员列表（有序）：{ id, name, provider, model, preset, reasoningEffort, talents, prefer, rarely, never, leader, persona, enabled, telegram: { tokenRef, ingest, username } }。机器人令牌保存在宿主凭据中，这里只有引用名。'),

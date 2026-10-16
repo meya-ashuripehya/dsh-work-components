@@ -11,7 +11,32 @@
  */
 import { spawn, execFile } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { posix, win32 } from 'node:path'
 import { isJsonValue } from '../../vendor/dsh-tools/util-values.js'
+
+/**
+ * 解析 cursor-agent 命令：设置里填了就用它（绝对路径必须存在）；留空时依次查 PATH 和常见安装位置。
+ * 不含任何个人路径。返回 { path, source: 'setting' | 'PATH' | 'known' | '', error }。
+ */
+export function resolveCursorAgent(configured, { env = process.env, platform = process.platform, exists = existsSync, home = homedir() } = {}) {
+  const win = platform === 'win32'
+  const p = win ? win32 : posix
+  const raw = String(configured || '').trim().replace(/^"(.*)"$/, '$1')
+  if (raw) {
+    if (p.isAbsolute(raw) && !exists(raw)) return { path: '', source: 'setting', error: `未找到 cursor-agent：设置的路径不存在（${raw}）。请检查「cursor-agent 路径」，或留空让插件自动查找。` }
+    return { path: raw, source: 'setting', error: '' }
+  }
+  const names = win ? ['cursor-agent.cmd', 'cursor-agent.exe', 'cursor-agent.bat'] : ['cursor-agent']
+  const pathKey = Object.keys(env || {}).find((k) => k.toUpperCase() === 'PATH')
+  const dirs = String((pathKey && env[pathKey]) || '').split(win ? ';' : ':').map((d) => d.trim().replace(/^"(.*)"$/, '$1')).filter(Boolean)
+  for (const d of dirs) for (const n of names) { const f = p.join(d, n); if (exists(f)) return { path: f, source: 'PATH', error: '' } }
+  const known = win
+    ? [env.LOCALAPPDATA && p.join(env.LOCALAPPDATA, 'cursor-agent'), home && p.join(home, 'AppData', 'Local', 'cursor-agent'), home && p.join(home, '.local', 'bin')]
+    : [home && p.join(home, '.local', 'bin'), '/usr/local/bin', '/opt/homebrew/bin']
+  for (const d of known.filter(Boolean)) for (const n of names) { const f = p.join(d, n); if (exists(f)) return { path: f, source: 'known', error: '' } }
+  return { path: '', source: '', error: '未找到 cursor-agent：请安装 Cursor CLI（cursor-agent）并加入 PATH，或在聊天室设置「cursor-agent 路径」中填写完整路径。' }
+}
 
 export const CURSOR_TOOL_NAME = 'cursor_handoff'
 
@@ -21,7 +46,7 @@ export const CURSOR_TOOL = {
     'Hand work to Cursor (headless cursor-agent) running on the owner\'s computer.',
     'Use action "brief" only after every AI in the room agrees on the plan: write a complete, self-contained English task brief (goal, context, exact changes, constraints, acceptance checks, what NOT to touch). Cursor cannot see this chat.',
     'Use action "read" for reading or summarising large amounts of code: describe what to read and what summary to return; Cursor will not modify files.',
-    'Nothing runs until the owner (Shiro) replies 「执行」 in the room. The result (final text, git diff --stat, exit code) is posted back to the room for everyone.',
+    'Nothing runs until the owner replies 「执行」 in the room. The result (final text, git diff --stat, exit code) is posted back to the room for everyone.',
     'Set resume to a previous session_id to continue that Cursor session.',
   ].join(' '),
   parameters: {
@@ -127,6 +152,9 @@ export function runCursorAgent({ agentPath, handoff, timeoutMs = 1800_000, onPro
     const cwd = handoff.repo
     const base = { action: handoff.action, title: handoff.title, repo: cwd }
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return resolve(jsonSafe({ ...base, ok: false, status: 'error', error: `repo directory not found: ${cwd}` }))
+    const agent = resolveCursorAgent(agentPath, { env: env ? { ...process.env, ...env } : process.env })
+    if (!agent.path) return resolve(jsonSafe({ ...base, ok: false, status: 'error', error: agent.error }))
+    agentPath = agent.path
     const args = ['-p', '--force', '--trust', '--output-format', 'stream-json']
     if (handoff.resume) args.push('--resume', handoff.resume)
     const quoted = /\s/.test(agentPath) && !/^".*"$/.test(agentPath) ? `"${agentPath}"` : agentPath
@@ -202,7 +230,7 @@ export function jsonSafe(value) {
 export function toolSummaryLine(m) {
   const d = m.data || {}
   if (m.tool === CURSOR_TOOL_NAME) {
-    if (d.status === 'awaiting_owner') return `🛠 ${m.speaker?.name || ''} 提交了 Cursor 任务书 #${d.briefId}：${d.title}（待 Shiro 回复「执行」）`
+    if (d.status === 'awaiting_owner') return `🛠 ${m.speaker?.name || ''} 提交了 Cursor 任务书 #${d.briefId}：${d.title}（待所有者回复「执行」）`
     if (d.status === 'running') return `🛠 Cursor 任务 #${d.briefId} 开始执行：${d.title}`
     const files = (String(d.diffStat || '').trim().split('\n').pop() || '').trim()
     return `🛠 Cursor 任务 #${d.briefId || ''} ${d.status === 'success' ? '已完成' : '结束（' + d.status + '）'}，退出码 ${d.exitCode ?? '-'}${files ? '；' + files : ''}`

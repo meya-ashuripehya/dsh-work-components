@@ -23,7 +23,7 @@ import { callSeat } from './providers.mjs'
 import { resolveSeats, normalizeSeats, CHATROOM_SEATS_KEY, DEFAULT_OWNER_TELEGRAM_ID, DEFAULT_CURSOR_AGENT } from './seats.mjs'
 import { channelTokenRefs } from '../channels/telegram/accounts.mjs'
 import { createTelegramBots } from './telegram-bots.mjs'
-import { runCursorAgent, cursorDeeplink } from './cursor.mjs'
+import { runCursorAgent, cursorDeeplink, resolveCursorAgent } from './cursor.mjs'
 import { createDiscovered } from './discovered.mjs'
 import { createRoomSessions } from './room-sessions.mjs'
 
@@ -49,7 +49,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
     const cfg = getConfig() || {}
     return {
       seats: resolveSeats(cfg),
-      userName: String(cfg.chatroomUserName || '').trim() || 'Shiro',
+      userName: String(cfg.chatroomUserName || '').trim() || '用户',
       rules: cfg.chatroomRules || '',
       maxHistory: Number(cfg.chatroomMaxHistory) || 0,
       maxTokens: Number(cfg.chatroomMaxOutputTokens) || 1024,
@@ -214,7 +214,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
       return { ...s, providerName: p?.name || s.provider, modelName: m?.name || s.model, presetName: preset?.name || s.preset, ready: !problem, problem }
     })
     for (const s of seats) s.telegram = { ...s.telegram, hasToken: !!(await resolveToken(s.telegram.tokenRef)) }
-    return { enabled: enabled(), userName: cfg.userName, defaultMain: cfg.defaultMain, budget: cfg.budget, ownerId: cfg.ownerId, rules: cfg.rules, cursorRepo: cfg.cursorRepo, seats, rooms: await store.listRooms(), telegram: bots.status() }
+    return { enabled: enabled(), userName: cfg.userName, defaultMain: cfg.defaultMain, budget: cfg.budget, ownerId: cfg.ownerId, rules: cfg.rules, cursorRepo: cfg.cursorRepo, cursorAgent: resolveCursorAgent(cfg.cursorAgent), seats, rooms: await store.listRooms(), telegram: bots.status() }
   }
 
   let ingestKey = ''
