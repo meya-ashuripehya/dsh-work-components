@@ -9,7 +9,6 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openRelaySecret, readLegacyGmail, sealRelaySecret } from './legacy.mjs'
 import { component } from './index.mjs'
 
 const PASSWORD = 'abcd efgh ijkl mnop'
@@ -145,37 +144,19 @@ test('launch keeps the app password out of the failure text and out of argv', ()
   }
   const other = component.launch({ gmailEnabled: true, gmailAddress: 'other@gmail.com', gmailAppPassword: '' })
   assert.equal(other.ok, false)
-  assert.match(other.reason, /没有可用的 Gmail/)
+  assert.match(other.reason, /请填写该地址的 16 位应用专用密码/)
+  assert.equal(other.reason.includes(secret), false)
 })
 
-test('empty settings reuse the Gmail already saved by TRIX mail', () => {
+test('empty settings no longer reuse any locally saved mailbox: a clear note asks for credentials', () => {
   const plan = component.launch({ gmailEnabled: true, gmailAddress: '', gmailAppPassword: '' })
-  if (!plan.ok) return
-  assert.equal(plan.config.env.GMAIL_ADDRESS.endsWith('@gmail.com'), true)
-  const saved = plan.config.env.GMAIL_APP_PASSWORD
-  assert.equal(saved.length, 16)
-  assert.equal(/^[A-Za-z]+$/.test(saved), true)
-  assert.equal(plan.config.args.some((arg) => String(arg).includes(saved)), false)
-})
-
-test('relay secret roundtrip and a temporary mail database', () => {
-  const secret = 'abcdefghijklmnop'
-  const sealed = sealRelaySecret(secret, 'trix-mail-relay-dev-key')
-  assert.equal(openRelaySecret(sealed, 'trix-mail-relay-dev-key'), secret)
-  assert.notEqual(openRelaySecret(sealed, 'other-key'), secret)
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-gmail-'))
-  const file = join(dir, 'mail.db')
-  const db = new DatabaseSync(file)
-  db.exec(`CREATE TABLE mail_relay_config (
-    id INTEGER PRIMARY KEY, provider TEXT, email TEXT, auth_secret_enc TEXT
-  )`)
-  db.prepare('INSERT INTO mail_relay_config (id, provider, email, auth_secret_enc) VALUES (1, ?, ?, ?)')
-    .run('gmail', 'saved@gmail.com', sealed)
-  db.close()
-  const found = readLegacyGmail([file])
-  assert.equal(found.address, 'saved@gmail.com')
-  assert.equal(found.password, secret)
-  rmSync(dir, { recursive: true, force: true })
+  assert.equal(plan.ok, false)
+  assert.match(plan.reason, /^请填写 Gmail 地址和应用专用密码。/)
+  assert.match(plan.reason, /已移除/)
+  assert.match(component.note({ gmailEnabled: true }), /请填写 Gmail 地址和应用专用密码/)
+  assert.equal(component.note({ gmailAddress: 'a@gmail.com', gmailAppPassword: PASSWORD }).includes('请填写'), false)
+  const badAddress = component.launch({ gmailEnabled: true, gmailAddress: 'nope', gmailAppPassword: PASSWORD })
+  assert.match(badAddress.reason, /请填写有效的 Gmail 地址/)
 })
 
 test('send rejects an empty body before opening a connection', async () => {

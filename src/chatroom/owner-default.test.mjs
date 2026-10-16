@@ -10,7 +10,7 @@ import { resolveCursorAgent, runCursorAgent } from './cursor.mjs'
 import { createChatroomFeature } from './index.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
-const PERSONAL = /6153059771|10917|S:\\{1,2}TRIX|S:\/TRIX|(?<!meya-)ashuripehya|\bShiro\b/i
+const PERSONAL = /6153059771|10917|S:\\{1,2}TRIX|S:\/TRIX|(?<!meya-)ashuripehya|\bShiro\b|trix-mail-relay|workerTokenMail|ATRI-(INFRA|MAIN)/i
 const TEXT_EXT = new Set(['.mjs', '.js', '.cjs', '.json', '.yml', '.yaml', '.md', '.py', '.lua', '.xml', '.toml', '.cs', '.modinfo'])
 
 async function* walk(dir) {

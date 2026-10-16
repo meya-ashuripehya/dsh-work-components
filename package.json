@@ -1,6 +1,6 @@
 {
   "name": "dsh-work-components",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "DeepSeek Harness plugin with a settings page that downloads, enables and mounts MCP servers for work apps (Office, Blender, Unity, Figma, Photoshop, Chrome, Godot, Windows, Notion, Gmail, Cloudflare, Cloudflare Docs, GitHub, ComfyUI, FFmpeg, Obsidian), plus a bundled Windows desktop-control broker, GameBot companions (Minecraft, Civilization VI, vision), card and board games, session control, a Telegram channel, and the mm_send_image / mm_send_file tools.",
   "keywords": [
     "dsh",

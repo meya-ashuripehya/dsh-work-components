@@ -17,7 +17,7 @@
 | Windows | [Windows-MCP](https://github.com/CursorTouch/Windows-MCP)（PyPI） | `mcp__windows__` | Windows；stdio 由插件拉起，或连已有 HTTP 服务 |
 | 桌面控制 | 插件自带经纪人（UI Automation） | `mcp__desktop__` | Windows；随插件提供，打开「启用」即可，无需下载 |
 | Notion | [Notion MCP](https://developers.notion.com/docs/mcp)（经 [mcp-remote](https://github.com/geelen/mcp-remote) OAuth 桥） | `mcp__notion__` | 首次 OAuth；token 在 `%USERPROFILE%\.mcp-auth` |
-| Gmail | 插件自带（IMAP `imap.gmail.com` / SMTP `smtp.gmail.com`） | `mcp__gmail__` | 留空则沿用本机 TRIX 邮件已保存的应用专用密码；`send_message` 会直接发信 |
+| Gmail | 插件自带（IMAP `imap.gmail.com` / SMTP `smtp.gmail.com`） | `mcp__gmail__` | 需要填写地址和应用专用密码；`send_message` 会直接发信 |
 | Cloudflare | [Cloudflare API MCP](https://github.com/cloudflare/mcp-server-cloudflare)（经 mcp-remote） | `mcp__cloudflare__` | 首次 OAuth（scope=offline_access） |
 | Cloudflare Docs | [Cloudflare Docs MCP](https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-catalog/)（公开 HTTP） | `mcp__cloudflare-docs__` | 无需登录 |
 | GitHub | [GitHub MCP](https://github.com/github/github-mcp-server)（托管 HTTP） | `mcp__github__` | PAT：设置 `githubToken` 或环境变量 `GITHUB_MCP_PAT` |
@@ -352,6 +352,10 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 ## 更新日志
 
 按版本从新到旧整理，依据 git 标签、提交记录与 [GitHub Releases](https://github.com/meya-ashuripehya/dsh-work-components/releases)。
+
+### 0.4.2（2026-10-16）
+
+- 修复：Gmail 组件移除「地址和密码留空时沿用本机已保存的邮箱」功能，随包代码不再读取任何本地邮件数据库或密钥；现在必须在设置中填写 Gmail 地址和应用专用密码。之前靠留空沿用的用户，组件会提示「请填写 Gmail 地址和应用专用密码」。
 
 ### 0.4.1（2026-10-16）
 
