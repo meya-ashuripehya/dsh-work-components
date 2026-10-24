@@ -78,6 +78,29 @@ export function createDshCatalog(ctx, options = {}) {
   return { providers, presets, presetPersona, llm }
 }
 
+/** GET /dsh/llm-catalog 与 /chatroom/catalog 共用的正文。 */
+export async function llmCatalogPayload(catalog) {
+  const [llm, presets] = await Promise.all([catalog.providers(), catalog.presets()])
+  return { llm, presets }
+}
+
+/** GET /dsh/efforts 与 /chatroom/efforts 共用：所选模型在 DSH 里声明的推理强度。 */
+export async function reasoningEfforts(catalog, provider, model) {
+  const llm = typeof catalog?.llm === 'function' ? catalog.llm() : null
+  let efforts = []
+  let defaultEffort = ''
+  try {
+    const info = await (llm?.resolveModelInfo?.(provider || '', model || '') ?? llm?.resolveModel?.(provider || '', model || ''))
+    efforts = (info?.reasoning?.efforts || []).map((e) => ({
+      id: String(e.id),
+      name: e.name || String(e.id),
+      ...(e.description ? { description: e.description } : {}),
+    }))
+    defaultEffort = String(info?.reasoning?.defaultEffort || '')
+  } catch { /* 模型信息读不到时就没有可选项 */ }
+  return { efforts, defaultEffort }
+}
+
 // js-yaml：预设文档里的 `!!js` 条件按原文保留，不求值。
 const jsTag = (kind) => new yaml.Type('tag:yaml.org,2002:js', { kind, construct: (d) => ({ $js: d }) })
 const SCHEMA = yaml.DEFAULT_SCHEMA.extend([jsTag('scalar'), jsTag('mapping'), jsTag('sequence')])

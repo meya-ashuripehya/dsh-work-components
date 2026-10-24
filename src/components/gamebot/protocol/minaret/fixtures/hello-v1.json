@@ -1,0 +1,32 @@
+{
+  "protocol_version": 1,
+  "event": "hello",
+  "sequence": 1,
+  "timestamp_ms": 1710000000000,
+  "user": "Bot",
+  "data": {
+    "version": "1.21.1",
+    "loader": "neoforge",
+    "loader_version": "21.1.228",
+    "mods": ["create", "farmersdelight"],
+    "username": "Bot",
+    "world_ready": true,
+    "capabilities": [
+      "minecraft.chat.say",
+      "minecraft.player.position.read",
+      "minecraft.player.health.read",
+      "minecraft.inventory.read",
+      "minecraft.block.scan",
+      "minecraft.entity.nearby",
+      "minecraft.player.look_at",
+      "minecraft.inventory.select",
+      "minecraft.inventory.drop",
+      "minecraft.item.use",
+      "minecraft.world.use_item_on_block",
+      "minecraft.world.attack_block",
+      "minecraft.world.interact",
+      "minecraft.player.activity.observe",
+      "minecraft.container.find_item"
+    ]
+  }
+}

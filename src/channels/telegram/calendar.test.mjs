@@ -104,12 +104,12 @@ test('a calendar card is sent as HTML and still forwards unrelated images', asyn
   const calls = []
   await router.deliverTurnImages('s1', 3, {
     adapter: { upstream: { requestOk: async (method, body) => { calls.push({ method, body }); return { data: { ok: true } } } } },
-    target: { conversationId: '6153059771' },
+    target: { conversationId: '9000000001' },
   })
   assert.equal(router.deliveredImages, true)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].method, 'sendMessage')
-  assert.equal(calls[0].body.chat_id, '6153059771')
+  assert.equal(calls[0].body.chat_id, '9000000001')
   assert.equal(calls[0].body.parse_mode, 'HTML')
   assert.match(calls[0].body.text, /2026年2月/)
   assert.equal(router.pendingCalendars.has('s1:3'), false)

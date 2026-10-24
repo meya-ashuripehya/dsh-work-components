@@ -234,21 +234,8 @@ static partial class Win32
         _ = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
     }
 
-    public static bool TryVirtualKey(string name, out ushort vk) =>
-        (vk = name.Trim().ToLowerInvariant() switch
-        {
-            "enter" or "return" => 0x0D,
-            "tab" => 0x09,
-            "backspace" => 0x08,
-            "delete" or "del" => 0x2E,
-            "escape" or "esc" => 0x1B,
-            "left" => 0x25,
-            "up" => 0x26,
-            "right" => 0x27,
-            "down" => 0x28,
-            "space" => 0x20,
-            _ => 0,
-        }) != 0;
+    public static bool TryVirtualKey(string name, out ushort vk) => KeyChord.TryVirtualKey(name, out vk);
+
 
     public static void KeyPress(ushort vk, int times)
     {
@@ -260,6 +247,22 @@ static partial class Win32
             inputs[i * 2 + 1] = KeyVk(vk, up: true);
         }
         _ = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>修饰键按住，主键按 times 次，再松开修饰键。组合键必须走 SendInput，PostMessage 带不上修饰键状态。</summary>
+    public static void SendChord(ushort[] modifiers, ushort vk, int times)
+    {
+        times = Math.Clamp(times, 1, 20);
+        var inputs = new List<INPUT>(modifiers.Length * 2 + times * 2);
+        foreach (var m in modifiers) inputs.Add(KeyVk(m, up: false));
+        for (var i = 0; i < times; i++)
+        {
+            inputs.Add(KeyVk(vk, up: false));
+            inputs.Add(KeyVk(vk, up: true));
+        }
+        for (var i = modifiers.Length - 1; i >= 0; i--) inputs.Add(KeyVk(modifiers[i], up: true));
+        var arr = inputs.ToArray();
+        _ = SendInput((uint)arr.Length, arr, Marshal.SizeOf<INPUT>());
     }
 
     public static void PostChars(IntPtr hwnd, string text)
@@ -462,7 +465,7 @@ static partial class Win32
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
     [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
-    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", EntryPoint = "PostMessageW", CharSet = CharSet.Unicode)] static extern bool PostMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int nIndex);
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();

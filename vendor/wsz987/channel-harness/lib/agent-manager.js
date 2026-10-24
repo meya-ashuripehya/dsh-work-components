@@ -75,6 +75,8 @@ export function optionsFor(route) {
         options.model = route.model;
     if (route.maxTokens !== undefined)
         options.maxTokens = route.maxTokens;
+    if (route.reasoningEffort)
+        options.reasoningEffort = route.reasoningEffort;
     return Object.keys(options).length > 0 ? options : undefined;
 }
 /**

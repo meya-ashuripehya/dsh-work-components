@@ -28,9 +28,13 @@ import { installMapPlaceDelivery } from './place.mjs'
 import { installCalendarDelivery } from './calendar.mjs'
 import { installFileDelivery } from './files.mjs'
 import { DENY_MESSAGE, createOwnerGate, installOwnerGate, setActiveGate, clearActiveGate, resolveAuthorizedIds } from './owner-gate.mjs'
-import { installGroupRoute, setGroupPreset, setGroupPresets } from './group-route.mjs'
-import { MAIN_ACCOUNT, accountRouteLines, groupPresetMap } from './accounts.mjs'
+import { installGroupRoute, setExcludedGroupChats, setGroupPreset, setGroupPresets } from './group-route.mjs'
+import { MAIN_ACCOUNT, accountRouteMap, accountRouteOf, groupPresetMap } from './accounts.mjs'
 import { createTelegramFanout } from './fanout.mjs'
+import { rawHub, noteDiscover } from '../../telegram/raw-hub.mjs'
+import { classifyDestination, extractChatFromUpdate } from '../../telegram/dispatch.mjs'
+import { claimPollingToken, releaseAll } from '../../telegram/polling-owners.mjs'
+import { dmSenderOf, isUnauthorizedDm, noteDmDiscover } from '../../telegram/dm-discover.mjs'
 import { installBoardsLink, mountBoardsBridge } from './boards-link.mjs'
 import { installCardsLink } from './cards-link.mjs'
 
@@ -201,8 +205,33 @@ export function validateProxy(proxy) {
 /** 与 dsh-telegram-temp 的 cordis.patch.yml 相同的适配器配置（其余用 0.5.1 + 补丁的默认值）。 */
 const FORMAT_MODES = new Set(['auto', 'rich-markdown', 'html', 'markdown-v2', 'plain'])
 
-/** 解析「键:预设」列表（逗号或换行分隔）。非法行跳过。 */
+const ROUTE_FIELDS = ['preset', 'provider', 'model', 'reasoningEffort']
+
+function routeOf(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const route = {}
+  for (const key of ROUTE_FIELDS) {
+    const text = typeof value[key] === 'string' ? value[key].trim() : ''
+    if (text) route[key] = text
+  }
+  if (value.maxTokens !== undefined && value.maxTokens !== '') route.maxTokens = value.maxTokens
+  return Object.keys(route).length ? route : null
+}
+
+/**
+ * 解析路由表。对象按账号 id 展开为完整路由（预设、服务商、模型、推理强度）；
+ * 字符串仍是「键:预设」，逗号或换行分隔，非法行跳过。
+ */
 export function parseRouteMap(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const out = {}
+    for (const [key, value] of Object.entries(raw)) {
+      const id = String(key || '').trim()
+      const route = typeof value === 'string' ? (value.trim() ? { preset: value.trim() } : null) : routeOf(value)
+      if (id && route) out[id] = route
+    }
+    return out
+  }
   const out = {}
   for (const part of String(raw ?? '').split(/[\n,]+/)) {
     const t = part.trim()
@@ -240,24 +269,26 @@ export function harnessConfig({
   includeMetadataPrefix = true,
   routingMode = 'conversation',
   channelRoutes = '',
-  conversationRoutes = '',
   accountRoutes = '',
+  defaultRoute = null,
   sendReasoning = false,
   showToolCalls = true,
   reasoningMaxChars = 1500,
 } = {}) {
   const p = String(preset ?? '').trim()
+  const fallback = routeOf(defaultRoute) || (p ? { preset: p } : null)
   const mode = ['global', 'channel', 'account', 'conversation'].includes(String(routingMode || '').trim())
     ? String(routingMode).trim()
     : 'conversation'
   const channel = parseRouteMap(channelRoutes)
-  const conversation = parseRouteMap(conversationRoutes)
+  // 会话级覆盖按 Telegram 用户压过每个机器人自己的预设，这里固定不用。
+  const conversation = {}
   const account = parseRouteMap(accountRoutes)
   const maxChars = Math.max(200, Number(reasoningMaxChars) || 1500)
   return harness.Config({
     inboundPreempt: inboundPreempt !== false,
     includeMetadataPrefix: includeMetadataPrefix !== false,
-    ...(p ? { agent: { default: { preset: p } } } : {}),
+    ...(fallback ? { agent: { default: fallback } } : {}),
     routing: {
       mode,
       overrides: {
@@ -283,10 +314,13 @@ function botsToStart(options) {
       token: a.token,
       preset: String(a.preset || ''),
       groupPreset: String(a.groupPreset || ''),
+      provider: String(a.provider || ''),
+      model: String(a.model || ''),
+      reasoningEffort: String(a.reasoningEffort || ''),
     }))
   }
   if (options.token) {
-    return [{ id: MAIN_ACCOUNT, name: '主机器人', token: options.token, preset: String(options.preset || ''), groupPreset: String(options.groupPreset || '') }]
+    return [{ id: MAIN_ACCOUNT, name: '主机器人', token: options.token, preset: String(options.preset || ''), groupPreset: String(options.groupPreset || ''), provider: '', model: '', reasoningEffort: '' }]
   }
   return []
 }
@@ -299,27 +333,33 @@ function botsToStart(options) {
 export function startTelegram(ctx, options) {
   const {
     proxy, inboundPreempt, onConflict,
-    includeMetadataPrefix, routingMode, channelRoutes, conversationRoutes, format,
+    includeMetadataPrefix, routingMode, channelRoutes, format,
     streamMode, sendReasoning, showToolCalls, reasoningMaxChars,
     authorizedIds = [], debugTrace = false, skipped = [],
+    excludedGroupChats = [],
+    channelGroupIds = '',
+    chatroomEnabled = false,
+    dmAllow = null,
   } = options
   const bots = botsToStart(options)
   if (!bots.length) throw new Error('没有可启动的机器人')
-  const primary = bots.find((b) => b.id === MAIN_ACCOUNT)
-  const defaultPreset = primary ? primary.preset : String(options.preset || '')
+  const botNames = new Map(bots.map((b) => [b.id, b.name]))
+  const lead = accountRouteOf(bots[0])
   // 入站排查日志（~/.dsh/dsh-channels/telegram-inbound.log）只在卡片「排查日志」打开时写。
   if (debugTrace === true) process.env.DSH_TELEGRAM_TRACE = '1'
   else delete process.env.DSH_TELEGRAM_TRACE
   setGroupPresets(groupPresetMap(bots))
+  setExcludedGroupChats(excludedGroupChats)
   const proxyUrl = validateProxy(proxy)
   const hConfig = harnessConfig({
     inboundPreempt,
-    preset: defaultPreset,
+    defaultRoute: lead,
+    preset: lead?.preset || '',
     includeMetadataPrefix,
     routingMode,
     channelRoutes,
-    conversationRoutes,
-    accountRoutes: accountRouteLines(bots),
+    conversationRoutes: '',
+    accountRoutes: accountRouteMap(bots),
     sendReasoning,
     showToolCalls,
     reasoningMaxChars,
@@ -364,11 +404,14 @@ export function startTelegram(ctx, options) {
     if (event.type === 'auth.changed') state.auth = event.state
     else if (event.type === 'connection.changed') state.connection = event.state
   }
+  releaseAll('channel')
+  for (const bot of bots) claimPollingToken(bot.token, 'channel', bot.id)
   const entries = bots.map((bot) => {
     const tgConfig = telegramAdapterConfig({ format, streamMode, accountId: bot.id })
     return {
       id: bot.id,
       name: bot.name,
+      token: bot.token,
       adapter: new TelegramAdapter(tgConfig, {
         token: bot.token,
         transport: new FetchTransport(tgConfig.baseUrl, { timeoutMs: tgConfig.timeoutMs, ...(fetchImpl ? { fetchImpl } : {}) }),
@@ -382,6 +425,51 @@ export function startTelegram(ctx, options) {
         logger: wrapLogger(base.logger, accountId),
         emit: (event) => { observe(event); return base.emit(event) },
       }
+    },
+    // 在 vendor inbound / group_not_allowed 之前截获：包 upstream.getUpdates（见 fanout.mjs）。
+    async onRawUpdate(raw, { accountId, token }) {
+      // 未授权私聊：记入设置页的待处理名单（宿主经 globalThis 桥接收），然后照常交给通道——
+      // 访问闸门按 user_not_allowed 静默丢弃，不回复、不提示如何授权。授权只能在本机设置页完成。
+      const dmSender = dmAllow ? dmSenderOf(raw) : null
+      if (dmSender && isUnauthorizedDm(dmSender, dmAllow)) {
+        void noteDmDiscover({ ...dmSender, accountId, botName: botNames.get(accountId) || accountId })
+        return 'pass'
+      }
+      const chat = extractChatFromUpdate(raw)
+      if (!chat) return 'pass'
+      const dest = classifyDestination(chat, {
+        boundIds: excludedGroupChats,
+        channelGroupIds,
+        chatroomEnabled: chatroomEnabled === true,
+      })
+      if (dest !== 'chatroom') return 'pass'
+      // 发现旁路：即使 hub 尚无订阅，也写入 discovered，设置页可一键绑定（不依赖 /bind 入站）。
+      let noted = false
+      try {
+        const msg = chat.message
+        noted = !!(await noteDiscover({
+          chatId: chat.chatId,
+          title: chat.title || '',
+          type: chat.type || 'group',
+          via: msg ? 'message' : 'channel-raw',
+          addedBy: msg?.from?.username || msg?.from?.first_name || '',
+          addedById: msg?.from?.id != null ? String(msg.from.id) : '',
+        }))
+      } catch { noted = false }
+      // 仅当聊天室已订阅该令牌时才吞掉；否则放行给通道（会 group_not_allowed 并写排查日志），避免启动竞态时消息进黑洞。
+      let delivered = false
+      try { delivered = !!(await rawHub.publish(token, raw, { accountId })) } catch { delivered = false }
+      if (process.env.DSH_TELEGRAM_TRACE === '1') {
+        try {
+          const { appendFileSync } = await import('node:fs')
+          const { join } = await import('node:path')
+          const { homedir } = await import('node:os')
+          appendFileSync(join(homedir(), '.dsh', 'dsh-channels', 'chatroom-dispatch.log'),
+            JSON.stringify({ t: new Date().toISOString(), chatId: chat.chatId, isGroup: chat.isGroup, delivered, noted, accountId, title: chat.title || '' }) + '\n')
+        } catch { /* ignore */ }
+      }
+      // 已发现或已投递 → 消费，避免 group_not_allowed 误伤；/bind 仍走 hub 订阅方。
+      return (delivered || noted) ? 'consumed' : 'pass'
     },
   })
 
@@ -420,7 +508,8 @@ export function startTelegram(ctx, options) {
   return {
     async dispose() {
       if (state.disposed) return
-      state.disposed = true
+      releaseAll('channel')
+    state.disposed = true
       try { await fork?.dispose?.() } catch { /* ignore */ }
       if (dispatcher) { try { await dispatcher.close() } catch { /* ignore */ } }
     },

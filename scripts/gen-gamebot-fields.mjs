@@ -17,9 +17,13 @@ for (const [game, fields] of Object.entries(GAME_FIELDS)) {
   for (const f of fields) {
     const row = { key: settingKey(game, f.cfg), label: f.label, type: f.kind }
     if (f.options) row.options = f.options
+    // hidden：保留设置键（迁移 / 兼容用），设置页不显示输入框。
+    if (f.hidden) row.hidden = true
     if (f.kind === 'password') row.placeholder = '（已保存则留空不变）'
     else if (f.def) row.placeholder = f.def
     row.desc = (f.desc ? f.desc + ' ' : '') + `GameBot 配置键 ${f.cfg}。`
+    // 字段旁的动作按钮（lib/client.js buildAction）：POST /components/<id>/addon { project: 输入框的值 }。
+    if (f.action) row.action = { component: `gamebot-${game}`, path: `/components/gamebot-${game}${f.action.path}`, label: f.action.label, busy: f.action.busy, ready: f.action.ready, need: f.action.need }
     rows.push('  ' + JSON.stringify(row) + ',')
   }
 }

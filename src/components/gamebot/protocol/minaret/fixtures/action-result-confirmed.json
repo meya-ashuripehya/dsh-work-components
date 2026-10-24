@@ -1,0 +1,21 @@
+{
+  "protocol_version": 1,
+  "event": "action_result",
+  "request_id": "4f2c0a1e-6b7d-4c8e-9f10-112233445566",
+  "sequence": 4,
+  "timestamp_ms": 1710000000600,
+  "data": {
+    "ok": true,
+    "action": "use_item_on_block",
+    "effect": "confirmed",
+    "error": null,
+    "error_code": null,
+    "sent": "used minecraft:iron_ingot on create:depot",
+    "evidence": {
+      "inventory_before": { "minecraft:iron_ingot": 5 },
+      "inventory_after": { "minecraft:iron_ingot": 4 },
+      "block_before": { "block_id": "create:depot", "pos": { "x": 12, "y": 64, "z": -3 }, "state": {} },
+      "block_after": { "block_id": "create:depot", "pos": { "x": 12, "y": 64, "z": -3 }, "state": { "waterlogged": "false" } }
+    }
+  }
+}

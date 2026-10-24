@@ -287,8 +287,38 @@ static partial class DesktopSession
         });
     });
 
+    /// <summary>UIA 模式动作对应的覆盖层提示：invoke/toggle/selection 播点击环，value 播输入提示；scroll 在 ApplyPattern 里单独处理。</summary>
+    internal static OverlayKind? PatternCue(string? via) => via switch
+    {
+        "invoke" or "toggle" or "selection" => OverlayKind.Click,
+        "value" => OverlayKind.Type,
+        _ => null,
+    };
+
+    /// <summary>
+    /// 让 UIA 模式动作和真实点击/输入一样有动画：光标滑到控件中心，再播点击环或输入提示。
+    /// 等待上限与普通点击相同（ShowClick 的 1800ms）；覆盖层的任何异常都吞掉，绝不影响动作本身。
+    /// </summary>
+    static void CuePattern(CachedElement item, string via, string? text)
+    {
+        try
+        {
+            var kind = PatternCue(via);
+            if (kind == null || !item.HasBounds) return;
+            var x = item.Bounds.CenterX;
+            var y = item.Bounds.CenterY;
+            if (kind == OverlayKind.Click) ActionOverlay.ShowClick(x, y);
+            else ActionOverlay.ShowTypeAndWait(x, y, text ?? "");
+        }
+        catch
+        {
+            // 覆盖层只是提示，失败时照常执行动作。
+        }
+    }
+
     static Outcome ApplyPattern(AutomationElement el, CachedElement item, string via, string? text, string? direction, int times)
     {
+        CuePattern(item, via, text);
         try
         {
             if (via == "value")
@@ -431,11 +461,20 @@ static partial class DesktopSession
         Thread.Sleep(60);
         if (action == DesktopAction.Key)
         {
-            if (!Win32.TryVirtualKey(key ?? "", out var vk))
-                return new Outcome(false, "不认识的按键。可用 enter、tab、backspace、delete、escape、方向键、space。");
+            if (!KeyChord.TryParse(key ?? "", out var mods, out var vk))
+                return new Outcome(false, KeyChord.Help);
             if (TryPoint(item, out var keyX, out var keyY))
                 ActionOverlay.ShowKey(keyX, keyY, key ?? "", times);
-            Win32.PostKey(host, vk, times);
+            if (mods.Length == 0)
+            {
+                Win32.PostKey(host, vk, times);
+                return new Outcome(true, null);
+            }
+            // 组合键：PostMessage 带不上 Ctrl/Alt/Shift 的按下状态（Chromium 读 GetKeyState），必须前台 + SendInput。
+            if (!Win32.ConfirmForeground(item.Top))
+                return new Outcome(false, ForegroundBlocked);
+            try { el.Focus(); } catch { }
+            Win32.SendChord(mods, vk, times);
             return new Outcome(true, null);
         }
         if (TryPoint(item, out var typeX, out var typeY))
@@ -465,11 +504,12 @@ static partial class DesktopSession
             return new Outcome(false, ForegroundBlocked);
         if (action == DesktopAction.Key)
         {
-            if (!Win32.TryVirtualKey(key ?? "", out var vk))
-                return new Outcome(false, "不认识的按键。可用 enter、tab、backspace、delete、escape、方向键、space。");
+            if (!KeyChord.TryParse(key ?? "", out var mods, out var vk))
+                return new Outcome(false, KeyChord.Help);
             if (TryPoint(item, out var keyX, out var keyY))
                 ActionOverlay.ShowKey(keyX, keyY, key ?? "", times);
-            Win32.KeyPress(vk, times);
+            if (mods.Length == 0) Win32.KeyPress(vk, times);
+            else Win32.SendChord(mods, vk, times);
             return new Outcome(true, null);
         }
         if (action == DesktopAction.Click)

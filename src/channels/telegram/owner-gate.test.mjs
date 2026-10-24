@@ -7,7 +7,7 @@ import {
 } from './owner-gate.mjs'
 import { installGroupRoute, setGroupPreset, setGroupPresets } from './group-route.mjs'
 
-const OWNER = '6153059771'
+const OWNER = '9000000001'
 const STRANGER = '7000000001'
 const GROUP_SESSION = 'ch-group'
 
@@ -130,11 +130,11 @@ test('routing: group chats use the group preset, private chats and explicit over
     routing: { mode: 'conversation', overrides: { conversation: { '-100999': { preset: 'explicit' } } } },
   })
   setGroupPreset('group-preset')
-  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-1003435238151' }), { preset: 'group-preset' })
+  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-1009000000001' }), { preset: 'group-preset' })
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: OWNER }), { preset: 'private-preset' })
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-100999' }), { preset: 'explicit' })
   setGroupPreset('')
-  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-1003435238151' }), { preset: 'private-preset' })
+  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'main', conversationId: '-1009000000001' }), { preset: 'private-preset' })
 })
 
 test('routing: each bot account keeps its own private and group preset', () => {
@@ -148,6 +148,19 @@ test('routing: each bot account keeps its own private and group preset', () => {
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'claude', conversationId: '-1001' }), { preset: 'claude-group' })
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'claude', conversationId: OWNER }), { preset: 'claude-private' })
   assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'grok', conversationId: '-1001' }), { preset: 'main-private' })
+  setGroupPresets({})
+})
+
+test('routing: a group preset keeps that bot\'s model and reasoning effort', () => {
+  installGroupRoute(AgentRouter)
+  const router = new AgentRouter({
+    agent: { default: { preset: 'main-private', provider: 'deepseek', model: 'flash' } },
+    routing: { mode: 'conversation', overrides: { account: { chatgpt: { preset: 'chatgpt', provider: 'gpt', model: 'gpt-6-sol', reasoningEffort: 'high' } } } },
+  })
+  setGroupPresets({ chatgpt: 'chatgpt-group' })
+  assert.deepEqual(router.resolve({ channelId: 'telegram', accountId: 'chatgpt', conversationId: '-1001' }), {
+    preset: 'chatgpt-group', provider: 'gpt', model: 'gpt-6-sol', reasoningEffort: 'high',
+  })
   setGroupPresets({})
 })
 test('matrix: desktop allowed, telegram private/group decided by the real sender, unknown sender denied', async () => {

@@ -71,16 +71,44 @@ export function createComponentManager(ctx, getConfig, options = {}) {
   const installs = new Map(['uv', 'node', ...COMPONENTS.map((c) => c.id)].map((id) => [id, idleInstall()]))
   let queue = Promise.resolve()
   let mcpClient = null
+  // Single-flight: sync() does Promise.all(COMPONENTS.map(syncOne)), and each syncOne
+  // calls loadMcpClient(). Concurrent Cordis internal.import of dsh-mcp-client (ESM that
+  // pulls CJS deps like schemastery / @modelcontextprotocol/client *.cjs) races Node 24's
+  // loadCJSModuleWithModuleLoad assert(module === Module._cache[filename]) → ERR_INTERNAL_ASSERTION
+  // on every mcp__* card. One shared promise makes the import happen once.
+  let mcpClientPending = null
+  let syncChain = Promise.resolve()
   let disposed = false
   const addonBusy = new Set() // 正在「安装插件到项目」的组件
 
   async function loadMcpClient() {
     if (mcpClient) return mcpClient
-    const loader = ctx.get('loader')
-    if (!loader || typeof loader.import !== 'function') throw new Error('宿主没有 loader 服务，无法挂载 dsh-mcp-client')
-    const mod = await loader.import('@deepseek-ai/dsh-mcp-client')
-    mcpClient = typeof loader.unwrapExports === 'function' ? loader.unwrapExports(mod) : (mod.default ?? mod)
-    return mcpClient
+    if (mcpClientPending) return mcpClientPending
+    mcpClientPending = (async () => {
+      const loader = ctx.get('loader')
+      if (!loader || typeof loader.import !== 'function') throw new Error('宿主没有 loader 服务，无法挂载 dsh-mcp-client')
+      // Cordis internal.import + Node 24 CJS translator can throw ERR_INTERNAL_ASSERTION
+      // on the first attempt when Module._cache races with other host loads; retry.
+      let lastError
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        try {
+          const mod = await loader.import('@deepseek-ai/dsh-mcp-client')
+          mcpClient = typeof loader.unwrapExports === 'function' ? loader.unwrapExports(mod) : (mod.default ?? mod)
+          return mcpClient
+        } catch (error) {
+          lastError = error
+          if (error?.code !== 'ERR_INTERNAL_ASSERTION' || attempt === 6) throw error
+          await new Promise((r) => setTimeout(r, 40 * attempt))
+        }
+      }
+      throw lastError
+    })()
+    try {
+      return await mcpClientPending
+    } catch (error) {
+      mcpClientPending = null
+      throw error
+    }
   }
 
   function stop(s) {
@@ -156,6 +184,9 @@ export function createComponentManager(ctx, getConfig, options = {}) {
       if (generation !== s.generation) return
       s.status = 'error'
       s.detail = String(error?.message ?? error)
+      // Drop key so the next sync() retries without needing a UI toggle.
+      // (Toggle off/on worked because *Enabled is in component.keys → key change.)
+      s.key = null
       ctx.logger?.warn?.(`dsh-workbench: failed to start ${component.id}`, error)
     }
   }
@@ -461,7 +492,26 @@ export function createComponentManager(ctx, getConfig, options = {}) {
   }
 
   const api = {
-    sync: () => Promise.all(COMPONENTS.map(syncOne)),
+    // Sequential + mutex: overlapping sync() from scope.watch + startup used to
+    // re-enter loadMcpClient while the first import was still racing Node's CJS cache.
+    // Error mounts clear s.key (see syncOne catch). After a warm mcpClient, immediately
+    // remount anything still on ERR_INTERNAL_ASSERTION — same effect as UI toggle remount.
+    sync: () => {
+      const run = syncChain.then(async () => {
+        for (const c of COMPONENTS) await syncOne(c)
+        if (!mcpClient) return
+        for (const c of COMPONENTS) {
+          const s = state.get(c.id)
+          if (s?.status !== 'error') continue
+          if (!/ERR_INTERNAL_ASSERTION|incorrect usage of Node\.js internals/.test(String(s.detail || ''))) continue
+          s.key = null
+          s.rev++
+          await syncOne(c)
+        }
+      })
+      syncChain = run.catch(() => {})
+      return run
+    },
 
     /**
      * 设置补丁里把组件从未启用改为启用时，检查启动门控；被拦下时返回错误文本（否则 null）。

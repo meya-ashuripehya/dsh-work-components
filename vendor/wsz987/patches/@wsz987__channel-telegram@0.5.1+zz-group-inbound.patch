@@ -2,8 +2,6 @@ diff --git a/lib/inbound.js b/lib/inbound.js
 index 0000000..1111111 100644
 --- a/lib/inbound.js
 +++ b/lib/inbound.js
---- "a/C:\\Users\\10917\\AppData\\Local\\Temp\\zz-diff-50388\\a\\lib\\inbound.js"
-+++ "b/C:\\Users\\10917\\AppData\\Local\\Temp\\zz-diff-50388\\b\\lib\\inbound.js"
 @@ -1,5 +1,33 @@
 +import { appendFileSync, mkdirSync } from 'node:fs';
 +import { homedir } from 'node:os';
@@ -60,8 +58,6 @@ diff --git a/lib/mapper.js b/lib/mapper.js
 index 0000000..1111111 100644
 --- a/lib/mapper.js
 +++ b/lib/mapper.js
---- "a/C:\\Users\\10917\\AppData\\Local\\Temp\\zz-diff-50388\\a\\lib\\mapper.js"
-+++ "b/C:\\Users\\10917\\AppData\\Local\\Temp\\zz-diff-50388\\b\\lib\\mapper.js"
 @@ -12,7 +12,7 @@ const telegramInteger = z.number().int().refine(Number.isSafeInteger, {
  });
  const telegramChatSchema = z.object({
@@ -216,8 +212,6 @@ diff --git a/lib/upstream.js b/lib/upstream.js
 index 0000000..1111111 100644
 --- a/lib/upstream.js
 +++ b/lib/upstream.js
---- "a/C:\\Users\\10917\\AppData\\Local\\Temp\\zz-diff-50388\\a\\lib\\upstream.js"
-+++ "b/C:\\Users\\10917\\AppData\\Local\\Temp\\zz-diff-50388\\b\\lib\\upstream.js"
 @@ -104,7 +104,7 @@ export class HttpTelegramUpstream {
                          timeout: Math.max(1, Math.floor(this.options.longPollTimeoutMs / 1000)),
                          // Plan §3.4 / §5: subscribe to interactive callback_query updates

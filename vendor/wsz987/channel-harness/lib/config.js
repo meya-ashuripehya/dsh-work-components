@@ -16,6 +16,8 @@ const routeSchema = Schema.object({
     provider: Schema.string(),
     model: Schema.string(),
     maxTokens: Schema.natural(),
+    // [dsh-workbench patch] per-bot reasoning effort, same field new sessions get from /model.
+    reasoningEffort: Schema.string(),
 });
 export const Config = Schema.object({
     agent: Schema.object({

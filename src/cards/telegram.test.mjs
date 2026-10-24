@@ -23,20 +23,20 @@ function findHiddenSeed() {
   throw new Error('seed search failed')
 }
 
-test('telegram replaces the table image and the owner gate leaves only look and play open', async () => {
-  assert.equal(isOpenTool('card_look'), true)
-  assert.equal(isOpenTool('card_play'), true)
+test('telegram replaces the table image and the owner gate does not leave card actions open', async () => {
+  assert.equal(isOpenTool('card_look'), false)
+  assert.equal(isOpenTool('card_play'), false)
   assert.equal(isOpenTool('card_open'), false)
   assert.equal(isOpenTool('card_close'), false)
   assert.equal(isOpenTool('card_reset'), false)
-  const gate = createOwnerGate({ authorized: ['6153059771'] })
+  const gate = createOwnerGate({ authorized: ['9000000001'] })
   gate.noteTurn('tg-1', '7000000001')
   const exec = (name) => ({ name, agent: { id: 'tg-1' } })
   assert.equal(gate.check(exec('card_open')), DENY_MESSAGE)
   assert.equal(gate.check(exec('card_close')), DENY_MESSAGE)
   assert.equal(gate.check(exec('card_reset')), DENY_MESSAGE)
-  assert.equal(gate.check(exec('card_look')), undefined)
-  assert.equal(gate.check(exec('card_play')), undefined)
+  assert.equal(gate.check(exec('card_look')), DENY_MESSAGE)
+  assert.equal(gate.check(exec('card_play')), DENY_MESSAGE)
 
   class Bridge {
     constructor() { this.last = ''; this.notice = '' }

@@ -25,10 +25,119 @@
 | Godot | [godot-ai](https://github.com/hi-godot/godot-ai)（PyPI，`godot-ai attach`） | `mcp__godot__` | Godot 4.7+ 编辑器开着项目，且项目启用了同版本 Godot AI 插件 |
 | FFmpeg | [Kinocut](https://github.com/KyaniteLabs/kinocut)（PyPI `kinocut`，原 mcp-video） | `mcp__ffmpeg__` | 本机已安装 ffmpeg/ffprobe（PATH 或设置路径） |
 | Obsidian | [obsidian-mcp-server](https://github.com/cyanheads/obsidian-mcp-server)（npm） | `mcp__obsidian__` | Obsidian 开着 + 社区插件 Local REST API + API 密钥 |
+| REA 逆向分析 | [rea-agents](https://github.com/morluto/rea)（npm `rea-agents@6.4.0`） | `mcp__rea__` | Node.js ^22.19 / ^24.11 / >=26；原生二进制另需 Ghidra/Hopper/IDA |
+| DeepSlate | [deepslate-mcp](https://github.com/Philogag/deepslate-mcp)（MIT，启动本机检出目录，不内置） | `mcp__deepslate__` | 本机已 clone 并 `npm install && npm run build`；Node.js 20+ |
+| Termalin | [Termalin MCP](https://termal.in/mcp)（本机 `termalin-mcp` 或托管 HTTP） | `mcp__termalin__` | 本机：已安装并运行 Termalin 应用；托管：Pro / 试用的 API 密钥 |
+| KiCad | [KiCad MCP Pro](https://github.com/oaslananka/kicad-mcp-pro)（社区，`uvx kicad-mcp-pro`，不内置） | `mcp__kicad__` | 本机 uv（uvx）；ERC / DRC / 导出需 KiCad（kicad-cli） |
+| Fusion | [Autodesk Fusion MCP Server](https://help.autodesk.com/view/ADSKMCP/ENU/)（Fusion 内置，本机 HTTP 27182） | `mcp__fusion__` | Fusion 开着，并在首选项里启用 MCP 服务器 |
+| FreeCAD | [freecad-mcp](https://github.com/neka-nat/freecad-mcp)（社区，`uvx freecad-mcp`，不内置） | `mcp__freecad__` | 本机 uv；FreeCAD 装好 MCP 插件并启动 RPC 服务器（9875） |
+| MATLAB | [MATLAB MCP Server](https://github.com/matlab/matlab-mcp-server)（官方 Go 可执行文件，不内置） | `mcp__matlab__` | 本机 MATLAB（有效许可）+ 自行下载的服务器 exe |
+| ESP-IDF | [ESP-IDF MCP 服务器](https://developer.espressif.com/blog/2026/04/esp-idf-tools-mcp-server/)（`idf.py mcp-server`） | `mcp__espidf__` | ESP-IDF v6.0+（EIM 安装）+ 项目目录 |
+| 串口 | [serial-mcp-server](https://github.com/es617/serial-mcp-server)（社区，`uvx`，不内置） | `mcp__serial__` | 本机 uv；串口设备 |
+| Rhino | [RhinoAI](https://github.com/mcneel/RhinoAI)（官方，默认）或 [rhinomcp](https://github.com/jingcheng-chen/rhinomcp)（社区） | `mcp__rhino__` | Rhino 8 开着并装好对应插件 |
+| Altium | [eda-agent](https://github.com/salitronic/eda-agent)（社区，不内置） | `mcp__altium__` | Altium Designer 开着 + 自行安装的 eda-agent |
 
 组件依赖的运行时（uv + Python，或 Node.js）与各上游 MCP 包，都可以在设置页「下载安装」到插件数据目录的 `tools/`（见下文「数据目录」）。**新鲜安装时所有工作组件 MCP 与会话控制均默认关闭**（`*Enabled: false`），装好后在管理页逐个打开「启用」才会挂载对应 MCP。具体安装、桥接、端口与项目侧配置都在设置 UI 里完成，本 README 不重复操作步骤。
 
 已内嵌：GameBot（src/components/gamebot/）、桌面控制（`src/components/desktop/broker/dist/DSHDesktopBroker.exe`，设置页「通用」分组，打开「启用」即可；npm 包内已含，git 检出需 `npm run build:desktop` 构建，要求 .NET SDK 8+）。
+
+### DeepSlate（Minecraft 结构渲染）
+
+[deepslate-mcp](https://github.com/Philogag/deepslate-mcp)（MIT，© Philogag contributors；渲染引擎 [misode/deepslate](https://github.com/misode/deepslate)，MIT，© Misode）把 `.nbt` / `.schem` / `.litematic` 结构文件渲染为 PNG。本组件在「工作组件」分组，默认关闭；只启动您本机已有的 deepslate-mcp（`node <目录>/bin/deepslate-mcp.js`），不从网络下载，也不把上游源码放进本仓库。工具说明保持上游英文原文。
+
+- **准备**：`git clone https://github.com/Philogag/deepslate-mcp`，在目录内执行 `npm install` 与 `npm run build`（需 Node.js 20+，原生依赖 `gl` 需能在本机编译或下载预编译包）；在设置中填写「deepslate-mcp 目录」，或点击「安装」把本机已有的检出目录（设置中的目录或主目录 / 桌面 / 文档下的 `deepslate-mcp`）复制到 `tools/deepslate`（原目录保留，跳过 `.git`；目录留空时自动使用该副本），再打开「启用」。
+- **Mojang 资源**：材质来自您自己的 Minecraft `client.jar`（「client.jar 路径」，即 `DEEPSLATE_JAR_PATH`），或由上游首次运行时从 Mojang 下载并缓存在本机（「材质缓存目录」，即 `DEEPSLATE_CACHE_DIR`）。本插件从不打包或分发 Mojang 资源，使用须遵守 Minecraft EULA。
+- **聊天室**：只读渲染，不控制游戏，对所有成员开放（`OPEN_PREFIXES`），与 `mc_*` / `mcp__gamebot-*` 的场景限制无关；聊天室调用时宽高上限 1600 像素（上游允许 64–4096）。
+
+### Termalin（SSH）
+
+[Termalin](https://termal.in) 是 SSH 客户端，自带 MCP 服务器。本组件在「工作组件」分组，默认关闭，不内置、也不自动安装 Termalin。工具说明保持上游英文原文。
+
+- **本机模式**（默认）：运行 Termalin 应用自带的 stdio 服务器 `termalin-mcp`，所有套餐可用。先安装 Termalin（`winget install Termalin.Termalin`、Microsoft Store、scoop 或官网安装包），在应用「Settings → Security → Agent Access (MCP)」中允许需要的主机，并把「Connect an assistant」里显示的 `termalin-mcp` 路径填入设置 `termalinCommand`（留空时自动探测常见位置和 `PATH`）。实时终端类工具要求应用保持运行。
+- **托管模式**：连接 `https://termal.in/api/v1/mcp`，请求头为 `Authorization: Bearer tk_live_…`。API 密钥在 [termal.in/account](https://termal.in/account) 的「API keys & MCP」中创建，需 Pro 或试用；只能访问已注册 Connector 的服务器，每分钟约 60 次、单次约 90 秒。密钥按其他密钥的方式保存在本机设置中，界面与接口只返回掩码。
+- **不支持 OAuth**：`https://termal.in/mcp` 需要浏览器 OAuth 2.1 授权流程，插件内不支持；填写该地址会被拒绝，请改用 API 密钥端点。
+- **安全**：这些工具会在服务器上执行命令和读写文件，一律视为会更改电脑的工具。只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用；聊天室中只在所有者触发的回合可用。代码层按 `mcp__termalin__` 前缀强制拒绝，即使该工具被误加入开放清单也不会放行。
+- 连接状态和已挂载的工具数量显示在组件详情页的连接行。
+
+### KiCad（社区 KiCad MCP Pro）
+
+使用社区服务器 [KiCad MCP Pro](https://github.com/oaslananka/kicad-mcp-pro)。本组件在「工作组件」分组，默认关闭，经 stdio 启动用户自己的副本（默认命令 `uvx kicad-mcp-pro`，首次运行由 uv 从 PyPI 下载到 uv 缓存）。**本插件不内置、不打包、不分发其代码。**
+
+- **许可证**：以所安装版本附带的许可证为准。2026-10-16 查看上游 main 分支 `LICENSE` 为 MIT；如所装版本采用 PolyForm Noncommercial，则只能用于非商业用途。
+- **设置**：启动命令、项目目录（`KICAD_MCP_PROJECT_DIR`，留空时可用工具 `kicad_set_project` 选择）、工具配置（`KICAD_MCP_PROFILE`：default / pcb_only / build / release / expert / full）、操作模式（`KICAD_MCP_OPERATING_MODE`：readonly / write / manufacturing，默认 readonly）。
+- **前提**：需要本机 uv（含 uvx，例如 `winget install astral-sh.uv`）。ERC / DRC / 导出依赖 KiCad 自带的 `kicad-cli`；实时编辑依赖正在运行的 KiCad 及其 IPC 接口。
+- **安全**：write 与 manufacturing 模式会修改工程文件或生成生产文件，属于会更改电脑的工具；只读模式下的工具按「MCP 工具仅所有者」的常规规则处理。因此所有 `mcp__kicad__` 工具都只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用，代码层按前缀强制拒绝。
+- 连接状态、当前配置 / 模式和已挂载的工具数量显示在组件详情页的连接行。
+
+### Fusion（Autodesk 官方 MCP 服务器）
+
+使用 Autodesk Fusion 内置的 [Fusion MCP Server](https://help.autodesk.com/view/ADSKMCP/ENU/)。本组件在「工作组件」分组，默认关闭，经 Streamable HTTP 连接本机服务器（默认 `http://127.0.0.1:27182/mcp`，不需要密钥），不启动任何进程。
+
+- **许可证**：服务器随 Autodesk Fusion 提供，按 Autodesk 的使用条款使用；本插件不包含其代码。
+- **启用**：在 Fusion 中打开「首选项 › 常规 › API」，勾选「Fusion MCP Server」，点「应用」。端口改过时在设置里填写完整地址。
+- **只读**：服务器没有只读模式，dsh-mcp-client 也不能按工具过滤。`fusion_mcp_read` 只读；`fusion_mcp_execute` / `fusion_mcp_update` 会修改设计。需要只读时请在对话中明确要求模型只用 `fusion_mcp_read`（仅为提示，不是强制）。
+- **安全**：本组件的工具会修改设计、文件或设备，属于会更改电脑的工具。所有 `mcp__fusion__` 工具都只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用，代码层按前缀强制拒绝；聊天室中仅所有者触发的轮次可用。
+- 连接状态、当前配置和已挂载的工具数量显示在组件详情页的连接行。工具说明按上游英文原样传给模型。
+
+### FreeCAD（社区 freecad-mcp）
+
+使用社区服务器 [freecad-mcp](https://github.com/neka-nat/freecad-mcp)，经 stdio 启动用户自己的副本（默认 `uvx freecad-mcp`）。**本插件不内置、不打包、不分发其代码。**
+
+- **许可证**：MIT。
+- **FreeCAD 侧**：按上游 README 把 `addon/FreeCADMCP` 放进 FreeCAD 的 Mod 目录，重启 FreeCAD，切到「MCP Addon」工作台，点「Start RPC Server」（端口 9875）。
+- **设置**：启动命令、FreeCAD 主机（远程时传 `--host`，本机留空）、仅文字反馈（`--only-text-feedback`，不回传截图）、令牌（`FREECAD_MCP_TOKEN`，按密钥处理，不显示）。
+- **安全**：本组件的工具会修改设计、文件或设备，属于会更改电脑的工具。所有 `mcp__freecad__` 工具都只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用，代码层按前缀强制拒绝；聊天室中仅所有者触发的轮次可用。
+- 连接状态、当前配置和已挂载的工具数量显示在组件详情页的连接行。工具说明按上游英文原样传给模型。
+
+### MATLAB（官方 MATLAB MCP Server）
+
+使用 MathWorks 官方 [MATLAB MCP Server](https://github.com/matlab/matlab-mcp-server)（Go 可执行文件），经 stdio 启动用户自己下载的 exe。**本插件不内置、不下载该程序。**
+
+- **许可证**：只能与 MATLAB 一起使用，并受 MathWorks 软件许可协议约束；不能多人共享同一服务器。
+- **安装**：从上游 GitHub Releases 下载 `matlab-mcp-server-windows-x64.exe`，在设置里填写其路径（或放进 PATH）。
+- **设置**：MATLAB 安装目录（`--matlab-root`）、初始工作文件夹（`--initial-working-folder`）、显示模式（`--matlab-display-mode`）、会话模式（`--matlab-session-mode`：auto / new / existing；existing 时只连接已共享的会话）、遥测（默认关闭，传 `--disable-telemetry=true`）。
+- **安全**：本组件的工具会修改设计、文件或设备，属于会更改电脑的工具。所有 `mcp__matlab__` 工具都只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用，代码层按前缀强制拒绝；聊天室中仅所有者触发的轮次可用。
+- 连接状态、当前配置和已挂载的工具数量显示在组件详情页的连接行。工具说明按上游英文原样传给模型。
+
+### ESP-IDF（Espressif 官方 MCP 服务器）
+
+使用 ESP-IDF 自带的 [MCP 服务器](https://developer.espressif.com/blog/2026/04/esp-idf-tools-mcp-server/)，默认命令 `eim run "idf.py mcp-server"`，经 stdio 启动；项目目录经 `IDF_MCP_WORKSPACE_FOLDER` 传入。
+
+- **许可证**：ESP-IDF 本身（Apache-2.0），由 Espressif 提供；本插件不包含其代码。
+- **前提**：用 EIM v0.8.1+ 安装 ESP-IDF v6.0 或更高版本，并安装 `mcp` 功能；设置里必须填写一个已存在的项目目录。
+- **说明**：工具可编译、烧录、监视设备。串口调试另见「串口」组件。
+- **安全**：本组件的工具会修改设计、文件或设备，属于会更改电脑的工具。所有 `mcp__espidf__` 工具都只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用，代码层按前缀强制拒绝；聊天室中仅所有者触发的轮次可用。
+- 连接状态、当前配置和已挂载的工具数量显示在组件详情页的连接行。工具说明按上游英文原样传给模型。
+
+### 串口（社区 serial-mcp-server）
+
+独立的「串口」组件（不放在 ESP-IDF 里，任何串口设备都能用），使用社区服务器 [serial-mcp-server](https://github.com/es617/serial-mcp-server)，默认 `uvx --from serial-mcp-server serial_mcp`。**本插件不内置其代码。**
+
+- **许可证**：MIT。
+- **设置**：启动命令、插件（`SERIAL_MCP_PLUGINS`，默认不加载；可填 `all` 或逗号分隔的名字）。工具名分隔符固定为 `_`（模型接口不接受带点的工具名），默认关闭追踪。
+- **安全**：本组件的工具会修改设计、文件或设备，属于会更改电脑的工具。所有 `mcp__serial__` 工具都只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用，代码层按前缀强制拒绝；聊天室中仅所有者触发的轮次可用。
+- 连接状态、当前配置和已挂载的工具数量显示在组件详情页的连接行。工具说明按上游英文原样传给模型。
+
+### Rhino（官方 RhinoAI，或社区 rhinomcp）
+
+默认使用 McNeel 官方 [RhinoAI](https://github.com/mcneel/RhinoAI)（`rhino-mcp-router --default-version 8`，stdio）；也可在设置里改为社区 [rhinomcp](https://github.com/jingcheng-chen/rhinomcp)（`uvx rhinomcp`，连接 Rhino 内 TCP 端口，默认 1999）。
+
+- **许可证**：两者均为 MIT；本插件不包含其代码。
+- **Rhino 8 兼容性**：官方 RhinoAI 支持 Rhino 8（Rhino 9 WIP 也可，设置里选版本）；社区 rhinomcp 面向 Rhino 8。Rhino 7 两者都不支持。
+- **官方**：在 Rhino 8 的 PackageManager 安装「Rhino-MCP-Platform」，运行命令 `MCPConnect` 查看路由程序命令；若不在 PATH，把完整命令填进设置。
+- **社区**：在 PackageManager 安装 rhinomcp 插件，在 Rhino 中运行 `mcpstart`；可在设置中关闭脚本执行（RunCommand / RhinoScript / C#）。
+- **安全**：本组件的工具会修改设计、文件或设备，属于会更改电脑的工具。所有 `mcp__rhino__` 工具都只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用，代码层按前缀强制拒绝；聊天室中仅所有者触发的轮次可用。
+- 连接状态、当前配置和已挂载的工具数量显示在组件详情页的连接行。工具说明按上游英文原样传给模型。
+
+### Altium（社区 eda-agent）
+
+使用社区服务器 [eda-agent](https://github.com/salitronic/eda-agent)，默认命令 `eda-agent`（按上游说明自行安装）。**本插件不内置其代码。**
+
+- **许可证**：Apache-2.0。
+- **工具数量**：完整工具集约 450 个，会占用大量上下文。默认使用上游的 `EDA_AGENT_TOOLSET=minimal`（`tool_catalog` / `tool_invoke` 按需调用全部功能），需要时可在设置里改为 full。
+- **设置**：启动命令、工具集、仪表盘（默认关闭，`EDA_AGENT_DISABLE_DASHBOARD=1`）、界面自动化（可关闭）。需要 Altium Designer 正在运行。
+- **安全**：本组件的工具会修改设计、文件或设备，属于会更改电脑的工具。所有 `mcp__altium__` 工具都只有所有者（本机桌面端，或 Telegram 用户 ID 为所有者 ID 的消息）发起的任务可以使用，代码层按前缀强制拒绝；聊天室中仅所有者触发的轮次可用。
+- 连接状态、当前配置和已挂载的工具数量显示在组件详情页的连接行。工具说明按上游英文原样传给模型。
 
 ## 安装
 
@@ -65,9 +174,39 @@
 
 GPT Image 2 生图（「多模态」分组，默认关闭）：在设置页填写 API Key、Base URL（默认 `https://api.openai.com/v1`）、模型（默认 `gpt-image-2`）与默认尺寸 / 质量并打开「启用」后，注册 `image_generate`（`POST {base}/images/generations`）与 `image_edit`（`POST {base}/images/edits`，multipart，1–16 张本地 png/jpg/webp 与可选 PNG 蒙版）。返回的 `b64_json` 或 `url` 图片保存到数据目录 `images/<YYYY-MM-DD>/`（上海时区），经 attachments 以图片块显示，并返回文件路径。「测试连接」只请求 `GET {base}/models`，不产生出图费用。API Key 为 secret 设置项，设置接口只返回掩码，错误信息中出现的 Key 会被打码。Telegram：两个工具都不在 `OPEN_TOOLS` 中，只有授权用户（所有者）触发的回合可用——`image_generate` 消耗付费额度，`image_edit` 会读取本机任意图片并上传到第三方。
 
+视频理解（「多模态」分组，默认开启）：经 Google Gemini 观看视频。设置项为「启用」「Gemini API 密钥」「模型」（默认 `gemini-3.8-flash`）「YouTube 链接」「哔哩哔哩链接」与「yt-dlp 路径」；组件卡片中的状态框显示密钥来源与末四位掩码、会话工具是否已挂载、正在使用的 yt-dlp 版本与来源。密钥只用本组件单独配置的 `videoGeminiKey`（输入框与其他密钥一致：已保存时留空并显示「已配置 ••••xxxx」，输入新值即替换，「清除」删除）（与「余额查询」各服务商密钥相同的做法：设置中按密钥保存、界面只显示掩码；不沿用聊天室转写密钥或成员凭据，也不读取环境变量），未填写时状态为「未配置密钥」；密钥只放在请求头中，不写入日志，也不经设置接口返回。聊天室语音转写与原生 Gemini 成员的「视频输入」仍用各自原来的密钥；访问 Gemini 时沿用聊天室的 Telegram 代理设置。
+
+- 聊天室：每个视频（本机上传、Telegram 群发送，以及消息中的 YouTube / 哔哩哔哩链接）都会在后台生成带时间戳的中文内容描述，显示在消息的「视频 · 内容描述」卡片中并提供给所有成员；成员可调用 `watch_video` 就某一时间段提问；原生 Gemini 成员可在成员设置中开启「视频输入」，直接收到最新消息中的视频。
+- 会话工具：`describe_video`（整体描述）与 `watch_video`（按问题与时间段观看，相同问题直接返回上次的回答）。参数可为本机视频文件的绝对路径（不超过 200 MB）、YouTube 公开链接（不下载，直接交给 Gemini）或哔哩哔哩链接。不超过 14 MB 的视频内联发送，更大的经 Gemini Files API 上传，48 小时内复用。Telegram：两个工具都不在 `OPEN_TOOLS` 中，只有授权用户（所有者）触发的回合可用（会把本机文件上传给 Google）。
+- 哔哩哔哩（可选）：需要 [yt-dlp](https://github.com/yt-dlp/yt-dlp)（Unlicense，本插件不附带）。查找顺序：「yt-dlp 路径」设置 → `PATH` → 按需下载的副本。组件卡片的「下载 yt-dlp」（下载后变为「更新 / 重新下载 yt-dlp」）与棋类辅助引擎同一做法：只在设置页（本机，即所有者）点击时，从官方 GitHub 发布页取最新正式版中适合本平台的单文件程序（Windows `yt-dlp.exe`、macOS `yt-dlp_macos`、Linux `yt-dlp_linux` 等），用同一版本的 `SHA2-256SUMS` 校验 sha256（不符即删除），放到 `<数据目录>/bin/`，并记录版本；下载过程显示进度，完成后清除检测缓存。没有注册为 AI 工具。版本号先问 GitHub API（带 `User-Agent` 与 `Accept: application/vnd.github+json`）；API 失败时（常见：未登录请求每小时 60 次的上限在共用代理出口上用完，返回 403）改读 `github.com/yt-dlp/yt-dlp/releases/latest` 的跳转目标取版本号，程序与校验文件都从 `github.com/…/releases/download/<版本>/` 下载，sha256 校验照样强制。所有请求与其他下载一样走设置「下载代理」（留空时用环境变量 `HTTPS_PROXY` / `HTTP_PROXY`），失败时给出中文原因。棋类辅助引擎的下载同样改为走「下载代理」。视频下载到数据目录 `videos/<YYYY-MM-DD>/`（会话工具）或房间附件目录（聊天室）后按普通视频处理，单个不超过 25 MB。未检测到 yt-dlp 或下载失败时给出原因。
+- 关闭「启用」后，上述功能全部停用：视频不再生成描述（卡片注明「视频理解未启用」），成员没有 `watch_video` 与视频输入，会话工具卸下；已保存的视频与描述保留。旧版设置键 `chatroomVideoEnabled` / `chatroomVideoModel`（原在聊天室「附件与语音」中）仍会读取，并在启动时迁移到本组件。
+
 日历（默认开启）：`calendar_show`、`calendar_event_save`、`calendar_event_delete`。公历、农历、节气和中国法定节假日（含调休）由 `lunar-javascript` 离线计算，「今天」按 Asia/Shanghai。日程写在数据目录 `calendar/events.json`，不放进设置。天气预报来自 [Open-Meteo](https://open-meteo.com/)（CC BY 4.0），填写设置项「天气城市」后按接口能提供的最长天数查询，不使用高德 Key，请求沿用当前进程的代理。未填城市时历法与日程仍然可用。聊天卡片和设置页「日历」共用同一块月历，每种天气有一枚动态小图标。发到 Telegram 时，`calendar_show` 的卡片另成一条 HTML 月历（天气用对应表情），模型的文字回复仍走原通道。
 
 牌类（默认关闭）：`card_open`、`card_look`、`card_play`、`card_close`、`card_reset`。可打二十一点、勒杜克扑克、限注德州扑克、UNO（2 至 10 人）和斗地主。规则源是 [RLCard](https://github.com/datamllab/rlcard)（MIT，钉死提交），在设置页下载到数据目录，不随本插件分发，也不运行它的对局或智能体。牌桌在对话右侧；发到 Telegram 时每一步用新图片替换上一张。对手的暗牌在公开前不会出现在工具结果或图片里。
+
+### 模型的图片与视频输入
+
+模型能否收到图片，取决于 DSH 模型配置中声明的输入模态。须在 `cordis.patch.yml` 的 `llm-pi-ai` → `providers` → 对应服务商的 `models` 中，为该模型声明 `input: [text, image]`（也可用服务商级的 `defaultInput` 统一声明）；未声明时按纯文本模型处理，图片改为文字：聊天室由能识图的成员生成图片描述，其他场景由 Vision Router 插件把图片替换为文字说明。修改后需重新加载 DSH。示例：
+
+```yaml
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      gpt:
+        apiKeyEnv: GPT_API_KEY
+        api: openai-responses
+        baseURL: https://api.example.com/v1
+        models:
+          - id: gpt-6.1-sol
+            name: gpt-6.1-sol
+            input:
+              - text
+              - image
+```
+
+视频不受 `input` 声明影响：DSH 不向模型转发视频，所有视频均经「多模态 › 视频理解」组件（Google Gemini）处理。其他成员看到内容描述并可调用 `watch_video`；原生 Gemini 成员开启「视频输入」后直接观看。
 
 ## 实装截图
 
@@ -81,7 +220,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | --- | --- | --- | --- |
 | 多模态 | 媒体卡片 | mm_send_image · 可用 | `mm_send_image` 发图（API text+image；settled MmCard 在 turnTail，toolview 折叠后仍可见） |
 | 多模态 | 日历 | 已启用 | 月历、农历、节假日、日程；天气城市走 Open-Meteo |
-| 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Gmail / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / FFmpeg / Obsidian（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
+| 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Gmail / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / Termalin / KiCad / Fusion / FreeCAD / MATLAB / ESP-IDF / 串口 / Rhino / Altium / FFmpeg / Obsidian / REA 逆向分析（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
 | 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
 | 游戏 | Minecraft / 文明 VI / 视觉（徽标「已验证」与「实验性」，**默认关闭**） | 未启动 / 已启动 / 出错… | 共享 GameBot REST + 按游戏 MCP；仓库自带无需下载，首次启用准备 Python 环境 |
@@ -114,6 +253,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | Godot | 进程名以 Godot 开头（不含 venv 里的 `godot-ai`） | 已注册工具 + `session_manage(op=list)` 有会话 + `editor_state` 成功 |
 | FFmpeg | 本机能解析到 ffmpeg（PATH 或 `ffmpegPath`） | MCP 已就绪（Kinocut 不依赖常驻 GUI） |
 | Obsidian | 进程 Obsidian | 已注册工具 + TCP 连 Local REST API（`obsidianBaseUrl`，默认 `127.0.0.1:27123`） |
+| REA 逆向分析 | （无常驻 GUI） | MCP 已挂载（静态分析无需外部程序；原生需 Ghidra/Hopper/IDA） |
 | 桌面控制 | 不要求单独的业务进程（本机桌面） | 已注册工具 + `status` 成功 |
 
 ## 架构（给开发者）
@@ -226,6 +366,30 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 - **补丁随仓库走**：`vendor/wsz987/<包>` 是 npm 0.5.1 打上 `vendor/wsz987/patches/*.patch` 之后的副本，构建时把 `@wsz987/channel-{core,harness,telegram}` 解析到这里并打包进 `lib/channel-telegram.mjs`，不依赖 postinstall，`npm install` 不会冲掉补丁。依赖版本在 devDependencies 里精确锁定（`.npmrc` 设 `legacy-peer-deps=true`，因为 DSH 各包 rc.2 / rc.3 的 peer 声明互相冲突）。
 
 从 `dsh-telegram-temp` 切换：在卡片填好设置并打开「启用」（此时显示接管说明，不会轮询）→ 退出 DSH Desktop → `"%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop remove dsh-telegram-temp` → 重新打开 DSH。
+
+## 多 AI 聊天室（实验性）
+
+默认关闭，且不在设置页显示（见更新日志 0.4.0-beta.1 / 0.4.0）。用户的每条新消息开启一个任务：先由主答发言，其余成员依次补充或跳过。
+
+### 上下文与滚动摘要
+
+成员每次调用看到的提示词顺序为：**房间规则 → 一条总摘要（若有）→ 最近可见窗口**。默认窗口约 24 条（设置项「上下文窗口（条）」，原「历史条数上限」），不再另设互相打架的历史条数旋钮。
+
+- **自动压缩**：估计上下文（字符数/4）达到「自动压缩阈值」（默认 200000 tokens）时，用独立的摘要小模型把窗口之外的较早消息折进总摘要；被覆盖的消息仍留在 `messages.jsonl` 与界面中，但对 AI 隐藏（`contextHidden` / `untilSeq`）。
+- **手动压缩**：房间栏「压缩上下文」。未配置摘要服务商与模型时提示「未配置摘要模型」，自动压缩也会跳过。
+- **`/compact` 命令**：在聊天室输入框或已绑定的 Telegram 群中发送 `/compact`（群里也可写 `/compact@机器人名`），效果与「压缩上下文」相同，仅所有者可用。命令不带参数，带参数时只提示「用法：/compact（不带参数）」。命令本身不写入房间记录、不开始 AI 回合；结果（压缩了多少条、未配置摘要模型、压缩进行中、失败）只显示为一行系统提示，AI 看不到（Telegram 发起时同时回到群里）。压缩生成的总摘要照常进入成员的提示词。
+- **摘要模型**：设置项「摘要服务商」「摘要模型」（经 DSH 服务商层，密钥由 DSH 保管）。与成员所用模型分开配置。
+- **并发与失败**：同一房间同时只跑一次压缩；失败时保留原窗口并硬截断到窗口上限，房间中留一行提示。
+- **本阶段不做**：多段摘要、jsonl 抽稀、回合内完整工具结果改写、界面历史分页与上下文压缩联动。
+
+
+### 点名主答
+
+- 用户消息（本机面板或 Telegram 群）中提到某位成员时，该成员成为**本任务**的主答，优先于「默认主答」；下一条未点名的消息恢复默认主答。可以写 `@名字`，也可以直接写名字。
+- 可识别的名字：成员名称、成员编号、别名，以及所用 DSH 预设的编号和显示名称；不区分大小写。英文名字前后不能紧挨英文字母或数字（例如 `Claudette` 不算点名 Claude），紧挨中文、标点或空格均可；网址和邮箱地址中的文字不算点名。
+- 同时提到多位成员时，以在消息中最先出现的为准，与成员列表顺序无关。未启用的成员不参与匹配。
+- 被点名的成员如果因先前回合失败而处于「暂时离开」（期间不安排其发言），点名后立即恢复，之后的任务也照常安排；只恢复被选为主答的那一位。
+- 被点名的主答在本任务中与领队一样可以提前结束本轮（`end_round`）。只有用户消息会触发点名：成员回复中的名字、Cursor 任务交卷后的唤醒都不会改变主答。
 
 ## 依赖说明
 

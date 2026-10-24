@@ -2,7 +2,7 @@ import { CardError } from './errors.mjs'
 import { contextKey } from './context.mjs'
 import { interpret, verbOf } from './games/index.mjs'
 import { renderTable } from './render.mjs'
-import { activeContextKey, lookSession, onSessionChange, playSession, saveSessionNow, sessionOrigin } from './session.mjs'
+import { listSessions, lookSession, onSessionChange, playSession, saveSessionNow, stripPrivate } from './session.mjs'
 import { clearCardsInbound, setCardsInbound } from './telegram-bridge.mjs'
 import { getTelegramBridge } from '../boards/telegram-bridge.mjs'
 import { sameAccount } from '../channels/telegram/accounts.mjs'
@@ -32,7 +32,7 @@ function visibleCards(cards) {
 }
 
 export function captionFor(event) {
-  const view = event.view
+  const view = event.view?.mode === 'room' ? stripPrivate(event.view) : event.view
   if (view.game && view.game !== 'blackjack') {
     const head = view.over ? '终局' : event.type === 'open' && event.resumed ? '续局' : event.type === 'open' && event.reset ? '重开' : event.type === 'open' ? '开局' : (verbOf(view.game, event.action) || '出牌')
     return `${view.label} ${head}：${view.caption}`
@@ -63,7 +63,8 @@ export async function publishTable(event, { timeoutMs = 15000 } = {}) {
   if (!origin || origin.channel !== 'telegram') return 'skipped'
   const bridge = getTelegramBridge()
   if (!bridge) return 'skipped'
-  const { png } = renderTable(event.view)
+  const shown = event.view?.mode === 'room' ? stripPrivate(event.view) : event.view
+  const { png } = renderTable(shown)
   const caption = captionFor(event)
   const previous = origin.messageId ? String(origin.messageId) : ''
   const messageId = await withTimeout(Promise.resolve(bridge.sendPhoto({
@@ -85,11 +86,14 @@ function sentence(text) {
 }
 
 export async function handleCardInbound({ chatId, senderId, accountId, text }) {
-  const origin = sessionOrigin()
-  if (!origin || origin.channel !== 'telegram' || String(chatId) !== origin.chatId) return null
-  if (!sameAccount(origin.accountId, accountId)) return null
-  const key = activeContextKey()
-  if (!key || contextKey({ origin }) !== key) return null
+  const session = listSessions().find((s) => {
+    const origin = s.origin
+    return origin?.channel === 'telegram' && String(origin.chatId) === String(chatId) && sameAccount(origin.accountId, accountId) && !String(s.contextKey).startsWith('room:')
+  })
+  if (!session) return null
+  const origin = session.origin
+  const key = session.contextKey
+  if (contextKey({ origin }) !== key) return null
   let view
   try { view = lookSession(key) } catch { return null }
   if (view.over) return null
@@ -137,7 +141,7 @@ export function installCardsTelegram({ logger } = {}) {
     if (event.type === 'close' || !event.origin) return undefined
     const background = event.who === 'human'
     const job = chain.then(() => publishTable(event)).then(() => {
-      if (background && sessionOrigin() === event.origin) saveSessionNow()
+      if (background && event.key) saveSessionNow(event.key)
     }).catch((error) => {
       logger?.warn?.('dsh-workbench: card table image to telegram failed', String(error?.message ?? error).slice(0, 160))
     })

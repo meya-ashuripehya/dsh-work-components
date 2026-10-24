@@ -1,0 +1,48 @@
+{
+  "protocol_version": 1,
+  "event": "snapshot",
+  "sequence": 2,
+  "timestamp_ms": 1710000000250,
+  "data": {
+    "player": {
+      "position": { "x": 10.5, "y": 64.0, "z": -3.25 },
+      "yaw": 90.0,
+      "pitch": 0.0,
+      "health": 20.0,
+      "food": 18,
+      "dimension": "minecraft:overworld",
+      "game_mode": "survival",
+      "sneaking": false,
+      "sprinting": false,
+      "selected_slot": 0,
+      "main_hand": { "item_id": "minecraft:iron_ingot", "count": 5, "display_name": "Iron Ingot", "damage": 0, "max_damage": 0 },
+      "off_hand": null
+    },
+    "inventory": {
+      "slots": [
+        { "slot": 0, "item_id": "minecraft:iron_ingot", "count": 5, "display_name": "Iron Ingot", "damage": 0, "max_damage": 0 }
+      ],
+      "counts": { "minecraft:iron_ingot": 5 }
+    },
+    "nearby_blocks": [
+      {
+        "block_id": "create:depot",
+        "pos": { "x": 12, "y": 64, "z": -3 },
+        "state": { "waterlogged": "false" },
+        "block_entity_type": null,
+        "distance": 1.5
+      }
+    ],
+    "nearby_players": [
+      {
+        "uuid": "123e4567-e89b-12d3-a456-426614174000",
+        "name": "Steve",
+        "position": { "x": 14.0, "y": 64.0, "z": -3.0 },
+        "distance": 3.5,
+        "pose": "standing",
+        "main_hand": null
+      }
+    ],
+    "screen": { "id": null, "open": false }
+  }
+}

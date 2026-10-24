@@ -19,10 +19,13 @@ src/components/gamebot/.venv/
 src/components/gamebot/data/
 src/components/gamebot/**/__pycache__/
 src/components/gamebot/src/*.egg-info/
+src/components/gamebot/minecraft-neoforge-bridge/build/
+src/components/gamebot/minecraft-neoforge-bridge/.gradle/
+src/components/gamebot/minecraft-neoforge-bridge/run/
 
 src/components/desktop/**/bin/
 src/components/desktop/**/obj/
-src/components/desktop/**/*.old
+src/components/desktop/**/*.old*
 # 桌面控制经纪人构建产物（约 73 MB）：npm run build:desktop 生成，发布时由 CI 构建并随 npm 包分发
 src/components/desktop/**/dist/
 
@@ -36,3 +39,53 @@ src/components/desktop/**/dist/
 # 构建产物（npm run build / build:desktop 生成）
 lib/gmail-server.mjs
 src/components/desktop/**/dist-build/
+
+# Personal editor settings and local diagnostics
+/.cursor/
+/.vscode/
+/tmp-*.mjs
+/tmp-*.js
+
+# Local environment and credential material
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+.ssh/
+
+
+# Hand-made directory backups (.bak-chatroom-…, .bak-ui-…)
+.bak-*/
+
+# Scratch / asar extracts / session dumps (never ship)
+/tmp-*/
+/tmp-*.txt
+/tmp-*.py
+/tmp-*.tap
+/tmp-*.jsonl
+/tmp-session-*/
+tmp-asar-*/
+tmp-session-*/
+
+# Local gamebot worktrees / verification dumps
+src/components/gamebot/minecraft-work/
+
+# Balance local extension (中转站等，仅本机；正式条目在数据目录亦可)
+src/balance/*.local.mjs
+**/*.local.mjs
+!**/*.example.local.mjs
+
+# Cordis / local secrets dumps if present
+cordis.secrets.*
+**/calls.log
+**/projcache/
+
+# NeoForge bridge local caches / logs (source + wrapper stay tracked)
+src/components/gamebot/minecraft-neoforge-bridge/libs/
+src/components/gamebot/minecraft-neoforge-bridge/logs/

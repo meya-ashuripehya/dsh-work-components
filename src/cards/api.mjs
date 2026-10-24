@@ -26,7 +26,8 @@ export async function handleCardsApi(req, res, sub, helpers) {
       return true
     }
     if (sub === '/cards/session' && req.method === 'GET') {
-      const key = activeContextKey()
+      const asked = new URL(req.url || '', 'http://localhost').searchParams.get('key') || ''
+      const key = asked || activeContextKey()
       if (!key) { sendJson(res, 200, { ok: true, open: false, session: null }); return true }
       try {
         sendJson(res, 200, { ok: true, open: true, session: lookSession(key) })
@@ -38,10 +39,11 @@ export async function handleCardsApi(req, res, sub, helpers) {
     }
     if (sub === '/cards/play' && req.method === 'POST') {
       if (crossSite(req)) { sendJson(res, 403, { ok: false, error: 'cross-site request refused' }); return true }
-      const key = activeContextKey()
-      if (!key) throw new CardError('没有进行中的牌局', 404)
       const body = JSON.parse(await readBody(req) || '{}')
-      const played = await playSession(key, body.action, 'human')
+      const key = body.key || activeContextKey()
+      if (!key) throw new CardError('没有进行中的牌局', 404)
+      const caller = String(key).startsWith('room:') ? { local: true } : undefined
+      const played = await playSession(key, body.action, 'human', caller)
       sendJson(res, 200, { ok: true, prompt: played.prompt, action: played.action, session: played.view })
       return true
     }

@@ -36,17 +36,23 @@ def locate_jar() -> Path | None:
     if override is not None:
         path = Path(override)
         return path if path.is_file() else None
-    libs = Path(__file__).resolve().parents[4] / "minecraft-neoforge-bridge" / "build" / "libs"
-    if not libs.is_dir():
-        return None
-    jars = [
-        item
-        for item in libs.glob("minaret-*.jar")
-        if item.is_file() and "sources" not in item.name and "javadoc" not in item.name
-    ]
-    if not jars:
-        return None
-    return sorted(jars, key=lambda item: item.stat().st_mtime)[-1]
+    # 先找插件「打包下载」产出的目录（GAMEBOT_MINARET_JAR_DIR），再找源码目录里 gradle 的 build/libs。
+    candidates = []
+    built = os.environ.get("GAMEBOT_MINARET_JAR_DIR")
+    if built:
+        candidates.append(Path(built))
+    candidates.append(Path(__file__).resolve().parents[4] / "minecraft-neoforge-bridge" / "build" / "libs")
+    for libs in candidates:
+        if not libs.is_dir():
+            continue
+        jars = [
+            item
+            for item in libs.glob("minaret-*.jar")
+            if item.is_file() and "sources" not in item.name and "javadoc" not in item.name
+        ]
+        if jars:
+            return sorted(jars, key=lambda item: item.stat().st_mtime)[-1]
+    return None
 
 
 def _example_patterns() -> List[Dict[str, Any]]:

@@ -6,7 +6,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { cp, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { delimiter, join } from 'node:path'
-import { download, extract, run, removeDir, withAbortSignal } from '../../tools.mjs'
+import { download, downloadReason, extract, run, removeDir, withAbortSignal } from '../../tools.mjs'
 import { boardsRoot, gameStatus } from '../download.mjs'
 import { BoardError } from '../errors.mjs'
 import { GAMES } from '../sources.mjs'
@@ -106,8 +106,12 @@ async function extract7z(archive, dest) {
   throw new BoardError('解压 7z 需要 bsdtar 或 7-Zip（7zz / 7z），本机未找到')
 }
 
-async function fetchVerified(url, sha, dest, onProgress) {
-  await download(url, dest, { onProgress, timeoutMs: 120000 })
+async function fetchVerified(url, sha, dest, onProgress, proxy) {
+  try { await download(url, dest, { onProgress, timeoutMs: 120000, proxy }) }
+  catch (e) {
+    if (e?.name === 'AbortError' || /取消/.test(String(e?.message))) throw e
+    throw new BoardError(`下载 ${url.split('/').pop()} 失败：${downloadReason(e, 'github.com')}`)
+  }
   const got = await sha256(dest)
   if (got !== sha) {
     await rm(dest, { force: true })
@@ -231,7 +235,7 @@ export function cancelAssistDownload(game) {
   jobs.get(game)?.controller?.abort()
 }
 
-export async function installAssist(game, { spawnImpl } = {}) {
+export async function installAssist(game, { spawnImpl, proxy } = {}) {
   const spec = ASSIST_ENGINES[game]
   const key = platformKey()
   const asset = assetFor(spec)
@@ -246,7 +250,7 @@ export async function installAssist(game, { spawnImpl } = {}) {
     const fetchAsset = async (a, label) => {
       const file = join(root, 'downloads', a.url.split('/').pop())
       archives.push(file)
-      await fetchVerified(a.url, a.sha256, file, progressFor(game, label, 0, span))
+      await fetchVerified(a.url, a.sha256, file, progressFor(game, label, 0, span), proxy)
       setJob(game, { step: `正在解压 ${label}`, progress: span })
       if (a.kind === '7z') await extract7z(file, stage)
       else await extract(file, stage)
@@ -254,7 +258,7 @@ export async function installAssist(game, { spawnImpl } = {}) {
     await fetchAsset(asset, spec.name)
     if (hasNet) {
       const net = spec.network
-      await fetchVerified(net.url, net.sha256, join(stage, net.name), progressFor(game, '网络权重', 45, 45))
+      await fetchVerified(net.url, net.sha256, join(stage, net.name), progressFor(game, '网络权重', 45, 45), proxy)
     }
     for (const f of spec.files) {
       if (!existsSync(join(stage, f))) throw new BoardError(`${spec.name} 发布包里缺少 ${f}`)

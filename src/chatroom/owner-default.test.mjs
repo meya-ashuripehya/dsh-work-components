@@ -10,7 +10,7 @@ import { resolveCursorAgent, runCursorAgent } from './cursor.mjs'
 import { createChatroomFeature } from './index.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
-const PERSONAL = /6153059771|10917|S:\\{1,2}TRIX|S:\/TRIX|(?<!meya-)ashuripehya|\bShiro\b|trix-mail-relay|workerTokenMail|ATRI-(INFRA|MAIN)/i
+const PERSONAL = /S:\\{1,2}TRIX|S:\/TRIX|(?<!meya-)ashuripehya|\bShiro\b|trix-mail-relay|workerTokenMail|ATRI-(INFRA|MAIN)/i
 const TEXT_EXT = new Set(['.mjs', '.js', '.cjs', '.json', '.yml', '.yaml', '.md', '.py', '.lua', '.xml', '.toml', '.cs', '.modinfo'])
 
 async function* walk(dir) {
@@ -85,7 +85,7 @@ test('empty owner: Telegram owner-only group commands are refused for every send
   feat.bots.reply = async (chatId, text) => { replies.push([chatId, text]); return true }
   try {
     const room = await feat.store.createRoom({ title: '圆桌' })
-    for (const fromId of ['123456789', '6153059771', '']) {
+    for (const fromId of ['123456789', '9000000001', '']) {
       assert.deepEqual(await feat.groupCommand({ cmd: 'bind', arg: '', chatId: '-1001001', title: '测试群', fromId }), { ignored: true })
     }
     assert.deepEqual((await feat.store.getRoom(room.id)).telegramChatIds || [], [])

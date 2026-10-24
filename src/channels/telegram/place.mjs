@@ -88,8 +88,11 @@ export function installMapPlaceDelivery(ReplyRouter) {
     const venues = this.pendingPlaces ? this.pendingPlaces.get(key) : undefined
     if (this.pendingPlaces) this.pendingPlaces.delete(key)
     if (venues && venues.length && terminalTarget && terminalTarget.adapter) {
-      const upstream = terminalTarget.adapter.upstream
-      const chatId = terminalTarget.target && terminalTarget.target.conversationId
+      const adapter = terminalTarget.adapter
+      const target = terminalTarget.target
+      const upstream = (typeof adapter.upstreamFor === 'function' ? adapter.upstreamFor(target) : null)
+        || adapter.upstream
+      const chatId = target && target.conversationId
       if (upstream && typeof upstream.requestOk === 'function' && chatId) {
         for (const venue of venues) {
           try {

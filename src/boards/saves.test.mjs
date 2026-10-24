@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BoardError } from './errors.mjs'
-import { closeSession, lookSession, onSessionChange, openSession, playSession, resetGame, resetSession, saveFile, savesDir } from './session.mjs'
+import { DEFAULT_KEY, closeSession, lookSession, onSessionChange, openSession, playSession, resetGame, resetSession, saveFile, saveFileFor, savesDir } from './session.mjs'
 import { createBoardsTools } from './tools.mjs'
 
 /** 假五子棋（15×15），有五连判定；engineFactory 让存档逻辑照常读写。 */
@@ -53,11 +53,11 @@ test('save after open and every move; restart resumes from the saved position', 
   assert.equal(savesDir(), join(root, 'boards', 'saves'))
   const first = await open()
   assert.equal(first.resumed, undefined)
-  assert.ok(existsSync(saveFile('gomoku')))
+  assert.ok(existsSync(saveFileFor(DEFAULT_KEY, 'gomoku')))
   await playSession('H8', 'ai')
   await playSession('H9', 'human')
   await playSession('I8', 'ai')
-  const saved = JSON.parse(readFileSync(saveFile('gomoku'), 'utf8'))
+  const saved = JSON.parse(readFileSync(saveFileFor(DEFAULT_KEY, 'gomoku'), 'utf8'))
   assert.deepEqual(saved.moves, ['H8', 'H9', 'I8'])
   assert.equal(saved.aiSide, 'black')
   assert.equal(saved.turnSide, 'white')
@@ -87,14 +87,14 @@ test('board_close mid-game keeps the save; the next open resumes', () => withDat
   await playSession('A1', 'ai')
   const closed = closeSession()
   assert.equal(closed.saved, true)
-  assert.ok(existsSync(saveFile('gomoku')))
+  assert.ok(existsSync(saveFileFor(DEFAULT_KEY, 'gomoku')))
   const back = await open()
   assert.equal(back.resumed.moveCount, 1)
 }))
 
 test('corrupt save is backed up and a fresh game starts', () => withData(async () => {
   await open(); await playSession('A1', 'ai'); resetSession()
-  writeFileSync(saveFile('gomoku'), '{ not json', 'utf8')
+  writeFileSync(saveFileFor(DEFAULT_KEY, 'gomoku'), '{ not json', 'utf8')
   const fresh = await open()
   assert.equal(fresh.resumed, undefined)
   assert.match(fresh.notice, /存档损坏/)
@@ -102,7 +102,7 @@ test('corrupt save is backed up and a fresh game starts', () => withData(async (
   assert.ok(readdirSync(savesDir()).some((n) => /^gomoku\.corrupt-.*\.json$/.test(n)))
   resetSession()
   // 存档能解析但着法无法重放：同样备份并重开。
-  writeFileSync(saveFile('gomoku'), JSON.stringify({ game: 'gomoku', aiSide: 'black', moves: ['A1', 'A1'] }), 'utf8')
+  writeFileSync(saveFileFor(DEFAULT_KEY, 'gomoku'), JSON.stringify({ game: 'gomoku', aiSide: 'black', moves: ['A1', 'A1'] }), 'utf8')
   const again = await open()
   assert.equal(again.moveCount, 0)
   assert.equal(readdirSync(savesDir()).filter((n) => n.includes('.corrupt-')).length, 2)
@@ -122,12 +122,12 @@ test('board_reset: active game resets in place and re-renders; inactive just cle
   assert.equal(view.turn, 'ai')
   assert.equal(events[0].type, 'open')
   assert.equal(events[0].reset, true)
-  assert.deepEqual(JSON.parse(readFileSync(saveFile('gomoku'), 'utf8')).moves, [])
+  assert.deepEqual(JSON.parse(readFileSync(saveFileFor(DEFAULT_KEY, 'gomoku'), 'utf8')).moves, [])
   await playSession('C1', 'ai')
   closeSession()
   const inactive = await tools.board_reset.execute({ game: 'gomoku' })
   assert.deepEqual(inactive, { reset: true, game: 'gomoku', active: false, clearedSave: true })
-  assert.equal(existsSync(saveFile('gomoku')), false)
+  assert.equal(existsSync(saveFileFor(DEFAULT_KEY, 'gomoku')), false)
   await assert.rejects(() => tools.board_reset.execute({}), /指定 game/)
   await assert.rejects(() => tools.board_reset.execute({ game: 'nope' }), /game 只能是/)
   assert.equal((await open()).resumed, undefined)
@@ -144,11 +144,11 @@ test('finished game: next open starts new and reports the last result', () => wi
   assert.equal(next.moveCount, 0)
   assert.deepEqual({ ...next.lastResult, endedAt: undefined }, { side: 'black', winner: 'ai', reason: '五连', moveCount: 9, endedAt: undefined })
   assert.match(next.notice, /上一局已经结束/)
-  assert.deepEqual(JSON.parse(readFileSync(saveFile('gomoku'), 'utf8')).moves, [])
+  assert.deepEqual(JSON.parse(readFileSync(saveFileFor(DEFAULT_KEY, 'gomoku'), 'utf8')).moves, [])
 }))
 
 test('injected engine (no factory) never touches saves', () => withData(async () => {
   await openSession({ game: 'gomoku', aiSide: 'black', engine: fakeGomoku() })
   await playSession('A1', 'ai')
-  assert.equal(existsSync(saveFile('gomoku')), false)
+  assert.equal(existsSync(saveFileFor(DEFAULT_KEY, 'gomoku')), false)
 }))

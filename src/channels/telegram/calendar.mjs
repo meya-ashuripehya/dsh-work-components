@@ -153,8 +153,11 @@ export function installCalendarDelivery(ReplyRouter) {
     const calendars = this.pendingCalendars ? this.pendingCalendars.get(key) : undefined
     if (this.pendingCalendars) this.pendingCalendars.delete(key)
     if (calendars && calendars.length && terminalTarget && terminalTarget.adapter) {
-      const upstream = terminalTarget.adapter.upstream
-      const chatId = terminalTarget.target && terminalTarget.target.conversationId
+      const adapter = terminalTarget.adapter
+      const target = terminalTarget.target
+      const upstream = (typeof adapter.upstreamFor === 'function' ? adapter.upstreamFor(target) : null)
+        || adapter.upstream
+      const chatId = target && target.conversationId
       if (upstream && typeof upstream.requestOk === 'function' && chatId) {
         for (const calendar of calendars) {
           for (const text of calendarTelegramMessages(calendar)) {

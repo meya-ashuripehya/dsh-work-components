@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -217,10 +218,49 @@ def _load_raw() -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+BACKUP_KEEP = 10
+
+
+def _backup_before_write(path: Path) -> None:
+    """覆盖写之前把旧文件另存一份（带时间戳），最多保留 BACKUP_KEEP 份。
+
+    只清理本函数生成的 `game-configs.json.bak-<时间戳>`，不动用户手工放的其他备份。
+    """
+    if not path.exists():
+        return
+    try:
+        previous = path.read_text(encoding="utf-8")
+    except Exception:
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%f")
+    target = path.with_name(f"{path.name}.bak-{stamp}-auto")
+    try:
+        target.write_text(previous, encoding="utf-8")
+    except Exception:
+        return
+    try:
+        owned = sorted(
+            p for p in path.parent.iterdir()
+            if p.name.startswith(f"{path.name}.bak-") and p.is_file()
+        )
+        for old in owned[: max(0, len(owned) - BACKUP_KEEP)]:
+            old.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _write_raw(data: Dict[str, Any]) -> None:
     path = _config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    # 内容没变就不写，也不产生备份。
+    try:
+        if path.read_text(encoding="utf-8") == text:
+            return
+    except Exception:
+        pass
+    _backup_before_write(path)
+    path.write_text(text, encoding="utf-8")
 
 
 def _overlay_provider_key(cfg: GameConfig, keys: Dict[str, str]) -> GameConfig:
@@ -278,6 +318,8 @@ def save_game_config(
     for field in _KEY_FIELDS:
         if field in next_config:
             next_config[field] = ""
+    for field in ("MC_AGENT_ID", "MC_MEMBER_MANAGED"):
+        next_config.pop(field, None)
     saved = GameConfig(
         game=current.game,
         title=current.title,
@@ -299,6 +341,8 @@ def _merge_game_config(default: GameConfig, stored: Any) -> GameConfig:
     config = deepcopy(base.config)
     if isinstance(stored.get("config"), dict):
         config.update(stored["config"])
+    config.pop("MC_AGENT_ID", None)
+    config.pop("MC_MEMBER_MANAGED", None)
     return GameConfig(
         game=base.game,
         title=str(stored.get("title") or base.title),

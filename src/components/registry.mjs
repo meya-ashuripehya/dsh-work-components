@@ -24,8 +24,19 @@ import cloudflare from './cloudflare/index.mjs'
 import cloudflareDocs from './cloudflare-docs/index.mjs'
 import github from './github/index.mjs'
 import comfyui from './comfyui/index.mjs'
+import termalin from './termalin/index.mjs'
+import kicad from './kicad/index.mjs'
+import fusion from './fusion/index.mjs'
+import freecad from './freecad/index.mjs'
+import matlab from './matlab/index.mjs'
+import espidf from './espidf/index.mjs'
+import serial from './serial/index.mjs'
+import rhino from './rhino/index.mjs'
+import altium from './altium/index.mjs'
 import ffmpeg from './ffmpeg/index.mjs'
 import obsidian from './obsidian/index.mjs'
+import rea from './rea/index.mjs'
+import deepslate from './deepslate/index.mjs'
 import gamebotMinecraft from './gamebot-minecraft/index.mjs'
 import gamebotCivilization from './gamebot-civilization/index.mjs'
 import gamebotVision from './gamebot-vision/index.mjs'
@@ -44,8 +55,19 @@ import * as cloudflareMod from './cloudflare/index.mjs'
 import * as cloudflareDocsMod from './cloudflare-docs/index.mjs'
 import * as githubMod from './github/index.mjs'
 import * as comfyuiMod from './comfyui/index.mjs'
+import * as termalinMod from './termalin/index.mjs'
+import * as kicadMod from './kicad/index.mjs'
+import * as fusionMod from './fusion/index.mjs'
+import * as freecadMod from './freecad/index.mjs'
+import * as matlabMod from './matlab/index.mjs'
+import * as espidfMod from './espidf/index.mjs'
+import * as serialMod from './serial/index.mjs'
+import * as rhinoMod from './rhino/index.mjs'
+import * as altiumMod from './altium/index.mjs'
 import * as ffmpegMod from './ffmpeg/index.mjs'
 import * as obsidianMod from './obsidian/index.mjs'
+import * as reaMod from './rea/index.mjs'
+import * as deepslateMod from './deepslate/index.mjs'
 import * as gamebotMinecraftMod from './gamebot-minecraft/index.mjs'
 import * as gamebotCivilizationMod from './gamebot-civilization/index.mjs'
 import * as gamebotVisionMod from './gamebot-vision/index.mjs'
@@ -70,8 +92,19 @@ const BUNDLED_ENTRIES = [
   { component: cloudflareDocs, mod: cloudflareDocsMod },
   { component: github, mod: githubMod },
   { component: comfyui, mod: comfyuiMod },
+  { component: termalin, mod: termalinMod },
+  { component: kicad, mod: kicadMod },
+  { component: fusion, mod: fusionMod },
+  { component: freecad, mod: freecadMod },
+  { component: matlab, mod: matlabMod },
+  { component: espidf, mod: espidfMod },
+  { component: serial, mod: serialMod },
+  { component: rhino, mod: rhinoMod },
+  { component: altium, mod: altiumMod },
   { component: ffmpeg, mod: ffmpegMod },
   { component: obsidian, mod: obsidianMod },
+  { component: rea, mod: reaMod },
+  { component: deepslate, mod: deepslateMod },
   { component: gamebotMinecraft, mod: gamebotMinecraftMod },
   { component: gamebotCivilization, mod: gamebotCivilizationMod },
   { component: gamebotVision, mod: gamebotVisionMod },

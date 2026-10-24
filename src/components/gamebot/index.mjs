@@ -23,6 +23,8 @@ import { IS_WIN, OFF, resolveUv, stdio } from '../shared.mjs'
 import { httpJson, mcpNotReady, result, tcpOpen } from '../../connect-lib.mjs'
 import { acquireBody, releaseBody, stopBody } from './process.mjs'
 import { gameSettingKeys, toGameBotPatch } from './fields.mjs'
+import { buildAndInstall } from './minaret.mjs'
+import { memberIdsFor, memberStatusSummary, reconcileMembers } from './members.mjs'
 
 export const DEFAULT_URL = 'http://127.0.0.1:8766'
 
@@ -262,6 +264,15 @@ export function createGameModule(game) {
       try { await pushConfig(url, game, cfg) } catch (error) {
         return { ok: false, reason: String(error?.message ?? error) }
       }
+      // 默认不自动连接：NPC 由各自成员在聊天室里 mc_connect 时按需生成（用完可 mc_disconnect）。
+      // 设 MC_AUTO_CONNECT=1 才保持旧行为：启用 Minecraft 时一次性把全部成员连进世界。
+      if (game === 'minecraft' && cfg.MC_AUTO_CONNECT === '1' && memberIdsFor(cfg).length) {
+        void reconcileMembers(cfg).then((summary) => {
+          console.info(`[dsh-workbench:${id}] ${summary.note}`)
+        }).catch((error) => {
+          console.warn(`[dsh-workbench:${id}] 成员 NPC 连接未完成：${error?.message ?? error}`)
+        })
+      }
       const env = {
         GAMEBOT_URL: url.replace(/\/$/, ''),
         GAMEBOT_GAME: game,
@@ -277,16 +288,25 @@ export function createGameModule(game) {
         config: stdio(serverName, py, ['-m', 'gamebot.mcp_bridge'], { env, cwd: stateDir(root) }),
       }
     },
+    /** 设置页「打包下载」（仅 Minecraft）：用包内模组源码本机构建 Minaret jar，并放进 mods 目录。 */
+    ...(game === 'minecraft' ? {
+      async installAddon(cfg, project, { log } = {}) {
+        const root = resolveRoot(cfg)
+        return buildAndInstall({ root, state: stateDir(root), proxy: String(cfg.proxy || '').trim(), modsDir: project, log: (l) => { if (l) log?.(l) } })
+      },
+    } : {}),
     async beforeRemove(log) {
       log?.(`正在释放 GameBot body（${id}）`)
       await releaseBody(id)
     },
     note(cfg) {
+      const roster = game === 'minecraft' ? ` Minecraft AI：当前 ${memberIdsFor(cfg).length} 个已启用且对应已启用聊天室成员。` : ''
       return [
         `打开「启用」会自动启动共享 GameBot REST body（${gameUrl(cfg)}），并挂载只含 ${info.title} 的 MCP（工具前缀 mcp__${serverName}__）。`,
         '所有游戏共用一个 body：任一游戏启用即启动，全部关闭才停止。每次应用/会话启动默认关闭；REST 地址与目录会记住。',
-        '【双脑警告】不要同时让 DSH 桌面大脑与 GameBot 大脑对同一游戏发动作。',
-      ].join(' ')
+        '【双脑警告】不要同时让 DSH 桌面大脑与 GameBot 大脑对同一游戏发动作。聊天室里请用 mc_*，不要用 mcp__gamebot-*。',
+        roster,
+      ].filter(Boolean).join(' ')
     },
   }
 
@@ -303,7 +323,11 @@ export function createGameModule(game) {
     if (!health || health.ok !== true) return result('unreachable', `端口已开放，但 /health 异常（${u.host}）`, 'http')
     const nr = mcpNotReady(ctx, this)
     if (nr) return result('unreachable', `GameBot REST 正常，但 ${info.title} MCP 桥未挂载：请检查「启用」开关`, 'mcp')
-    return result('connected', `GameBot REST + ${info.title} MCP 已就绪（${u.host}）`, 'http+mcp')
+    let members = ''
+    if (game === 'minecraft') {
+      try { members = ` ${await memberStatusSummary(ctx.cfg)}` } catch { members = '' }
+    }
+    return result('connected', `GameBot REST + ${info.title} MCP 已就绪（${u.host}）。${members}`.trim(), 'http+mcp')
   }
 
   return { id, app, meta, component, probe }

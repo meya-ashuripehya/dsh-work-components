@@ -1,0 +1,12 @@
+{
+  "protocol_version": 2,
+  "event": "error",
+  "sequence": 5,
+  "timestamp_ms": 1710000000700,
+  "data": {
+    "agent_id": "claude",
+    "code": "agent_mismatch",
+    "error": "agent_id does not match this connection",
+    "message": "agent_id does not match this connection"
+  }
+}

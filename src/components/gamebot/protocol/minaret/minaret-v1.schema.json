@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trix.local/minaret-v1.schema.json",
+  "title": "Minaret WebSocket v1 and v2",
+  "description": "protocol_version 1 is the legacy single-controller envelope. protocol_version 2 is the per-member server NPC envelope. On v2, data.agent_id is the member id (^[a-z0-9][a-z0-9-]{0,31}$), not the entity UUID. hello and snapshot also carry data.entity_uuid. A v2 hello without agent_id is rejected. Optional data.agent_id on a bound connection must match that connection.",
+  "type": "object",
+  "required": ["protocol_version", "event", "sequence", "timestamp_ms", "data"],
+  "properties": {
+    "protocol_version": { "enum": [1, 2] },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+      "description": "Member id. Preferred inside data.agent_id. Present at the envelope root only for compatibility."
+    },
+    "event": {
+      "enum": ["hello", "snapshot", "action_request", "action_result", "player_activity", "chat", "error", "cancel_action"]
+    },
+    "request_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "timestamp_ms": { "type": "integer", "minimum": 0 },
+    "data": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event": { "const": "action_request" } }, "required": ["event"] },
+      "then": { "required": ["request_id"] }
+    },
+    {
+      "if": { "properties": { "event": { "const": "action_result" } }, "required": ["event"] },
+      "then": { "required": ["request_id"] }
+    },
+    {
+      "if": { "properties": { "event": { "const": "cancel_action" } }, "required": ["event"] },
+      "then": { "required": ["request_id"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "protocol_version": { "const": 2 },
+          "event": { "enum": ["hello", "action_request", "action_result", "cancel_action", "snapshot"] }
+        },
+        "required": ["protocol_version", "event"]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["agent_id"],
+            "properties": {
+              "agent_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$", "description": "Chatroom member id bound to this NPC." },
+              "entity_uuid": { "type": "string", "description": "Minecraft entity UUID. Not an agent id." }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

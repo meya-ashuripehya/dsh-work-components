@@ -10,7 +10,7 @@ export function boardsPage() {
 <link rel="stylesheet" href="/dsh-workbench/boards/vendor/gomoku/src/styles/gmk.css">
 <link rel="stylesheet" href="/dsh-workbench/boards/vendor/shudan/css/goban.css">
 <style>
-  html, body { margin: 0; height: 100%; background: #1b1714; color: #f5f1e6; font: 14px/1.4 sans-serif; }
+  html, body { margin: 0; height: 100%; background: #1b1714; color: #f5f1e6; font: 14px/1.4 sans-serif; color-scheme: dark; }
   body { display: flex; flex-direction: column; min-height: 100%; }
   header { padding: 10px 12px 0; }
   h1 { font-size: 16px; margin: 0; font-weight: 600; }
@@ -18,6 +18,11 @@ export function boardsPage() {
   #stage { flex: 1; min-height: 0; padding: 0 12px 12px; }
   #prompt { margin: 8px 12px 12px; padding: 8px 10px; border: 1px solid #c9842a; border-radius: 8px; color: #f0d7b0; }
   #prompt[hidden] { display: none; }
+  @media (prefers-color-scheme: light) {
+    html, body { background: #f4f1ea; color: #1c1915; color-scheme: light; }
+    p.meta { color: #5c564e; }
+    #prompt { color: #6b3e08; background: #fff8ee; }
+  }
   canvas { width: 100%; height: auto; background: #faebd7; border-radius: 8px; cursor: pointer; }
   .board { width: min(100%, 92vh); margin: 0 auto; }
   .gmk-app { max-width: none; }
@@ -56,16 +61,30 @@ function showPrompt(text) {
   promptEl.textContent = text || "";
 }
 function paintHeader(session) {
-  title.textContent = session.label + " · " + session.playerName + "（" + session.humanLabel + "）对 AI（" + session.aiLabel + "）";
-  if (session.over) meta.textContent = "终局" + (session.over.reason ? " · " + session.over.reason : "");
-  else meta.textContent = session.turn === "human" ? "轮到 " + session.playerName : "轮到 AI";
+  if (session.seats && session.seats.length) {
+    title.textContent = session.label + " · " + session.seats.map(function (s) {
+      return (s.name || s.side) + "（" + (s.side || "") + "）" + (s.status === "pending" ? "待入座" : "");
+    }).join(" 对 ");
+    if (session.over) meta.textContent = "终局" + (session.over.reason ? " · " + session.over.reason : "");
+    else if (session.waiting && session.waiting.length) meta.textContent = "等待入座：" + session.waiting.join("、");
+    else meta.textContent = "轮到 " + ((session.turnSeat && session.turnSeat.name) || (session.turn === "human" ? session.playerName : "AI"));
+  } else {
+    title.textContent = session.label + " · " + session.playerName + "（" + session.humanLabel + "）对 AI（" + session.aiLabel + "）";
+    if (session.over) meta.textContent = "终局" + (session.over.reason ? " · " + session.over.reason : "");
+    else meta.textContent = session.turn === "human" ? "轮到 " + session.playerName : "轮到 AI";
+  }
   chessCss.media = session.game === "chess" ? "all" : "not all";
+}
+var tableKey = "";
+try { tableKey = new URLSearchParams(location.search).get("key") || ""; } catch (e) { tableKey = ""; }
+function sessionQuery() {
+  return tableKey ? ("?key=" + encodeURIComponent(tableKey)) : "";
 }
 function submit(move) {
   fetch(API + "/move", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ move: move })
+    body: JSON.stringify({ move: move, key: tableKey })
   }).then(function (r) { return r.json(); }).then(function (body) {
     if (!body || body.ok === false) {
       showPrompt((body && body.error) || "这步没有落下");
@@ -81,7 +100,7 @@ function submit(move) {
       else showPrompt(body.prompt || "");
     }
     window.addEventListener("message", onMsg);
-    try { parent.postMessage({ source: "dsh-boards", prompt: body.prompt }, location.origin); } catch (e) {}
+    try { parent.postMessage({ source: "dsh-boards", prompt: body.prompt, key: tableKey, roomId: (body.session && body.session.roomId) || "" }, location.origin); } catch (e) {}
     setTimeout(function () {
       window.removeEventListener("message", onMsg);
       if (!acked) showPrompt(body.prompt || "");
@@ -330,7 +349,7 @@ function apply(session) {
   }
 }
 function poll() {
-  fetch(API + "/session").then(function (r) { return r.json(); }).then(function (body) {
+  fetch(API + "/session" + sessionQuery()).then(function (r) { return r.json(); }).then(function (body) {
     if (!body || body.ok === false) return;
     apply(body.open ? body.session : null);
   }).catch(function () {});

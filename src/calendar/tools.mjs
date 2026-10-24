@@ -56,10 +56,10 @@ export function createCalendarTools(options = {}) {
 
   const show = defineTool({
     name: 'calendar_show',
-    description: '查看某月的公历、农历、节气、中国法定节假日与调休、已保存的日程，以及天气预报。默认本月（上海时区）。会在对话里发出日历卡片；若当前会话在 Telegram，通道会把同一份月历另发成一条消息，回复里不必再贴整月表格。天气来自 Open-Meteo，使用设置里的日历城市名，按接口能提供的最长天数查询；未填写城市时仍返回历法与日程。不使用高德，也不读取环境变量。',
+    description: 'Show a month view with the Gregorian and Chinese lunar calendars, solar terms, China statutory holidays and make-up workdays, saved events, and the weather forecast. Defaults to the current month (Asia/Shanghai). Posts a calendar card in the chat; if the session is on Telegram, the channel also sends the same month as a separate message, so the reply need not paste the whole month table. Weather comes from Open-Meteo using the calendar city in settings, queried for the longest range the API provides; without a city, the calendar and events are still returned. Does not use Amap (高德) and does not read environment variables.',
     parameters: {
-      month: { type: 'string', description: '月份，YYYY-MM。留空为本月（Asia/Shanghai）。' },
-      city: { type: 'string', description: '可选。覆盖设置中的天气预报城市名，例如成都。留空用设置里的城市。' },
+      month: { type: 'string', description: 'Month as YYYY-MM. Leave empty for the current month (Asia/Shanghai).' },
+      city: { type: 'string', description: 'Optional. Overrides the weather forecast city from settings, e.g. Chengdu or 成都. Leave empty to use the city in settings.' },
     },
     output: {
       schema: {
@@ -119,15 +119,15 @@ export function createCalendarTools(options = {}) {
 
   const save = defineTool({
     name: 'calendar_event_save',
-    description: '新建或修改一条日程，写入插件数据目录。传入 id 则修改该条；不传 id 则新建。日期为 YYYY-MM-DD。有 time（HH:MM）则为非全天日程。',
+    description: 'Create or update an event, saved to the plugin data directory. Pass id to update that event; omit id to create a new one. Dates are YYYY-MM-DD. If time (HH:MM) is given, the event is not all-day.',
     parameters: {
-      id: { type: 'string', description: '要修改的日程 id。留空则新建。' },
-      title: { type: 'string', required: true, description: '标题，不超过 80 字。' },
-      date: { type: 'string', required: true, description: '开始日期，YYYY-MM-DD。' },
-      endDate: { type: 'string', description: '结束日期，YYYY-MM-DD。留空表示仅当天。' },
-      time: { type: 'string', description: '开始时间，HH:MM。留空表示全天。' },
-      endTime: { type: 'string', description: '结束时间，HH:MM。' },
-      note: { type: 'string', description: '备注，不超过 500 字。' },
+      id: { type: 'string', description: 'ID of the event to update. Leave empty to create a new event.' },
+      title: { type: 'string', required: true, description: 'Title, at most 80 characters.' },
+      date: { type: 'string', required: true, description: 'Start date, YYYY-MM-DD.' },
+      endDate: { type: 'string', description: 'End date, YYYY-MM-DD. Leave empty for a single-day event.' },
+      time: { type: 'string', description: 'Start time, HH:MM. Leave empty for an all-day event.' },
+      endTime: { type: 'string', description: 'End time, HH:MM.' },
+      note: { type: 'string', description: 'Note, at most 500 characters.' },
     },
     output: {
       schema: {
@@ -159,9 +159,9 @@ export function createCalendarTools(options = {}) {
 
   const remove = defineTool({
     name: 'calendar_event_delete',
-    description: '按 id 删除一条已保存的日程。删除后无法恢复。',
+    description: 'Delete a saved event by id. Deletion cannot be undone.',
     parameters: {
-      id: { type: 'string', required: true, description: '日程 id。' },
+      id: { type: 'string', required: true, description: 'Event ID.' },
     },
     output: {
       schema: {

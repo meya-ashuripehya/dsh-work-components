@@ -14,8 +14,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createBotClient } from '../../chatroom/telegram-bots.mjs'
 import {
-  TELEGRAM_BOTS_KEY, channelTokenRefs, normalizeExtraBots, prepareStartedAccounts, resolveChannelAccounts,
+  TELEGRAM_BOTS_KEY, channelTokenRefs, ingestSeat, normalizeBots, prepareStartedAccounts, resolveChannelAccounts,
 } from './accounts.mjs'
+import { excludeBoundChatIds } from './group-route.mjs'
+import { releaseAll } from '../../telegram/polling-owners.mjs'
+import { effectiveDmAllow, setDmDiscoverHandler } from '../../telegram/dm-discover.mjs'
+import { createDmPending, createDmPendingApi } from './dm-pending.mjs'
 
 export { TELEGRAM_BOTS_KEY, channelTokenRefs }
 
@@ -37,6 +41,21 @@ export const TELEGRAM_KEYS = [
 ]
 export const TELEGRAM_SECRET_KEY = 'telegramToken'
 
+/**
+ * 已停用的旧键：Schema 里保留以兼容老配置，但不再有独立的表单字段。
+ * - telegramPreset / telegramGroupPreset：已并入「每个机器人」账号卡（preset / groupPreset），
+ *   读取时由 accounts.mjs 的 ALIAS_KEYS 兼容旧值。
+ * - telegramConversationRoutes：Schema 中标注「已停用」，会话级路由改由账号卡配置。
+ * - telegramToken：令牌改在账号卡里填写，保存为凭据引用 telegramTokenRef。
+ * check.mjs 跳过这些键，不要求 lib/client.js 有对应的 INPUT_FIELDS 条目。
+ */
+export const TELEGRAM_LEGACY_KEYS = [
+  'telegramPreset',
+  'telegramGroupPreset',
+  'telegramConversationRoutes',
+  'telegramToken',
+]
+
 /** SettingsSchema 片段。telegramToken 只是表单占位：值写进宿主凭据（credentials 引用），设置里恒为空。 */
 export function telegramSchemaShape(z) {
   return {
@@ -50,13 +69,13 @@ export function telegramSchemaShape(z) {
     telegramGroupIds: z.string().default('').description('指定群的数字聊天 ID（负数，超级群以 -100 开头），逗号、空格或换行分隔。仅「指定群」时使用。'),
     telegramGroupRequireMention: z.boolean().default(false).description('可选。关闭时，允许的群里每条普通消息都会唤醒会话。开启时，只有 @ 机器人、回复它，或 /命令@机器人 才会唤醒。默认关闭。'),
     telegramGroupSenderPolicy: z.union(['open', 'allowlist']).default('open').description('允许的群里谁可以触发：所有成员，或仅所有者与私聊白名单。'),
-    telegramPreset: z.string().default('').description('主机器人的私聊预设（agent.default.preset）。留空时使用宿主默认；已绑定的会话不受影响。其他机器人在「其他机器人」里各自指定。'),
-    telegramGroupPreset: z.string().default('').description('主机器人的群聊预设。留空时与它的私聊预设相同；会话级覆盖仍优先。已绑定的会话不受影响。'),
-    telegramBots: z.array(z.any()).default([]).description('额外的 Telegram 机器人：{ id, name, tokenRef, preset, groupPreset, enabled }。令牌在宿主凭据里，每个机器人有自己的 DSH 会话。'),
+    telegramPreset: z.string().default('').description('兼容别名：账号 main 的私聊预设。请在机器人列表里修改；保存机器人时会写回这里。'),
+    telegramGroupPreset: z.string().default('').description('兼容别名：账号 main 的群聊预设。请在机器人列表里修改；保存机器人时会写回这里。'),
+    telegramBots: z.array(z.any()).default([]).description('全部 Telegram 机器人（含 id 为 main 的一行）：{ id, name, tokenRef, preset, groupPreset, enabled, provider, model, reasoningEffort }。令牌在宿主凭据里，每个机器人有自己的 DSH 会话。'),
     telegramAuthorizedIds: z.string().default('').description('授权用户 ID：只有这些 Telegram 用户触发的回合可以使用会更改电脑的工具。留空时使用所有者用户 ID；两者都空时任何人都不能使用。'),
     telegramDebugTrace: z.boolean().default(false).description('排查日志：把入站更新与准入 / 建会话阶段写到 ~/.dsh/dsh-channels/telegram-inbound.log。默认关闭。'),
     telegramChannelRoutes: z.string().default('').description('通道级预设覆盖，形如 telegram:预设名（routing.overrides.channel）。留空不覆盖。'),
-    telegramConversationRoutes: z.string().default('').description('会话级预设覆盖，每行或逗号分隔：会话ID:预设（routing.overrides.conversation）。'),
+    telegramConversationRoutes: z.string().default('').description('已停用。会话级覆盖会压过每个机器人自己的预设，启动时忽略，保存机器人时清空。'),
     telegramRoutingMode: z.union(['global', 'channel', 'account', 'conversation']).default('conversation').description('路由模式：按全局 / 通道 / 账号 / 会话选择智能体预设。'),
     telegramIncludeMetadataPrefix: z.boolean().default(true).description('入站消息前附加通道元数据前缀（includeMetadataPrefix）。'),
     telegramFormat: z.union(['auto', 'html', 'rich-markdown', 'markdown-v2', 'plain']).default('html').description('出站正文格式：auto / html / rich-markdown / markdown-v2 / plain。'),
@@ -110,6 +129,34 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
   let disposed = false
   let runtimeModule = null
 
+  // 未授权私聊：通道运行时经 globalThis 桥把发送者交给这里记入待处理名单（见 ./dm-pending.mjs）。
+  const dmStore = options.dmPendingFile ? createDmPending(options.dmPendingFile) : null
+  const offDmDiscover = dmStore
+    ? setDmDiscoverHandler(async (info) => {
+      // 刚在设置页授权、通道尚未按新名单重启时到达的消息不再记录。
+      const allow = effectiveDmAllow(getConfig() || {}, null)
+      if (allow && allow.includes(String(info?.userId ?? ''))) return
+      await dmStore.record(info)
+    })
+    : () => {}
+  const dmApi = dmStore
+    ? createDmPendingApi({
+      store: dmStore,
+      getConfig,
+      saveAllowFrom: typeof options.saveAllowFrom === 'function'
+        ? async (raw) => { await options.saveAllowFrom(raw); await sync() }
+        : null,
+      botLabels: async () => {
+        const out = {}
+        for (const b of await listBotsSafe()) out[b.id] = (b.name || b.id) + (b.username ? `（@${b.username}）` : '')
+        return out
+      },
+    })
+    : null
+  async function listBotsSafe() {
+    try { return await api.listBots() } catch { return [] }
+  }
+
   async function loadRuntime() {
     if (runtimeModule) return runtimeModule
     if (options.loadRuntime) runtimeModule = await options.loadRuntime()
@@ -133,6 +180,7 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
   }
 
   async function stopHandle() {
+    releaseAll('channel')
     const h = s.handle
     s.handle = null
     if (h) { try { await h.dispose() } catch (error) { log.warn?.('dsh-workbench: telegram stop failed', error) } }
@@ -142,7 +190,7 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
     const cred = credentials()
     const out = {}
     if (!cred) return out
-    for (const ref of channelTokenRefs(cfg)) {
+    for (const ref of [...new Set(resolveChannelAccounts(cfg).map((a) => a.tokenRef))]) {
       try {
         const value = (await cred.resolve(ref))?.value
         out[ref] = typeof value === 'string' ? value : ''
@@ -151,20 +199,31 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
     return out
   }
 
-  async function start(cfg, gen) {
+  async function reservedIngestTokens(cfg) {
+    const seat = ingestSeat(cfg)
+    const ref = seat?.telegram?.tokenRef
+    if (!ref) return []
+    const cred = credentials()
+    if (!cred) return []
+    try {
+      const value = (await cred.resolve(ref))?.value
+      return typeof value === 'string' && value ? [value] : []
+    } catch { return [] }
+  }
+
+  async function start(cfg, gen, boundChats = []) {
     const conflict = detectConflict(ctx)
     if (conflict) { s.status = 'disconnected'; s.detail = conflict; return }
     if (typeof ctx.plugin !== 'function') { s.status = 'error'; s.detail = '宿主不支持挂载子插件（ctx.plugin），无法启动通道'; return }
     const cred = credentials()
     if (!cred) { s.status = 'disconnected'; s.detail = '宿主未提供凭据服务（credentials），无法读取机器人令牌'; return }
-    const prepared = prepareStartedAccounts(resolveChannelAccounts(cfg), await tokensByRef(cfg))
+    const prepared = prepareStartedAccounts(resolveChannelAccounts(cfg), await tokensByRef(cfg), [])
     if (gen !== s.gen) return
     if (!prepared.started.length) {
       s.status = 'disconnected'
-      const extra = prepared.skipped.filter((item) => item.id !== 'main')
-      s.detail = extra.length
-        ? '没有可连接的机器人：' + prepared.skipped.map((item) => `${item.name}（${item.reason}）`).join('、')
-        : `未配置机器人令牌：请在下方填写并保存（凭据引用 ${tokenRefOf(cfg)}），或添加其他机器人`
+      s.detail = '没有可连接的机器人：' + (prepared.skipped.length
+        ? prepared.skipped.map((item) => `${item.name}（${item.reason}）`).join('、')
+        : '请在下方表格中选择机器人并保存令牌')
       return
     }
     let rt
@@ -175,13 +234,19 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
     try {
       s.policy = await rt.applyAccessPolicy(cfg.telegramOwnerId, cfg.telegramAllowFrom, {
         policy: cfg.telegramGroupPolicy || 'disabled',
-        chatIds: cfg.telegramGroupIds || '',
+        chatIds: excludeBoundChatIds(cfg.telegramGroupIds || '', boundChats),
         requireMention: cfg.telegramGroupRequireMention === true,
         senderPolicy: cfg.telegramGroupSenderPolicy || 'open',
       }, prepared.started.map((a) => a.id))
     } catch (error) {
       s.status = 'error'; s.detail = String(error?.message ?? error); return
     }
+    if (gen !== s.gen) return
+    // 私聊白名单（与刚写入的访问策略一致）；不按白名单时为 null，不做未授权私聊发现。
+    let dmAllow = null
+    try {
+      dmAllow = effectiveDmAllow(cfg, String(cfg.telegramOwnerId ?? '').trim() ? null : await rt.readAccessPolicy())
+    } catch { dmAllow = null }
     if (gen !== s.gen) return
     try {
       s.status = 'connecting'
@@ -199,7 +264,10 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
         includeMetadataPrefix: cfg.telegramIncludeMetadataPrefix !== false,
         routingMode: cfg.telegramRoutingMode || 'conversation',
         channelRoutes: cfg.telegramChannelRoutes,
-        conversationRoutes: cfg.telegramConversationRoutes,
+        excludedGroupChats: boundChats,
+        channelGroupIds: cfg.telegramGroupIds || '',
+        dmAllow,
+        chatroomEnabled: cfg.chatroomEnabled === true,
         format: cfg.telegramFormat || 'html',
         streamMode: cfg.telegramStreamMode || 'auto',
         sendReasoning: cfg.telegramSendReasoning === true,
@@ -212,10 +280,11 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
           void stopHandle().then(() => {
             if (gen !== s.gen) return
             s.status = 'error'
-            s.detail = '机器人正被其他程序轮询（Telegram 409 冲突），已停止轮询；请确认每个令牌只在一处使用后，关闭再打开「启用」'
+            s.detail = '机器人正被其他程序轮询（Telegram 409 冲突），已停止轮询；请确认没有外部程序占用该令牌后，关闭再打开「启用」'
           })
         },
       })
+      try { options.onPollingReady?.() } catch { /* 聊天室重订阅 */ }
     } catch (error) {
       s.status = 'error'
       s.detail = String(error?.message ?? error)
@@ -223,10 +292,15 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
     }
   }
 
+  async function boundChats() {
+    try { return (await options.boundChatIds?.()) || [] } catch { return [] }
+  }
+
   async function sync() {
     if (disposed) return
     const cfg = getConfig()
-    const key = JSON.stringify([s.tokenRev, ...TELEGRAM_KEYS.map((k) => cfg[k]), cfg[TELEGRAM_BOTS_KEY]])
+    const bound = await boundChats()
+    const key = JSON.stringify([s.tokenRev, ...TELEGRAM_KEYS.map((k) => cfg[k]), cfg[TELEGRAM_BOTS_KEY], bound])
     if (key === s.key) return
     s.key = key
     const gen = ++s.gen
@@ -238,7 +312,7 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
       s.detail = detectConflict(ctx) || '未启用'
       return
     }
-    await start(cfg, gen)
+    await start(cfg, gen, bound)
   }
 
   /** 由运行时快照得出 未连接 / 正在连接 / 已连接 + 实时行。 */
@@ -272,7 +346,7 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
     return { status: 'connecting', detail: `正在连接 Telegram Bot API（${via}）`, connection: { state: 'connecting', detail: errLine || '正在连接', checkedAt: Date.now() } }
   }
 
-  return {
+  const api = {
     sync,
     /** 强制重新同步（如凭据服务刚就绪）。 */
     resync() { if (s.handle) return Promise.resolve(); s.key = null; return sync() },
@@ -347,6 +421,9 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
         name: a.name,
         preset: a.preset,
         groupPreset: a.groupPreset,
+        provider: a.provider || '',
+        model: a.model || '',
+        reasoningEffort: a.reasoningEffort || '',
         enabled: a.enabled !== false,
         tokenRef: a.tokenRef,
         builtin: !!a.builtin,
@@ -374,7 +451,7 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
           if (typeof options.persistBots !== 'function') return fail(501, '当前环境无法保存设置')
           const parsed = await body()
           if (!Array.isArray(parsed.bots)) return fail(400, 'bots 必须是数组')
-          await options.persistBots(normalizeExtraBots(parsed.bots))
+          await options.persistBots(normalizeBots(parsed.bots, getConfig()))
           await sync()
           sendJson(res, 200, { ok: true, bots: await this.listBots() })
           return true
@@ -382,7 +459,6 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
         const match = /^\/telegram\/bots\/([a-z0-9-]+)\/(token|check)$/.exec(sub)
         if (!match) return fail(404, 'not found')
         const id = match[1]
-        if (id === 'main') return fail(400, '主机器人的令牌请在上方表单中填写')
         const account = resolveChannelAccounts(getConfig()).find((a) => a.id === id)
         if (!account) return fail(404, '机器人不存在')
         if (match[2] === 'token' && req.method === 'PUT') {
@@ -391,7 +467,8 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
           const token = String((await body()).token || '').trim()
           if (token && token !== '-' && !TOKEN_PATTERN.test(token)) return fail(400, '机器人令牌格式不正确，应形如 123456789:AA…（从 BotFather 获取）')
           if (token && token !== '-') {
-            const others = await tokensByRef(getConfig())
+            const cfg = getConfig()
+            const others = await tokensByRef(cfg)
             for (const [ref, value] of Object.entries(others)) {
               if (ref !== account.tokenRef && value && value === token) return fail(400, '这个令牌已经用于另一个机器人。同一个令牌不能两处轮询。')
             }
@@ -420,10 +497,18 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
       }
     },
 
+    /** GET /telegram/dm-pending，POST /telegram/dm-pending/:userId/authorize|ignore|remove（仅本机设置页）。 */
+    async handleDmApi(req, res, sub, helpers) {
+      if (!dmApi) return false
+      return dmApi.handle(req, res, sub, helpers)
+    },
+
     async dispose() {
       disposed = true
       s.gen++
+      offDmDiscover()
       await stopHandle()
     },
   }
+  return api
 }

@@ -7,7 +7,7 @@ import { createStore } from './store.mjs'
 import { buildPrompt, isPass } from './transcript.mjs'
 import { callSeat, toLlmMessages } from './providers.mjs'
 import { createModerator } from './moderator.mjs'
-import { resolveSeats, normalizeSeats, migrateLegacyChatroom, chatroomSchemaShape, CHATROOM_KEYS, LEGACY_CHATROOM_KEYS } from './seats.mjs'
+import { resolveSeats, normalizeSeats, migrateLegacyChatroom, chatroomSchemaShape, CHATROOM_KEYS, LEGACY_CHATROOM_KEYS, outputTokenLimit } from './seats.mjs'
 import { createChatroomFeature } from './index.mjs'
 import { createDshCatalog, personaFromComposition } from '../dsh-catalog.mjs'
 import z from 'schemastery'
@@ -128,6 +128,27 @@ test('providers: call goes through ctx.llm.stream with DSH message shape; no rea
   assert.equal(toLlmMessages(seat, [{ role: 'assistant', content: 'x' }])[0].source.provider, 'deepseek')
 })
 
+test('outputTokenLimit: empty/0/unset => 0 (unlimited); positive clamped', () => {
+  assert.equal(outputTokenLimit(undefined), 0)
+  assert.equal(outputTokenLimit(null), 0)
+  assert.equal(outputTokenLimit(''), 0)
+  assert.equal(outputTokenLimit(0), 0)
+  assert.equal(outputTokenLimit('0'), 0)
+  assert.equal(outputTokenLimit(4096), 4096)
+  assert.equal(outputTokenLimit(999999), 32000)
+})
+
+test('providers: unset/0 maxTokens is omitted from llm.stream request', async () => {
+  const llm = mockLlm()
+  const seat = resolveSeats({ chatroomSeats: SEATS })[1]
+  await callSeat({ seat, prompt, llm })
+  assert.equal('maxTokens' in llm.calls[0], false)
+  await callSeat({ seat, prompt, llm, maxTokens: 0 })
+  assert.equal('maxTokens' in llm.calls[1], false)
+  await callSeat({ seat, prompt, llm, maxTokens: 88 })
+  assert.equal(llm.calls[2].maxTokens, 88)
+})
+
 test('providers: failures surface as seat errors, unregistered provider refused before streaming', async () => {
   const llm = mockLlm({ openai: () => ({ error: 'invalid api key' }) })
   const seats = resolveSeats({ chatroomSeats: SEATS })
@@ -222,6 +243,21 @@ test('feature: API end to end over mocked DSH llm + presets: catalog, seats CRUD
     assert.equal(put.status, 200)
     assert.equal(saved.length, 1)
     const ov = put.json
+    // 版本校验：带旧版本号保存被拒（409，不写入）；带当前版本号保存成功；不带版本号（接口调用）照旧
+    assert.match(String(ov.seatsRev || ''), /^[0-9a-f]{16}$/)
+    const staleRev = ov.seatsRev
+    const keep = ov.seats.map((s) => ({ id: s.id, name: s.name, provider: s.provider, model: s.model, preset: s.preset, enabled: s.enabled }))
+    const moved = await call('PUT', '/chatroom/seats', { seats: keep.map((s) => (s.id === 'cl' ? { ...s, imageWindow: 'latest' } : s)) })
+    assert.equal(moved.status, 200)
+    assert.equal(moved.json.seats.find((s) => s.id === 'cl').imageWindow, 'latest')
+    assert.notEqual(moved.json.seatsRev, staleRev)
+    const stale = await call('PUT', '/chatroom/seats', { seats: keep, baseRev: staleRev })
+    assert.equal(stale.status, 409)
+    assert.match(stale.json.error, /已在其他位置更新/)
+    assert.equal(saved.at(-1).find((s) => s.id === 'cl').imageWindow, 'latest')
+    const fresh = await call('PUT', '/chatroom/seats', { seats: moved.json.seats.map((s) => ({ id: s.id, name: s.name, provider: s.provider, model: s.model, preset: s.preset, enabled: s.enabled, imageWindow: s.imageWindow })), baseRev: moved.json.seatsRev })
+    assert.equal(fresh.status, 200)
+    saved.length = 1
     assert.deepEqual(ov.seats.map((s) => `${s.id}:${s.ready}`), ['ds:true', 'cl:true', 'oa:true', 'xa:false', 'off:false'])
     assert.match(ov.seats[3].problem, /未在 DSH 中启用/)
     assert.match(ov.seats[4].problem, /不在该服务商的模型列表/)
@@ -229,22 +265,31 @@ test('feature: API end to end over mocked DSH llm + presets: catalog, seats CRUD
     cfg = { ...cfg, chatroomEnabled: true }
     const room = (await call('POST', '/chatroom/rooms', { title: '圆桌' })).json.room
     const written = []
+    const remote = []
+    feat.handleApi({ method: 'GET', headers: {}, socket: { remoteAddress: '10.0.0.5' }, on() {} }, { writeHead() {}, write: (s) => remote.push(s), end() {}, on() {} }, `/chatroom/rooms/${room.id}/events`, { sendJson() {}, readBody: async () => '' })
     feat.handleApi({ method: 'GET', headers: {}, on() {} }, { writeHead() {}, write: (s) => written.push(s), end() {}, on() {} }, `/chatroom/rooms/${room.id}/events`, { sendJson() {}, readBody: async () => '' })
     const posted = await call('POST', `/chatroom/rooms/${room.id}/messages`, { text: '各位好' })
     assert.equal(posted.json.started, true)
     for (let i = 0; i < 200 && feat.moderator.status(room.id).running; i++) await new Promise((r) => setTimeout(r, 10))
     const got = (await call('GET', `/chatroom/rooms/${room.id}`)).json
-    assert.deepEqual(got.messages.map((m) => `${m.speaker.id}:${m.status}:${m.text}`), ['user:ok:各位好', 'ds:ok:deepseek-flash 收到', 'cl:ok:Claude到啦', 'oa:error:', 'xa:error:', 'ds:ok:deepseek-flash 收到'])
-    assert.equal(got.messages[5].budgetReport, true)
+    // 失败的回合（oa 缺凭据、xa 未启用）不入历史，只发不入库的 turn-failed 事件
+    assert.deepEqual(got.messages.map((m) => `${m.speaker.id}:${m.status}:${m.text}`), ['user:ok:各位好', 'ds:ok:deepseek-flash 收到', 'cl:ok:Claude到啦', 'system:ok:本轮已达回合上限（4/4），回复「批准 +N」继续。'])
     assert.equal(got.task.state, 'budget')
-    assert.match(got.messages[3].error, /OPENAI_API_KEY/)
-    assert.match(got.messages[4].error, /未在 DSH 中启用/)
+    const failed = written.join('').split('\n\n').filter((x) => x.startsWith('event: turn-failed')).map((x) => JSON.parse(x.split('data: ')[1]))
+    assert.deepEqual(failed.map((f) => f.seatId), ['oa', 'xa'])
+    assert.match(failed[0].reason, /OPENAI_API_KEY/)
+    assert.match(failed[1].reason, /未在 DSH 中启用/)
     assert.match(llm.calls[0].system, /你是凌雪，说话温柔。/)
     assert.equal(got.messages[1].usage.cacheRead, 3)
     const stream = written.join('')
     assert.match(stream, /event: hello/)
     assert.match(stream, /event: delta/)
-    assert.ok(!stream.includes('思考不应出现'))
+    // 思考只出现在本机事件流的 thinking-delta 里，不混进正文 / 消息；非本机事件流完全收不到
+    assert.ok(!stream.split('\n\n').filter((x) => !x.startsWith('event: thinking-delta')).join('').includes('思考不应出现'))
+    assert.ok(stream.includes('event: thinking-delta'))
+    assert.ok(remote.join('').includes('event: delta'))
+    assert.ok(!remote.join('').includes('思考不应出现'))
+    assert.ok(!remote.join('').includes('thinking-delta'))
     // stop during a slow stream
     cfg = { ...cfg, chatroomSeats: [{ id: 'cl', name: 'Claude', provider: 'anthropic', model: 'claude-x', enabled: true }] }
     await call('POST', `/chatroom/rooms/${room.id}/messages`, { text: '@Claude 再说一次' })
@@ -502,5 +547,126 @@ test('feature: new room gets a room session; /chatroom/sessions maps it; compose
     assert.ok(msgs.some((m) => m.kind === 'seat'))
     await feat.dispose()
     assert.equal(dsh.log.disposed.length, 1)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('card manager API: GET /cards filters + paging, POST /bin sweep/restore with one panel-only note, local-only', async () => {
+  const dir = await tmp()
+  try {
+    const dsh = fakeDsh()
+    const cfg = { chatroomEnabled: true, chatroomUserName: 'Shiro', chatroomSeats: [{ id: 'ds', name: 'DeepSeek', provider: 'deepseek', model: 'deepseek-flash', enabled: true }] }
+    const feat = createChatroomFeature(dsh.ctx, () => cfg, { dir, llm: mockLlm(), presets: mockPresets() })
+    await feat.sync()
+    const relayed = []
+    const call = async (method, sub, body, { addr, site } = {}) => {
+      let status = 0; let out = null
+      const req = { method, url: sub, headers: site ? { 'sec-fetch-site': site } : {}, socket: addr ? { remoteAddress: addr } : undefined }
+      await feat.handleApi(req, { writeHead() {} }, sub.split('?')[0], { sendJson: (_r, s, b) => { status = s; out = b }, readBody: async () => (body ? JSON.stringify(body) : '') })
+      return { status, body: out }
+    }
+    const room = (await call('POST', '/chatroom/rooms', { title: '卡片' })).body.room
+    const st = feat.store
+    const ids = []
+    for (let i = 0; i < 7; i++) {
+      const m = await st.append(room.id, { kind: 'tool', tool: i % 2 ? 'web_search' : 'read_file', speaker: i < 4 ? { id: 'ds', name: 'DeepSeek' } : { id: 'gk', name: 'Grok' }, status: 'ok', text: i === 3 ? '失败：HTTP 500' : '', data: { resultId: 'rcard' + i, title: `card ${i} ` + (i === 5 ? 'special-term' : ''), ok: i !== 3, chars: 100 + i, args: JSON.stringify({ path: 'p' + i }) } })
+      ids.push(m.id)
+    }
+    await st.append(room.id, { kind: 'user', text: 'not a card', speaker: { id: 'user', name: 'Shiro' } })
+    let r = await call('GET', `/chatroom/rooms/${room.id}/cards?limit=3`)
+    assert.equal(r.status, 200); assert.equal(r.body.total, 7); assert.equal(r.body.items.length, 3)
+    assert.equal(r.body.items[0].id, ids[6]) // 最新在前
+    assert.deepEqual(r.body.counts, { all: 7, ok: 6, blank: 1, binned: 0 })
+    assert.deepEqual(r.body.members.map((m) => m.name).sort(), ['DeepSeek', 'Grok']); assert.deepEqual(r.body.tools, ['read_file', 'web_search'])
+    assert.equal((await call('GET', `/chatroom/rooms/${room.id}/cards?offset=6&limit=3`)).body.items.length, 1)
+    assert.equal((await call('GET', `/chatroom/rooms/${room.id}/cards?member=gk&tool=web_search`)).body.total, 1)
+    assert.equal((await call('GET', `/chatroom/rooms/${room.id}/cards?status=blank`)).body.items[0].id, ids[3])
+    assert.deepEqual((await call('GET', `/chatroom/rooms/${room.id}/cards?q=SPECIAL`)).body.ids, [ids[5]])
+    assert.deepEqual((await call('GET', `/chatroom/rooms/${room.id}/cards?q=p2`)).body.ids, [ids[2]]) // 参数也能搜
+    // 收进回收站（批量）→ 一条「您把 N 张卡片收进了回收站」，不转发、不进提示词
+    r = await call('POST', `/chatroom/rooms/${room.id}/bin`, { sweep: [ids[0], ids[1], ids[2]] })
+    assert.equal(r.status, 200); assert.equal(r.body.swept, 3); assert.deepEqual(Object.keys(r.body.bin).sort(), [ids[0], ids[1], ids[2]].sort())
+    let msgs = await st.readMessages(room.id)
+    let notes = msgs.filter((m) => m.notice === 'card-bin')
+    assert.equal(notes.length, 1); assert.equal(notes[0].text, '您把 3 张卡片收进了回收站（read_file ×2、web_search）'); assert.equal(notes[0].relay, false); assert.equal(notes[0].kind, 'system')
+    const seat = resolveSeats(cfg)[0]
+    const p = buildPrompt({ seat, seats: [seat], userName: 'Shiro', messages: msgs })
+    assert.ok(!JSON.stringify(p).includes('收进了回收站'))
+    r = await call('GET', `/chatroom/rooms/${room.id}/cards?status=binned`)
+    assert.equal(r.body.total, 3); assert.equal(r.body.items[0].binnedBy, 'Shiro')
+    // 再收一次：没有变化，不写提示
+    assert.equal((await call('POST', `/chatroom/rooms/${room.id}/bin`, { sweep: [ids[0]] })).body.changed, 0)
+    // 移出回收站
+    r = await call('POST', `/chatroom/rooms/${room.id}/bin`, { restore: [ids[0], ids[5]] })
+    assert.equal(r.body.restored, 1)
+    msgs = await st.readMessages(room.id)
+    notes = msgs.filter((m) => m.notice === 'card-bin')
+    assert.deepEqual(notes.map((m) => m.text), ['您把 3 张卡片收进了回收站（read_file ×2、web_search）', '您从回收站取回了 1 张卡片（read_file）'])
+    // 参数校验与本机限制
+    assert.equal((await call('POST', `/chatroom/rooms/${room.id}/bin`, {})).status, 400)
+    assert.equal((await call('POST', `/chatroom/rooms/${room.id}/bin`, { sweep: [ids[1]], restore: [ids[2]] })).status, 400)
+    assert.equal((await call('POST', `/chatroom/rooms/${room.id}/bin`, { sweep: [ids[4]] }, { addr: '192.168.1.20' })).status, 403)
+    assert.equal((await call('GET', `/chatroom/rooms/${room.id}/cards`, null, { addr: '10.0.0.5' })).status, 403)
+    assert.equal((await call('GET', `/chatroom/rooms/${room.id}/cards`, null, { site: 'cross-site' })).status, 403)
+    assert.equal((await call('GET', `/chatroom/rooms/${room.id}/cards`, null, { addr: '::ffff:127.0.0.1' })).status, 200)
+    assert.equal(relayed.length, 0)
+    await feat.dispose?.()
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+test('thinking API: GET /messages/:mid/thinking is local-only (loopback, no cross-site), 404 when absent, never in messages', async () => {
+  const dir = await tmp()
+  try {
+    const dsh = fakeDsh()
+    const cfg = { chatroomEnabled: true, chatroomUserName: 'Shiro', chatroomSeats: [{ id: 'ds', name: 'DeepSeek', provider: 'deepseek', model: 'deepseek-flash', enabled: true }] }
+    const feat = createChatroomFeature(dsh.ctx, () => cfg, { dir, llm: mockLlm(), presets: mockPresets() })
+    await feat.sync()
+    const call = async (method, sub, body, { addr, site } = {}) => {
+      let status = 0; let out = null
+      const req = { method, url: sub, headers: site ? { 'sec-fetch-site': site } : {}, socket: addr ? { remoteAddress: addr } : undefined }
+      await feat.handleApi(req, { writeHead() {} }, sub.split('?')[0], { sendJson: (_r, s, b) => { status = s; out = b }, readBody: async () => (body ? JSON.stringify(body) : '') })
+      return { status, body: out }
+    }
+    const room = (await call('POST', '/chatroom/rooms', { title: '思考' })).body.room
+    const st = feat.store
+    const m = await st.append(room.id, { kind: 'seat', speaker: { id: 'ds', name: 'DeepSeek' }, status: 'ok', text: '答案', thinkingChars: 4 })
+    const bare = await st.append(room.id, { kind: 'seat', speaker: { id: 'ds', name: 'DeepSeek' }, status: 'ok', text: '没有思考' })
+    await st.appendThinking(room.id, m.id, '想了想啊')
+    const url = `/chatroom/rooms/${room.id}/messages/${m.id}/thinking`
+    let r = await call('GET', url, null, { addr: '127.0.0.1', site: 'same-origin' })
+    assert.equal(r.status, 200); assert.equal(r.body.text, '想了想啊'); assert.equal(r.body.chars, 4)
+    assert.equal((await call('GET', url, null, { addr: '::1' })).status, 200)
+    assert.equal((await call('GET', url, null, { addr: '192.168.1.20' })).status, 403)
+    assert.equal((await call('GET', url, null, { addr: '127.0.0.1', site: 'cross-site' })).status, 403)
+    assert.equal((await call('GET', `/chatroom/rooms/${room.id}/messages/${bare.id}/thinking`, null, { addr: '127.0.0.1' })).status, 404)
+    assert.equal((await call('POST', url, {}, { addr: '127.0.0.1' })).status === 200, false)
+    const raw = JSON.stringify(await st.readMessages(room.id)) + await readFile(join(dir, room.id, 'messages.jsonl'), 'utf8').catch(() => '')
+    assert.ok(!raw.includes('想了想啊'))
+    await feat.dispose?.()
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('cursor progress events (cursor-progress, progress message-update) reach only local event streams', async () => {
+  const dir = await tmp()
+  try {
+    const dsh = fakeDsh()
+    const cfg = { chatroomEnabled: true, chatroomUserName: 'Shiro', chatroomSeats: [{ id: 'ds', name: 'DeepSeek', provider: 'deepseek', model: 'deepseek-flash', enabled: true }] }
+    let release
+    const gate = new Promise((r) => { release = r })
+    const runCursor = async (_h, { onProgress }) => { onProgress({ kind: 'tool', tool: 'grep', target: 'S:\\LOCALONLY\\app', text: 'grep S:\\LOCALONLY\\app' }); await gate; return { ok: true, status: 'success', exitCode: 0, finalText: 'ok' } }
+    const feat = createChatroomFeature(dsh.ctx, () => cfg, { dir, llm: mockLlm(), presets: mockPresets(), runCursor })
+    await feat.sync()
+    const room = await feat.store.createRoom({ title: 'p' })
+    const msg = await feat.store.append(room.id, { kind: 'brief', briefId: 'bq001', briefStatus: 'awaiting_owner', action: 'brief', repo: dir, title: 'T', speaker: { id: 'ds', name: 'DeepSeek' }, text: 'x' })
+    await feat.store.patchMeta(room.id, (m) => { m.briefs = { bq001: { action: 'brief', title: 'T', brief: 'x', repo: dir, status: 'awaiting_owner', by: 'ds', msgId: msg.id } }; m.pendingBrief = 'bq001' })
+    const local = []; const remote = []
+    const sub = (addr, out) => feat.handleApi({ method: 'GET', headers: {}, socket: addr ? { remoteAddress: addr } : undefined, on() {} }, { writeHead() {}, write: (s) => out.push(s), end() {}, on() {} }, `/chatroom/rooms/${room.id}/events`, { sendJson() {}, readBody: async () => '' })
+    sub('127.0.0.1', local); sub('192.168.1.9', remote)
+    const done = feat.moderator.executeBrief(room.id, 'bq001')
+    for (let i = 0; i < 300 && !local.join('').includes('"progress":true'); i++) await new Promise((r) => setTimeout(r, 10))
+    release(); await done
+    const L = local.join(''); const R = remote.join('')
+    assert.ok(L.includes('event: cursor-progress')); assert.ok(L.includes('"progress":true'))
+    assert.ok(!R.includes('cursor-progress')); assert.ok(!R.includes('"progress":true'))
+    assert.ok(R.includes('event: message-update')) // 普通的卡片更新（交卷）照常推送
+    await feat.dispose?.()
   } finally { await rm(dir, { recursive: true, force: true }) }
 })

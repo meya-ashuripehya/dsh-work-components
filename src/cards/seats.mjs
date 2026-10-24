@@ -8,6 +8,7 @@
  * mode = 'solo'（代打）：旧版行为。AI 坐座位 0，对手全是机器人；页面是观战视角（也允许点牌）。
  *   会话层直接调用 openSession 而不传 mode 时也是 solo，旧存档没有 mode 字段时按调用方给的 mode 续局。
  */
+import { CardError } from './errors.mjs'
 import { cardCode } from './rules.mjs'
 
 export const MODES = ['versus', 'solo']
@@ -17,7 +18,60 @@ export function normalizeMode(value, fallback = 'solo') {
   const text = String(value ?? '').trim().toLowerCase()
   if (text === 'versus' || text === 'vs' || text === '对战' || text === '与 ai 对战' || text === '与ai对战') return 'versus'
   if (text === 'solo' || text === '代打' || text === 'proxy') return 'solo'
+  if (text === 'room' || text === '中转站') return 'room'
   return fallback
+}
+
+/** 中转站一桌的人数。二十一点不开放。斗地主必须 3 人且座位 0 是地主。 */
+export function roomPlayerCount(game, n) {
+    if (game === 'blackjack') throw new CardError('中转站牌局不开放二十一点')
+  if (game === 'uno') {
+    if (n < 2 || n > 10) throw new CardError('UNO 需要 2 到 10 个座位')
+    return n
+  }
+  if (game === 'leduc' || game === 'limit-holdem') {
+    if (n !== 2) throw new CardError('这个牌种只需要 2 个座位')
+    return 2
+  }
+  if (game === 'doudizhu') {
+    if (n !== 3) throw new CardError('斗地主需要 3 个座位，座位 0 是地主')
+    return 3
+  }
+  throw new CardError('这个牌种不能在中转站开局')
+}
+
+/** 中转站座位。AI 立即入座；人类保持 pending，直到本人回复「入座」。 */
+export function normalizeRoomOccupants(game, input, playerName = 'user') {
+  if (!Array.isArray(input) || !input.length) throw new CardError('seats 需要列出每个座位')
+  roomPlayerCount(game, input.length)
+  return input.map((raw, seat) => {
+    if (!raw || typeof raw !== 'object') throw new CardError('seats 里的每一项都要写明 kind')
+    const kind = raw.kind === 'human' ? 'human' : raw.kind === 'ai' ? 'ai' : ''
+    if (!kind) throw new CardError('kind 只能是 ai 或 human')
+    const name = String(raw.name || '').trim().slice(0, 40)
+    if (kind === 'ai') {
+      const memberId = String(raw.memberId || '').trim()
+      if (!memberId) throw new CardError('AI 座位需要 memberId（聊天室成员编号）')
+      return { seat, kind, memberId, name: name || memberId, status: 'seated' }
+    }
+    const tg = String(raw.telegramUserId || '').trim()
+    const local = raw.local === true || tg === 'local'
+    if (!local && !/^-?\d{1,20}$/.test(tg)) throw new CardError('人类座位需要 telegramUserId，或 local 表示桌面')
+    return {
+      seat,
+      kind,
+      name: name || (local ? (playerName || 'user') : tg),
+      status: 'pending',
+      ...(local ? { local: true } : { telegramUserId: tg }),
+    }
+  })
+}
+
+export function occupantMatches(occ, caller) {
+  if (!occ || occ.kind !== 'human') return false
+  if (caller?.telegramUserId && String(occ.telegramUserId || '') === String(caller.telegramUserId)) return true
+  if (caller?.local && occ.local) return true
+  return false
 }
 
 export function seatCount(game, state) {
@@ -54,7 +108,13 @@ export function seatsProblem(seats, mode, players) {
 }
 
 /** AI 的座位；versus 二十一点没有 AI 座位（null）；座位分配里没有 ai 时也为 null。 */
-export function agentSeatOf(session) {
+export function agentSeatOf(session, caller) {
+  if (session?.mode === 'room') {
+    const id = caller?.memberId
+    if (!id) return null
+    const occ = (session.occupants || []).find((o) => o.kind === 'ai' && o.memberId === id)
+    return occ ? occ.seat : null
+  }
   const roles = seatRoles(session)
   if (roles) {
     const i = roles.indexOf('ai')
@@ -77,6 +137,10 @@ export function userSeatOf(session) {
 
 /** 页面 / Telegram 下方「你」的座位：versus 是用户座位，solo 是 AI 的座位（页面可替它点）。 */
 export function viewerSeatOf(session) {
+  if (session.mode === 'room') {
+    const local = (session.occupants || []).find((o) => o.local)
+    return local ? local.seat : null
+  }
   if (session.mode === 'versus') return userSeatOf(session)
   const seat = agentSeatOf(session)
   return seat == null ? USER_SEAT : seat
@@ -96,12 +160,21 @@ export function turnSeat(game, state) {
 /** 'user' | 'agent' | 'bot'。solo 时座位 0 归 AI（用户在页面上也可以替它点）。 */
 export function roleOf(session, seat) {
   if (seat == null) return 'over'
+  if (session.mode === 'room') {
+    const occ = (session.occupants || []).find((o) => o.seat === seat)
+    if (!occ) return 'bot'
+    return occ.kind === 'ai' ? 'agent' : 'user'
+  }
   if (session.mode !== 'versus') return seat === agentSeatOf(session) ? 'agent' : 'bot'
   if (seat === userSeatOf(session)) return 'user'
   return seat === agentSeatOf(session) ? 'agent' : 'bot'
 }
 
 export function seatLabel(session, seat) {
+  if (session.mode === 'room') {
+    const occ = (session.occupants || []).find((o) => o.seat === seat)
+    if (occ?.name) return occ.name
+  }
   const role = roleOf(session, seat)
   if (session.mode !== 'versus') return role === 'agent' ? 'AI（代打）' : `机器人 ${seat}`
   if (role === 'user') return session.playerName || '用户'
@@ -222,15 +295,22 @@ function privateTable(session, seat) {
  * 给 AI 的私有视图。只含 AI 自己座位的手牌和公开信息；用户座位的手牌永远不会出现（终局摊牌除外，
  * 那时已经公开）。versus 二十一点：只给庄家公开的牌、局面状态，不给用户手牌。
  */
-export function agentView(session, engine, pub, extra = {}) {
-  const seat = agentSeatOf(session)
+export function seatPrivate(session, seat) {
+  return privateTable(session, seat)
+}
+
+export function agentView(session, engine, pub, extra = {}, caller) {
+  const who = caller || extra.caller
+  const rest = { ...extra }
+  delete rest.caller
+  const seat = agentSeatOf(session, who)
   const now = turnSeat(session.game, session.state)
   const role = roleOf(session, now)
   const yours = seat != null && now === seat
   const view = {
     id: session.id,
     game: session.game,
-    label: extra.label,
+    label: rest.label,
     playerName: session.playerName,
     mode: session.mode,
     you: seat == null ? { seat: null, role: 'spectator' } : { seat, name: seatLabel(session, seat) },
@@ -248,7 +328,7 @@ export function agentView(session, engine, pub, extra = {}) {
     if (pub.revealed) view.dealerScore = pub.dealerScore
   } else Object.assign(view, privateTable(session, seat))
   if (session.recent?.length) view.recent = session.recent.map((m) => ({ seat: m.seat, name: seatLabel(session, m.seat), action: m.action }))
-  Object.assign(view, extra)
+  Object.assign(view, rest)
   view.instruction = agentInstruction(session, view)
   return view
 }

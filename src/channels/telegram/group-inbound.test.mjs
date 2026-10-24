@@ -11,8 +11,8 @@ function update(message) {
     message: {
       message_id: 10,
       date: 1,
-      chat: { id: -1003435238151, type: 'supergroup', title: 'lkun' },
-      from: { id: 6153059771, first_name: 'Shiro' },
+      chat: { id: -1009000000001, type: 'supergroup', title: 'lkun' },
+      from: { id: 9000000001, first_name: 'Shiro' },
       ...message,
     },
   }
@@ -21,7 +21,7 @@ function update(message) {
 test('plain @username wakes even without a mention entity', () => {
   const event = mapInbound(update({ text: '@kujira_deepseek_bot 111' }), meta)
   assert.equal(event.conversation.type, 'group')
-  assert.equal(event.conversation.id, '-1003435238151')
+  assert.equal(event.conversation.id, '-1009000000001')
   assert.equal(event.message.activation.mentionedBot, true)
 })
 

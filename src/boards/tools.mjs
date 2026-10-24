@@ -1,9 +1,10 @@
 import { defineTool } from '../../vendor/dsh-tools/schema.js'
 import { BoardError } from './errors.mjs'
 import { playerName } from './names.mjs'
-import { closeSession, lookSession, openSession, playSession, resetGame } from './session.mjs'
+import { boardKey, closeSession, lookSession, openSession, playSession, resetGame, sessionHintContext } from './session.mjs'
 import { telegramOriginFor } from './telegram.mjs'
 import { computeHints, hintMs } from './assist/hints.mjs'
+import { hasSession as cardTableOpen } from '../cards/session.mjs'
 
 const OUTPUT = { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] }
 
@@ -16,9 +17,25 @@ function fail(error) {
  * 装了辅助引擎时附上 hints（前三名候选与 AI 视角胜率）；没装或失败时原样返回。
  * 只在未终局时做；board_play 后轮到对方时给的是对方可能的应着。
  */
-async function withHints(view, cfg) {
+function keyFrom(exec, origin) {
+  if (exec?.game?.roomId) return boardKey({ roomId: exec.game.roomId })
+  if (origin) return boardKey({ origin })
+  if (exec?.agent?.id) return boardKey({ sessionId: exec.agent.id })
+  return boardKey({})
+}
+
+function callerOf(exec) {
+  const caller = exec?.game?.caller
+  return caller?.memberId ? caller : undefined
+}
+
+function refuseOpen(exec) {
+  if (exec?.game?.roomId && exec.game.owner === false) throw new BoardError('只有所有者可以开局、结束或重开', 403)
+}
+
+async function withHints(view, cfg, key, caller) {
   if (!view || view.over || view.turn === 'over') return view
-  const hints = await computeHints({ ms: hintMs(cfg) })
+  const hints = await computeHints({ ms: hintMs(cfg), ctx: sessionHintContext(key, { caller }) })
   return hints ? { ...view, hints } : view
 }
 
@@ -28,91 +45,125 @@ export function createBoardsTools(options = {}) {
 
   const openTool = defineTool({
     name: 'board_open',
-    description: '打开一盘棋并在对话右侧显示棋盘。game 为 xiangqi（中国象棋）、chess（国际象棋）、gomoku（五子棋）、go（围棋）。aiSide 指定你执哪一方。同一时间只能有一局。缺棋盘时会先下载 MIT 项目。你执先手时要立刻 board_play；对方执先手时先等待，对方落子后再 board_look 并应着。不要使用这些棋库自带的对手。每种棋各有一份本地存档：上次未下完的同种棋会从存档续局（沿用存档里的执子方，返回 resumed 说明已走步数和轮到谁）；上次已终局则开新局，并在 lastResult 中给出上一局结果。',
+    description: 'Open a board for this room or session. game is xiangqi, chess, gomoku, or go. Without seats, aiSide is the side you (the single AI) play and the human takes the other side; only one game per room or session. In a chatroom, pass seats: one entry per side, kind "ai" with memberId (seated immediately) or kind "human" with telegramUserId or local:true (pending until that person replies 入座). Do not play for another seat. An unfinished game for this same room or session resumes; a finished one starts fresh and includes lastResult. Missing board projects are downloaded at runtime.',
     parameters: {
-      game: { type: 'string', required: true, description: 'xiangqi、chess、gomoku、go 之一。' },
-      aiSide: { type: 'string', required: true, description: '你执的一方。中国象棋用 red 或 black；国际象棋用 white 或 black；五子棋和围棋用 black 或 white。也可以用红、黑、白。' },
-      strict: { type: 'boolean', description: '只对围棋有效。默认 true，禁止覆盖、自杀和立刻还原上一步。false 时关掉这三项，提子仍然计算。' },
-      opponent: { type: 'string', description: '可选，只在 Telegram 群里有用：允许走棋的对手的 Telegram 数字用户 ID。默认只有发起这局的人能走。' },
+      game: { type: 'string', required: true, description: 'One of xiangqi, chess, gomoku, go.' },
+      aiSide: { type: 'string', description: 'Required when seats is omitted. red or black (xiangqi); white or black (chess); black or white (gomoku, go). Chinese 红/黑/白 is accepted.' },
+      strict: { type: 'boolean', description: 'Go only. Default true: no overwrite, suicide, or immediate ko. false disables those three; captures are still counted.' },
+      opponent: { type: 'string', description: 'Optional Telegram user id allowed to move the human side in a channel group. Defaults to the person who started the game.' },
+      seats: {
+        type: 'array',
+        description: 'Chatroom only. Exactly one seat per side. Omit for a normal one-human versus one-AI game.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            side: { type: 'string', required: true, description: 'red, black, or white — a side of this game.' },
+            kind: { type: 'string', required: true, description: 'ai or human.' },
+            memberId: { type: 'string', description: 'Chatroom member id. Required when kind is ai.' },
+            telegramUserId: { type: 'string', description: 'Telegram user id when kind is human. Use local:true instead for the desktop owner.' },
+            local: { type: 'boolean', description: 'True when this human plays at the desktop.' },
+            name: { type: 'string', description: 'Display name.' },
+          },
+        },
+      },
     },
     output: OUTPUT,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
+      refuseOpen(exec)
+      if (exec?.game?.roomId && cardTableOpen(`room:${exec.game.roomId}`)) throw new BoardError('这个房间已经有一桌牌，请先结束', 409)
       const cfg = getConfig() || {}
-      const origin = telegramOriginFor(exec?.agent?.id, args.opponent)
+      const origin = exec?.game?.roomId ? null : telegramOriginFor(exec?.agent?.id, args.opponent)
+      const key = keyFrom(exec, origin)
       const view = await openSession({
+        key,
         game: args.game,
         aiSide: args.aiSide,
+        seats: args.seats,
         strict: args.strict,
         playerName: playerName(cfg.boardsPlayerName),
         ...(origin ? { origin } : {}),
       }).catch(fail)
-      return view.turn === 'ai' ? withHints(view, cfg) : view
+      const caller = callerOf(exec)
+      return view.turnSeat?.memberId && caller?.memberId === view.turnSeat.memberId || (!view.turnSeat?.memberId && view.turn === 'ai')
+        ? withHints(view, cfg, key, caller)
+        : view
     },
   })
 
   const lookTool = defineTool({
     name: 'board_look',
-    description: '查看当前棋局：轮到谁、局面、合法着法和是否终局。对方落子后用它确认局面，再 board_play。若设置里下载了辅助引擎，还会附 hints：前三名候选着法与你方胜率，仅供参考。',
+    description: 'Look at the current game for this room or session: whose turn, the position, legal moves, and whether it is over. Hints, when an analysis engine is installed, are for the caller only and must not be copied into the shared room.',
     parameters: {},
     output: OUTPUT,
     isConcurrencySafe: () => true,
-    async execute() {
-      return withHints(lookSession(), getConfig() || {})
+    async execute(_args, exec) {
+      const key = keyFrom(exec, exec?.game?.roomId ? null : telegramOriginFor(exec?.agent?.id))
+      const caller = callerOf(exec)
+      return withHints(lookSession(key, caller), getConfig() || {}, key, caller)
     },
   })
 
   const playTool = defineTool({
     name: 'board_play',
-    description: '走你这一方的棋。着法必须来自 board_open 或 board_look 返回的 legal。中国象棋如 车1进1 或 1,9-1,8；国际象棋如 e2e4；五子棋如 H8；围棋如 D4，停着写 pass。非法着法会被拒绝，局面不变。',
+    description: 'Play one move for your own seat only. The move must be one of legal from board_open or board_look. Xiangqi: 车1进1 or 1,9-1,8. Chess: e2e4. Gomoku: H8. Go: D4, or pass. Illegal moves are rejected and the position is unchanged. Never play the other side.',
     parameters: {
-      move: { type: 'string', required: true, description: '一步合法着法。' },
+      move: { type: 'string', required: true, description: 'One legal move.' },
     },
     output: OUTPUT,
     isConcurrencySafe: () => false,
-    async execute(args) {
-      const played = await playSession(args.move, 'ai').catch(fail)
-      return withHints(played.view, getConfig() || {})
+    async execute(args, exec) {
+      const key = keyFrom(exec, exec?.game?.roomId ? null : telegramOriginFor(exec?.agent?.id))
+      const caller = callerOf(exec)
+      const played = await playSession(args.move, 'ai', { key, caller }).catch(fail)
+      return withHints(played.view, getConfig() || {}, key, caller)
     },
   })
 
   const closeTool = defineTool({
     name: 'board_close',
-    description: '关闭右侧棋盘。未终局的棋局存档会保留，下次 board_open 同一种棋时从该局面续局；不想续局请用 board_reset。',
+    description: 'Close the board for this room or session. An unfinished game is kept and resumes on the next board_open of the same game. Use board_reset to discard it.',
     parameters: {},
     output: OUTPUT,
     isConcurrencySafe: () => false,
-    async execute() {
-      return closeSession()
+    async execute(_args, exec) {
+      refuseOpen(exec)
+      const key = keyFrom(exec, exec?.game?.roomId ? null : telegramOriginFor(exec?.agent?.id))
+      return closeSession(key)
     },
   })
 
   const resetTool = defineTool({
     name: 'board_reset',
-    description: '清除某种棋的本地存档并从初始局面重新开局。game 省略时指当前棋局。若该种棋正在进行，则就地重开并重新显示棋盘（来自 Telegram 的棋局会重新发送棋盘图片）；若未在进行，仅清除存档，下次 board_open 将开新局。',
+    description: 'Discard the saved game for this room or session and start again from the initial position. game is optional and defaults to the game in progress. Owner only.',
     parameters: {
-      game: { type: 'string', description: '可选，xiangqi、chess、gomoku、go 之一。省略时为当前棋局。' },
+      game: { type: 'string', description: 'Optional. One of xiangqi, chess, gomoku, go. Defaults to the game in progress.' },
     },
     output: OUTPUT,
     isConcurrencySafe: () => false,
-    async execute(args) {
-      return resetGame(args.game).catch(fail)
+    async execute(args, exec) {
+      refuseOpen(exec)
+      const key = keyFrom(exec, exec?.game?.roomId ? null : telegramOriginFor(exec?.agent?.id))
+      return resetGame(args.game, key).catch(fail)
     },
   })
 
   const hintTool = defineTool({
     name: 'board_hint',
-    description: '只读：用本机已下载的辅助引擎分析当前局面，返回轮到走棋一方的前三名候选着法与胜率（均按你方视角）。ms 为搜索毫秒数，默认按设置（约 1 秒）。没有下载辅助引擎、棋局已结束或引擎出错时 available 为 false。不改变棋局。',
+    description: 'Read-only analysis of the current position with an installed engine. Returns up to three candidate moves and win rates from the caller\'s side. Do not repeat the candidates in the shared room. ms is the search time in milliseconds (100–10000). available is false when no engine is installed, the game is over, or the engine fails. Does not change the position.',
     parameters: {
-      ms: { type: 'number', description: '可选，搜索时长（毫秒），100–10000。' },
+      ms: { type: 'number', description: 'Optional search time in milliseconds, 100–10000.' },
     },
     output: OUTPUT,
     isConcurrencySafe: () => true,
-    async execute(args) {
-      lookSession()
+    async execute(args, exec) {
+      const key = keyFrom(exec, exec?.game?.roomId ? null : telegramOriginFor(exec?.agent?.id))
+      const caller = callerOf(exec)
+      lookSession(key, caller)
       const ms = args.ms ? hintMs({ boardsHintMs: args.ms }) : hintMs(getConfig() || {})
-      const hints = await computeHints({ ms })
-      return hints ? { available: true, hints } : { available: false, reason: '没有可用的辅助引擎提示（未下载引擎、已终局或引擎暂不可用）。' }
+      const hints = await computeHints({ ms, ctx: sessionHintContext(key, { caller }) })
+      return hints ? { available: true, hints } : { available: false, reason: 'No analysis engine is available (not installed, game over, or the engine failed).' }
     },
   })
 

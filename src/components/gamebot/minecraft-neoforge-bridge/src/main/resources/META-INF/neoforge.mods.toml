@@ -1,0 +1,24 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+
+[[mods]]
+modId = "minaret"
+version = "1.0.0"
+displayName = "Minaret"
+description = "Loopback WebSocket bridge. Hosts one server-side AI NPC on an integrated world, and can still control the local player in explicit legacy mode."
+authors = "TRIX"
+
+[[dependencies.minaret]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.minaret]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,1.21.2)"
+ordering = "NONE"
+side = "BOTH"

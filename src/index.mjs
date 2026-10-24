@@ -28,19 +28,24 @@
  *     日程写在数据目录 calendar/events.json。天气预报走 Open-Meteo，只认设置里的城市名，未填写时不请求。
  *     笔记（默认关闭）：note_browse / note_search / note_get / note_save / note_delete / note_category_save /
  *     note_category_delete。三级结构（类型 › 类别 › 笔记），写在数据目录 notes/notes.json；只经工具召回，不注入提示。
- *     棋类（默认关闭）：board_open / board_look / board_play / board_close / board_reset / board_hint；每种棋的存档在 boards/saves/。棋盘项目克隆在数据目录 boards/，
+ *     棋类（默认关闭）：board_open / board_look / board_play / board_close / board_reset / board_hint。棋盘项目克隆在数据目录 boards/，
  *     辅助引擎（Pikafish / Stockfish / Rapfi / KataGo）在设置页按需下载到 boards/assist/，作为独立进程运行，装了才在 board_* 结果里附 hints。
- *     预览在 /dsh-workbench/boards/play。用户名留空时按 user。
+ *     存档按房间或会话写在 boards/saves/by-key/。中转站里按座位开局：所有者邀请，人类回复「入座」；AI 只能走自己这一方。
+ *     预览在 /dsh-workbench/boards/play。非房间会话仍是一名人类对一名 AI。用户名留空时按 user。
  *     牌类（默认关闭）：card_open / card_look / card_play / card_close / card_reset。
  *     可打二十一点、勒杜克、限注德州、UNO 和斗地主。规则源按需下载到数据目录 cards/，不随包分发；
- *     存档按游戏和桌面会话或 Telegram 聊天分开，在 cards/saves/。
- *     预览在 /dsh-workbench/cards/play。对手暗牌在公开前不会出现在工具结果或图片里。
+ *     存档按游戏和房间、桌面会话或 Telegram 聊天分开，在 cards/saves/。
+ *     中转站牌局按座位开局（二十一点除外），暗牌不进群、不进别人的上下文；Telegram 手牌经接收机器人私聊发送。
+ *     预览在 /dsh-workbench/cards/play，房间会话另有停靠窗「牌桌」页。对手暗牌在公开前不会出现在工具结果或图片里。
  *     图片字节直接 saveImage，不读环境变量、不落地图文件。
  *     GPT Image 2 生图（默认关闭）：设置页保存 API Key 后注册 image_generate / image_edit（OpenAI 兼容 Images API），
  *     图片写入数据目录 images/<日期>/；「测试连接」只请求 GET {base}/models。两个工具不在 Telegram OPEN_TOOLS，仅授权用户可用。
+ *     余额查询（通用，默认关闭）：各服务商在卡片中单独保存密钥（不复用 DSH 聊天服务商的密钥），只请求官方查询接口，
+ *     结果缓存约 60 秒，可定时自动刷新；接口在 /dsh-workbench/api/balance/*。可选 balance_query 工具不在 Telegram OPEN_TOOLS，仅授权用户可用。
  *     聊天室（默认关闭）：设置里的席位列表（DSH 服务商 + 模型 + 可选预设人设）与用户同处一个房间轮流发言，记录只追加写在数据目录 chatroom/rooms/；
  *     调用经 DSH 服务商层 ctx.llm.stream，本插件不保存密钥；服务商在 DSH「设置 › 模型」中添加。
- *     核心在 ./chatroom/（不依赖界面，第二阶段 Telegram 群桥复用），接口 /dsh-workbench/api/chatroom/*。
+ *     进行中的棋局或牌局按座位轮流，不占用讨论回合。连续 AI 步数达到 chatroomGameAiStreak 时暂停，所有者回复「继续」或「停止」（不进入 AI 可见记录）。
+ *     核心在 ./chatroom/（不依赖界面，第二阶段 Telegram 群桥复用），接口 /dsh-workbench/api/chatroom/*。房间停靠窗有「记录」和「牌桌」。
  *     设置项 mapBypassProxy（默认开启）让高德请求直连，不使用系统代理。
  *
  * 前端设置页与工具卡片在 lib/client.js。
@@ -53,31 +58,39 @@ import { gamebotSchemaShape, legacyConfigCandidates, legacyImportPatch } from '.
 import { dataDir, dirSize, killProcessesUnder, managedPaths, migrateLegacyState, pluginRoot, settingsFilePath, toolsDir } from './tools.mjs'
 import { checkForUpdate, getUpdateJob, ignoreVersion, startApplyUpdate } from './updater.mjs'
 import { mountSessionControls, handleSessionApi } from './session-controls/index.mjs'
+import { roomConflictMessage } from './channels/telegram/group-conflict.mjs'
 import { createTelegramChannel, telegramSchemaShape, TELEGRAM_BOTS_KEY } from './channels/telegram/index.mjs'
+import { aliasPatchFromBots, migrateTelegramBots, syncAliasesIntoBots } from './channels/telegram/accounts.mjs'
 import { classifyPreview, loadLocalFile, mmFileBlock, registerFilePreview, streamFilePreview, textPreview } from './channels/telegram/files.mjs'
 import { extractContentPreview } from './channels/telegram/office-preview.mjs'
 import { createMapFeature } from './map/index.mjs'
 import { createGptImageFeature, handleGptImageApi } from './gpt-image/index.mjs'
+import { createVideoFeature, handleVideoApi, migrateVideoKeys, createYtdlpInstaller, ytdlpCandidates, resolveVideoKey } from './video/index.mjs'
+import { createYtdlp } from './chatroom/ytdlp.mjs'
+import { balanceSchemaShape, createBalanceFeature, handleBalanceApi } from './balance/index.mjs'
 import { handleCalendarApi } from './calendar/api.mjs'
 import { createCalendarFeature } from './calendar/index.mjs'
 import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
 import { handleBoardsApi, handleBoardsPage } from './boards/api.mjs'
 import { createBoardsFeature } from './boards/index.mjs'
+import { createGamebotMembersFeature } from './components/gamebot/members-tools.mjs'
+import { createMinecraftRoomBinding, roomSyncWanted, ROOM_KEY as MC_ROOM_KEY } from './components/gamebot/room-bind.mjs'
 import { handleCardsApi, handleCardsPage } from './cards/api.mjs'
 import { createCardsFeature } from './cards/index.mjs'
-import { createDshCatalog } from './dsh-catalog.mjs'
+import { createDshCatalog, llmCatalogPayload, reasoningEfforts } from './dsh-catalog.mjs'
 import { createGatewayTrust } from './gateway-trust/index.mjs'
-import { chatroomSchemaShape, createChatroomFeature, migrateLegacyChatroom, LEGACY_CHATROOM_KEYS, CHATROOM_SEATS_KEY } from './chatroom/index.mjs'
+import { chatroomSchemaShape, createChatroomFeature, migrateLegacyChatroom, normalizeSeats, LEGACY_CHATROOM_KEYS, CHATROOM_SEATS_KEY } from './chatroom/index.mjs'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { imageSize } from 'image-size'
 
 export { COMPONENTS, componentById, createComponentManager, contributeInfo, localComponentsDir, CONTRIBUTE_COMPARE_URL, dataDir, dirSize, killProcessesUnder, managedPaths, settingsFilePath, toolsDir }
 
 export const name = 'dsh-workbench'
-export const inject = ['tools', 'agents', 'sessions', 'sessionController']
+// schedule: Host ScheduleService（create 非 Remote，须 inject 才能拿到带 create 的宿主实例；否则心跳 arm 会静默失败）
+export const inject = ['tools', 'agents', 'sessions', 'sessionController', 'schedule']
 
 const NAMESPACE = 'dsh-workbench'
 const API_PREFIX = '/dsh-workbench/api'
@@ -89,17 +102,66 @@ const BODY_LIMIT = 1024 * 1024
 
 function loadFileSettings() {
   try {
-    const raw = JSON.parse(readFileSync(settingsFilePath(), 'utf8'))
+    // 容忍 BOM：外部工具（如 PowerShell Set-Content -Encoding UTF8）写入的文件会带 U+FEFF，
+    // 直接 JSON.parse 会失败并被当成"没有配置"，随后被默认值覆盖，等于悄悄清空用户设置。
+    const text = readFileSync(settingsFilePath(), 'utf8').replace(/^\uFEFF/, '')
+    const raw = JSON.parse(text)
     return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null
   } catch {
     return null
   }
 }
 
+/** 覆盖写设置前，把旧文件另存一份（带时间戳），最多保留 SETTINGS_BACKUP_KEEP 份。 */
+const SETTINGS_BACKUP_KEEP = 10
+
+async function backupSettingsFile(file, reason = '') {
+  let previous
+  try {
+    previous = await readFile(file, 'utf8')
+  } catch {
+    return null // 文件不存在：没有可备份的东西
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const suffix = reason ? `-${reason}` : ''
+  const target = `${file}.bak-${stamp}${suffix}`
+  try {
+    await writeFile(target, previous, 'utf8')
+  } catch {
+    return null
+  }
+  // 只清理我们自己生成的 `.bak-<时间戳>` 备份，不动用户手工放的其他备份。
+  try {
+    const dir = dirname(file)
+    const prefix = `${basename(file)}.bak-`
+    const owned = (await readdir(dir))
+      .filter((name) => name.startsWith(prefix) && /\d{4}-\d{2}-\d{2}T/.test(name))
+      .sort()
+    for (const name of owned.slice(0, Math.max(0, owned.length - SETTINGS_BACKUP_KEEP))) {
+      await rm(join(dir, name), { force: true })
+    }
+  } catch {
+    /* 清理失败不影响写入 */
+  }
+  return target
+}
+
 async function saveFileSettings(value) {
   const file = settingsFilePath()
   await mkdir(dirname(file), { recursive: true })
-  await writeFile(file, JSON.stringify(value ?? {}, null, 2) + '\n', 'utf8')
+  const text = JSON.stringify(value ?? {}, null, 2) + '\n'
+  // 内容没变就不写，也不产生备份。
+  let unchanged = false
+  try {
+    unchanged = (await readFile(file, 'utf8')).replace(/^\uFEFF/, '') === text
+  } catch {
+    unchanged = false
+  }
+  if (unchanged) return file
+  const backup = await backupSettingsFile(file, 'auto')
+  if (backup) console.info(`[dsh-workbench] 设置已备份：${backup}`)
+  await writeFile(file, text, 'utf8')
+  return file
 }
 
 const ASSET_TYPES = {
@@ -147,11 +209,20 @@ export const SettingsSchema = z.object({
   ffmpegEnabled: z.boolean().default(false).description('启动 FFmpeg / Kinocut MCP（本机媒体转换；需要本机已安装 ffmpeg）。'),
   ffmpegPackage: z.string().default('kinocut').description('FFmpeg 组件的 pip 包名（入口命令 kino），「下载安装」时安装到 tools/ffmpeg。'),
   ffmpegPath: z.string().default('').description('可选。本机 ffmpeg 可执行文件路径；留空时从 PATH 查找。'),
+  deepslateEnabled: z.boolean().default(false).description('启动 DeepSlate MCP（把 Minecraft 结构文件渲染为 PNG；启动本机 deepslate-mcp 检出目录）。'),
+  deepslatePath: z.string().default('').description('本机 deepslate-mcp 检出目录（绝对路径，需已执行 npm install 与 npm run build）。'),
+  deepslateJarPath: z.string().default('').description('可选。本机 Minecraft client.jar 路径（DEEPSLATE_JAR_PATH）；留空时上游首次运行从 Mojang 下载。'),
+  deepslateCacheDir: z.string().default('').description('可选。材质缓存目录（DEEPSLATE_CACHE_DIR）；留空用上游默认 ~/.cache/deepslate-mcp。'),
   obsidianEnabled: z.boolean().default(false).description('启动 Obsidian MCP（经 Local REST API 插件读写库）。'),
   obsidianPackage: z.string().default('obsidian-mcp-server').description('Obsidian MCP 的 npm 包（可带版本），「下载安装」时安装到 tools/obsidian。'),
   obsidianApiKey: z.string().role('secret').default('').description('Obsidian Local REST API 插件的 API 密钥（Bearer Token）。'),
   obsidianBaseUrl: z.string().default('http://127.0.0.1:27123').description('Local REST API 地址，默认 HTTP http://127.0.0.1:27123；HTTPS 可用 https://127.0.0.1:27124。'),
   obsidianEnableCommands: z.boolean().default(false).description('是否允许 MCP 执行 Obsidian 命令面板命令（OBSIDIAN_ENABLE_COMMANDS）。'),
+  reaEnabled: z.boolean().default(false).description('启动 REA 逆向分析 MCP（rea-agents；静态分析 JS/Electron/.NET/网站/Android；原生二进制需本机 Ghidra/Hopper/IDA）。'),
+  reaPackage: z.string().default('rea-agents@6.4.0').description('REA MCP 的 npm 包（可带版本），「下载安装」时安装到 tools/rea。'),
+  reaGhidraInstallDir: z.string().default('').description('可选。本机 Ghidra 安装目录（GHIDRA_INSTALL_DIR）；留空则不启用 Ghidra。Windows 上 Ghidra 支持为实验性（只读）。'),
+  reaJavaHome: z.string().default('').description('可选。Ghidra 所需的 64 位 JDK 21+ 目录（JAVA_HOME）；java/javac 已在 PATH 时可留空。'),
+  reaProvider: z.string().default('').description('可选。原生分析引擎：ghidra / hopper / ida（REA_ANALYSIS_PROVIDER）；留空自动选择。'),
   godotProject: z.string().default('').description('Godot 项目目录（含 project.godot）；「安装插件到项目」把同版本插件装进它的 addons/godot_ai。'),
 
   windowsEnabled: z.boolean().default(false).description('启动 Windows-MCP（控制本机桌面：窗口、键鼠、截图、文件系统等；仅 Windows）。'),
@@ -175,6 +246,47 @@ export const SettingsSchema = z.object({
   githubEnabled: z.boolean().default(false).description('启动官方 GitHub MCP（托管 streamable-http）。'),
   githubUrl: z.string().default('https://api.githubcopilot.com/mcp/').description('GitHub MCP 托管端点地址。'),
   githubToken: z.string().role('secret').default('').description('GitHub PAT（Bearer）。优先用本设置；留空时读环境变量 GITHUB_MCP_PAT。不要把 token 写进仓库。'),
+  termalinEnabled: z.boolean().default(false).description('启动 Termalin MCP（SSH 客户端，会在服务器上执行命令；仅所有者可用）。'),
+  termalinMode: z.union(['local', 'hosted']).default('local').description('local：本机 Termalin 应用自带的 termalin-mcp（stdio）；hosted：托管端点（API 密钥）。'),
+  termalinCommand: z.string().default('').description('本机 termalin-mcp 可执行文件路径（见 Termalin「Settings → Security → Agent Access (MCP)」）；留空时自动探测。'),
+  termalinUrl: z.string().default('https://termal.in/api/v1/mcp').description('Termalin 托管 MCP 端点（API 密钥模式）。OAuth 端点 https://termal.in/mcp 不支持。'),
+  termalinApiKey: z.string().role('secret').default('').description('Termalin API 密钥（tk_live_…，Bearer）。只保存在本设置里，不会以明文返回。'),
+  fusionEnabled: z.boolean().default(false).description('连接 Autodesk Fusion 内置的官方 MCP Server（本机 HTTP；仅所有者可用）。'),
+  fusionUrl: z.string().default('http://127.0.0.1:27182/mcp').description('Fusion MCP Server 地址；端口以 Fusion 首选项中显示的为准。'),
+  freecadEnabled: z.boolean().default(false).description('启动 FreeCAD MCP（社区 freecad-mcp，stdio；仅所有者可用）。'),
+  freecadCommand: z.string().default('uvx freecad-mcp').description('启动命令（stdio）。'),
+  freecadHost: z.string().default('localhost').description('FreeCAD RPC 服务器所在主机（--host）；本机保持 localhost。'),
+  freecadTextOnly: z.boolean().default(false).description('只返回文字反馈，不附截图（--only-text-feedback）。'),
+  freecadToken: z.string().role('secret').default('').description('FreeCAD MCP Addon 中设置的认证令牌，经 FREECAD_MCP_TOKEN 传给服务器。'),
+  matlabEnabled: z.boolean().default(false).description('启动 MathWorks 官方 MATLAB MCP Server（stdio；仅所有者可用）。'),
+  matlabServerPath: z.string().default('').description('matlab-mcp-server 可执行文件路径；留空时在 PATH 中查找。'),
+  matlabRoot: z.string().default('').description('--matlab-root：MATLAB 安装目录（不含 bin）；留空时用 PATH 中的 MATLAB。'),
+  matlabWorkFolder: z.string().default('').description('--initial-working-folder：MATLAB 启动时的工作文件夹。'),
+  matlabDisplayMode: z.union(['desktop', 'nodesktop']).default('desktop').description('--matlab-display-mode。'),
+  matlabSessionMode: z.union(['auto', 'new', 'existing']).default('auto').description('--matlab-session-mode。'),
+  matlabTelemetry: z.boolean().default(false).description('允许向 MathWorks 发送匿名使用数据；关闭时传 --disable-telemetry=true。'),
+  espidfEnabled: z.boolean().default(false).description('启动 ESP-IDF Tools 本地 MCP（idf.py mcp-server；仅所有者可用）。'),
+  espidfCommand: z.string().default('eim run "idf.py mcp-server"').description('启动命令（stdio）。默认经 EIM 激活 ESP-IDF 环境。'),
+  espidfProjectDir: z.string().default('').description('ESP-IDF 项目目录，作为 IDF_MCP_WORKSPACE_FOLDER 传给服务器。'),
+  serialEnabled: z.boolean().default(false).description('启动串口 MCP（社区 serial-mcp-server；仅所有者可用）。'),
+  serialCommand: z.string().default('uvx --from serial-mcp-server serial_mcp').description('启动命令（stdio）。'),
+  serialPlugins: z.string().default('').description('SERIAL_MCP_PLUGINS：留空为禁用插件；all 或逗号分隔的插件名。插件会运行任意 Python 代码。'),
+  rhinoEnabled: z.boolean().default(false).description('启动 Rhino MCP（仅所有者可用）。'),
+  rhinoSource: z.union(['official', 'community']).default('official').description('official：McNeel 官方 Rhino MCP Platform；community：社区 rhinomcp。'),
+  rhinoCommand: z.string().default('').description('启动命令；留空时官方用 rhino-mcp-router，社区用 uvx rhinomcp。'),
+  rhinoVersion: z.union(['8', '9']).default('8').description('官方路由的 --default-version。'),
+  rhinoPort: z.string().default('1999').description('社区 rhinomcp 的 RHINO_MCP_PORT。'),
+  rhinoScripts: z.boolean().default(true).description('社区 rhinomcp：允许 run_command / RhinoScript-Python / C# 执行。'),
+  altiumEnabled: z.boolean().default(false).description('启动 eda-agent（Altium Designer；仅所有者可用）。'),
+  altiumCommand: z.string().default('eda-agent').description('启动命令（stdio）。不在 PATH 时可用 python -m eda_agent。'),
+  altiumToolset: z.union(['minimal', 'full']).default('minimal').description('EDA_AGENT_TOOLSET：minimal 只公开 tool_catalog / tool_invoke；full 公开约 450 个工具。'),
+  altiumDashboard: z.boolean().default(false).description('启动 eda-agent 网页仪表盘（127.0.0.1:8766）。'),
+  altiumUiAutomation: z.boolean().default(true).description('允许 eda-agent 模拟键盘鼠标操作 Altium 对话框（EDA_AGENT_UI_AUTOMATION）。'),
+  kicadEnabled: z.boolean().default(false).description('启动 KiCad MCP Pro（社区，stdio；仅所有者可用）。'),
+  kicadCommand: z.string().default('uvx kicad-mcp-pro').description('启动命令（stdio）。默认 uvx kicad-mcp-pro；插件不内置上游代码。'),
+  kicadProjectDir: z.string().default('').description('KiCad 项目目录，作为 KICAD_MCP_PROJECT_DIR 传给服务器；留空时可用工具 kicad_set_project 选择。'),
+  kicadProfile: z.union(['default', 'pcb_only', 'build', 'release', 'expert', 'full']).default('default').description('KICAD_MCP_PROFILE：工具发现范围。'),
+  kicadMode: z.union(['readonly', 'write', 'manufacturing']).default('readonly').description('KICAD_MCP_OPERATING_MODE：风险档位，默认只读。'),
   comfyuiEnabled: z.boolean().default(false).description('启动官方 Comfy MCP（comfy-mcp）；需本机 ComfyUI / comfy-cli。'),
   comfyuiPackage: z.string().default('comfy-mcp').description('Comfy MCP 的 pip 包名（入口 comfy-mcp），「下载安装」时安装到 tools/comfyui。'),
   comfyuiBin: z.string().default('').description('comfy-cli 的 comfy 可执行文件路径，作为 COMFY_BIN 传给服务器；留空时用环境变量 COMFY_BIN。'),
@@ -202,15 +314,30 @@ export const SettingsSchema = z.object({
   gptImageTimeoutSec: z.natural().min(30).max(900).default(300).description('单次生图请求的超时时间（秒），30–900，默认 300。'),
   mapBypassProxy: z.boolean().default(true).description('绕过代理。开启后高德请求使用独立直连，不附带下载代理或环境变量中的 HTTP 代理。默认开启。'),
 
+  videoEnabled: z.boolean().default(true).description('启用视频理解（多模态）：经 Google Gemini 观看视频。聊天室中每个视频（含 YouTube / 哔哩哔哩链接）自动生成带时间戳的内容描述并提供 watch_video；会话中提供 describe_video / watch_video。默认开启。凭据来源为 API Key 或服务账号 JSON。'),
+  videoCredentialSource: z.union(['apiKey', 'serviceAccount']).default('apiKey').description('视频理解凭据来源：Gemini API Key（默认）或 Google Cloud 服务账号 JSON（走 Vertex AI）。'),
+  videoGeminiKey: z.string().role('secret').default('').description('视频理解专用的 Google Gemini API 密钥（AIza…）。只保存在本设置里，不沿用聊天室转写密钥或成员凭据，不读取环境变量；界面只显示末四位掩码，不会在接口或日志中以明文返回。凭据来源为服务账号时忽略。'),
+  videoServiceAccountFile: z.string().default('').description('服务账号 JSON 在数据目录下的相对路径（由上传写入，界面只读展示）。'),
+  videoVertexLocation: z.string().default('us-central1').description('服务账号模式使用的 Vertex AI 区域，默认 us-central1。'),
+  videoBucket: z.string().default('').description('服务账号模式下用于大视频的 Cloud Storage 桶名。留空则只支持 20 MB 以内内联视频。'),
+  videoBucketPrefix: z.string().default('dsh-video').description('桶内对象路径前缀，只允许小写字母、数字和连字符，默认 dsh-video。'),
+  videoMaxHeight: z.string().default('480').description('服务账号模式下载视频的清晰度上限（像素高度），默认 480。API Key 模式忽略。'),
+  videoBaseUrl: z.string().default('').description('Gemini API 的 Base URL。留空时使用 Google AI Studio 默认地址 https://generativelanguage.googleapis.com；可填写兼容的代理或网关地址（http/https，末尾斜杠会被去掉，无效时回落到默认地址）。密钥只放在 x-goog-api-key 请求头中。'),
+  videoModel: z.string().default('gemini-3.8-flash').description('视频理解模型，默认 gemini-3.8-flash（Gemini API generateContent）。'),
+  videoYoutube: z.boolean().default(true).description('处理 YouTube 公开链接（直接交给 Gemini，不下载）。默认开启。'),
+  videoBilibili: z.boolean().default(true).description('处理哔哩哔哩链接：需 yt-dlp（查找顺序：设置中的路径 → PATH → 设置页「下载 yt-dlp」下载的副本），下载后按普通视频处理（单个不超过 25 MB）。默认开启。'),
+    videoYtdlpPath: z.string().default('').description('可选：yt-dlp 程序的完整路径。留空时先找 PATH，再用设置页下载到数据目录 bin/ 的副本。'),
   calendarEnabled: z.boolean().default(true).description('启用日历工具（公历、农历、节气、法定节假日、日程、天气预报）。默认开启。关闭后卸下工具，已保存的日程仍保留。'),
   notesEnabled: z.boolean().default(false).description('启用笔记工具：智能体把总结出的要点与知识库中没有的新知识按「类型 › 类别 › 笔记」三级整理，并在后续任务中检索复用。默认关闭。关闭后卸下工具，已保存的笔记仍保留。'),
-  boardsEnabled: z.boolean().default(false).description('启用棋类工具：当前会话里的 AI 用 board_open / board_look / board_play / board_close / board_reset / board_hint 下中国象棋、国际象棋、五子棋或围棋。默认关闭。关闭后卸下工具并结束当前棋局，已下载的棋盘项目仍保留。'),
+  boardsEnabled: z.boolean().default(false).description('启用棋类工具：当前会话里的 AI 用 board_open / board_look / board_play / board_close / board_reset / board_hint 下中国象棋、国际象棋、五子棋或围棋。聊天室启用后可按房间座位开局。默认关闭。关闭后卸下工具并结束当前棋局，已下载的棋盘项目仍保留。'),
   boardsHintMs: z.number().default(1000).description('辅助引擎每次分析的时长（毫秒），100–10000，默认 1000。只在下载了辅助引擎时生效。'),
   boardsPlayerName: z.string().default('').description('棋盘上你的名字。留空或只有空白时按 user。显示在棋盘你这一侧，并写进人落子后发给 AI 的那句话。'),
-  cardsEnabled: z.boolean().default(false).description('启用牌类工具：当前会话里的 AI 用 card_open / card_look / card_play / card_close / card_reset 打二十一点、勒杜克、限注德州、UNO 或斗地主。默认关闭。关闭后卸下工具并收起当前牌桌，已下载的规则源和各会话存档仍保留。'),
+  cardsEnabled: z.boolean().default(false).description('启用牌类工具：当前会话里的 AI 用 card_open / card_look / card_play / card_close / card_reset 打二十一点、勒杜克、限注德州、UNO 或斗地主。聊天室启用后可按座位开局，暗牌不进入群和其他成员的上下文。默认关闭。关闭后卸下工具并收起当前牌桌，已下载的规则源和各会话存档仍保留。'),
   cardsUnoPlayers: z.number().default(4).description('UNO 人数（含您本人），可设 2 至 10 人，默认 4 人。其余座位由插件内置的对手补齐。仅对新开的牌局生效；已有存档按存档中的人数续局。'),
   cardsPlayerName: z.string().default('').description('牌桌上你的名字。留空或只有空白时按 user。你出牌后发给 AI 的句子会带上这个名字。'),
   calendarCity: z.string().default('').description('日历天气预报使用的城市名，例如成都。留空则不请求天气。数据来自 Open-Meteo，不使用高德 Key。请求沿用当前进程的代理。'),
+
+  ...balanceSchemaShape(z),
 
   ...chatroomSchemaShape(z),
 
@@ -483,29 +610,61 @@ export function apply(ctx, config) {
   let filePersist = false
   const components = createComponentManager(ctx, () => current)
   // 「通道」分组：Telegram（默认关闭；启用后才动态加载 lib/channel-telegram.mjs）。
-  const telegramSave = { bots: null }
+  const telegramSave = { bots: null, allowFrom: null }
+  const late = { boundChatIds: async () => [], chatroomSync: async () => {} }
   const telegram = createTelegramChannel(ctx, () => current, {
     persistBots: (bots) => {
       if (!telegramSave.bots) throw Object.assign(new Error('当前环境无法保存设置'), { status: 501 })
       return telegramSave.bots(bots)
     },
+    boundChatIds: () => late.boundChatIds(),
+    // 未授权私聊名单（设置页「授权 / 忽略」）；授权写入「允许的其他用户 ID」。
+    dmPendingFile: join(dataDir(), 'telegram', 'dm-pending.json'),
+    saveAllowFrom: (raw) => {
+      if (!telegramSave.allowFrom) throw Object.assign(new Error('当前环境无法保存设置'), { status: 501 })
+      return telegramSave.allowFrom(raw)
+    },
+    onPollingReady: () => { void late.chatroomSync(true) },
   })
   const map = createMapFeature(ctx, () => current)
   const gptImage = createGptImageFeature(ctx, () => current)
+  const balance = createBalanceFeature(ctx, () => current)
   const calendar = createCalendarFeature(ctx, () => current)
   const notes = createNotesFeature(ctx, () => current)
   const boards = createBoardsFeature(ctx, () => current)
   const cards = createCardsFeature(ctx, () => current)
+  const minecraftMembers = createGamebotMembersFeature(ctx, () => current)
   const dshCatalog = createDshCatalog(ctx)
   // 网关核验：会话级开关，llm/stream 只读采集 + llm-gateway-bench 判定（见 ./gateway-trust）。
   const gatewayTrust = createGatewayTrust(ctx, () => current)
-  const chatroom = createChatroomFeature(ctx, () => current, { saveSeats: (seats) => applyPatch({ [CHATROOM_SEATS_KEY]: seats }), savePatch: (patch) => applyPatch(patch) })
+  // yt-dlp：聊天室与视频理解共用一份（设置中的路径 → PATH → 设置页下载的副本），下载 / 更新后清除检测缓存。
+  const ytdlpInstaller = createYtdlpInstaller({ proxy: () => current.proxy, onInstalled: () => sharedYtdlp.reset() })
+  const sharedYtdlp = createYtdlp({ candidates: () => ytdlpCandidates(current, { downloaded: ytdlpInstaller.binPath() }) })
+  const chatroom = createChatroomFeature(ctx, () => current, {
+    ytdlp: sharedYtdlp,
+    saveSeats: (seats) => applyPatch({ [CHATROOM_SEATS_KEY]: seats }),
+    savePatch: (patch) => applyPatch(patch),
+    onChatsChanged: () => { void telegram.sync() },
+  })
+  // 「多模态 › 视频理解」：聊天室直接读本组件的设置；会话工具用本组件的密钥 videoGeminiKey，代理沿用聊天室的 Gemini 路由
+  const videoGemini = { resolveKey: async () => resolveVideoKey(current), fetch: () => chatroom.gemini?.fetch?.() }
+  const video = createVideoFeature(ctx, () => current, { getGemini: () => videoGemini, ytdlp: sharedYtdlp, installer: ytdlpInstaller })
+  // Minecraft「绑定聊天室」：保存 Minecraft 卡片或启用 Minecraft 时对齐房间成员与 MC AI（见 components/gamebot/room-bind.mjs）。
+  const mcRoom = createMinecraftRoomBinding({
+    getConfig: () => current,
+    store: chatroom.store,
+    ensureSession: (id) => chatroom.roomSessions?.ensure?.(id),
+    applyPatch: (patch) => applyPatch(patch),
+    normalizeSeats,
+  })
+  late.boundChatIds = () => chatroom.boundChatIds()
+  late.chatroomSync = (force) => chatroom.sync(force === true)
   const settings = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
   if (settings && typeof settings.register === 'function') {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync(); void telegram.sync(); void map.sync(); void gptImage.sync(); void calendar.sync(); void notes.sync(); void boards.sync(); void cards.sync(); void chatroom.sync() })
+      scope.watch?.((next) => { current = next; components.sync(); void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void (async () => { await telegram.sync(); await chatroom.sync() })() })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -559,7 +718,8 @@ export function apply(ctx, config) {
     }
     await chatroom.sync()
   }
-  telegramSave.bots = (bots) => applyPatch({ [TELEGRAM_BOTS_KEY]: bots })
+  telegramSave.bots = (bots) => applyPatch({ [TELEGRAM_BOTS_KEY]: bots, ...aliasPatchFromBots(bots) })
+  telegramSave.allowFrom = (raw) => applyPatch({ telegramAllowFrom: String(raw ?? '') })
   // 聊天室旧版设置（固定四席位 + 插件内 API Key）→ 席位数组；旧键（含密钥）从设置中清除，密钥不迁移。
   {
     const legacy = migrateLegacyChatroom(current)
@@ -577,19 +737,51 @@ export function apply(ctx, config) {
     }
   }
 
+  // 视频理解旧键（原在聊天室「附件与语音」）→「多模态 › 视频理解」的键；旧键清除。
+  {
+    const patch = migrateVideoKeys(current)
+    if (patch) {
+      current = RuntimeSettingsSchema({ ...current, ...patch })
+      const snapshot = current
+      void (async () => {
+        if (scope) await scope.update(patch)
+        else if (filePersist) await saveFileSettings(persistableSettings(snapshot))
+        ctx.logger?.info?.('dsh-workbench: video settings moved to 多模态 › 视频理解')
+      })().catch((error) => ctx.logger?.warn?.('dsh-workbench: video settings migration persist failed', error?.message || error))
+    }
+  }
+
+  // 旧的「主机器人字段 + 额外机器人」折成含 main 的统一列表，并清掉会话级覆盖。
+  {
+    const migrated = migrateTelegramBots(current)
+    if (migrated) {
+      const patch = { [TELEGRAM_BOTS_KEY]: migrated, ...aliasPatchFromBots(migrated) }
+      current = RuntimeSettingsSchema({ ...current, ...patch })
+      const snapshot = current
+      void (async () => {
+        if (scope) await scope.update(patch)
+        else if (filePersist) await saveFileSettings(persistableSettings(snapshot))
+        ctx.logger?.info?.(`dsh-workbench: telegram bots migrated (${migrated.length} bots, conversation routes cleared)`)
+      })().catch((error) => ctx.logger?.warn?.('dsh-workbench: telegram bots migration persist failed', error?.message || error))
+    }
+  }
+
   // ── 工作组件：各自 fork 一个 dsh-mcp-client 子插件（不写进 profile，随本插件卸载）──
   components.sync()
-  void telegram.sync()
   void map.sync()
   void gptImage.sync()
+  void video.sync()
+  void balance.sync()
   void calendar.sync()
   void notes.sync()
   void boards.sync()
   void cards.sync()
-  void chatroom.sync()
+  void minecraftMembers.sync()
+  // 先通道 claim/轮询，再聊天室决定自拉或委托订阅，避免双 getUpdates 与「consumed 无订阅」黑洞。
+  void (async () => { await telegram.sync(); await chatroom.sync() })()
   // 宿主的凭据服务可能晚于本插件就绪：就绪时重新同步一次 Telegram（令牌从 credentials 读取）。
   ctx.inject?.(['credentials'], (credCtx) => {
-    credCtx.effect?.(() => { void telegram.resync() }, 'dsh-workbench: telegram credentials')
+    credCtx.effect?.(() => { void (async () => { await telegram.resync(); await chatroom.sync() })() }, 'dsh-workbench: telegram credentials')
   })
   ctx.effect?.(() => {
     // GameBot body 是本插件拉起的子进程：宿主退出时同步结束它；插件卸载时等它真正退出。
@@ -600,10 +792,13 @@ export function apply(ctx, config) {
       try { await telegram.dispose() } catch {}
       try { await map.dispose() } catch {}
       try { await gptImage.dispose() } catch {}
+      try { await video.dispose() } catch {}
+      try { await balance.dispose() } catch {}
       try { await calendar.dispose() } catch {}
       try { await notes.dispose() } catch {}
       try { await boards.dispose() } catch {}
       try { await cards.dispose() } catch {}
+      try { await minecraftMembers.dispose() } catch {}
       try { await chatroom.dispose() } catch {}
       try { await stopGamebotBody() } catch {}
     }
@@ -637,8 +832,18 @@ export function apply(ctx, config) {
             // 聊天室席位只经 PUT /chatroom/seats 改（表单回传的是旧快照）；旧版聊天室键（含密钥）不再接受。
             delete patch[CHATROOM_SEATS_KEY]
             delete patch[TELEGRAM_BOTS_KEY]
+            if (Object.prototype.hasOwnProperty.call(patch, 'telegramConversationRoutes')) patch.telegramConversationRoutes = ''
+            const syncedBots = syncAliasesIntoBots(current[TELEGRAM_BOTS_KEY], patch)
+            if (syncedBots) patch[TELEGRAM_BOTS_KEY] = syncedBots
             delete patch.chatroomRules // 只经 PUT /chatroom/config 保存
             for (const k of LEGACY_CHATROOM_KEYS) delete patch[k]
+            // 通道群 ID 与聊天室绑定互斥：只检查本次新加入的群，已有配置不阻挡其他设置的保存。
+            if (typeof patch.telegramGroupIds === 'string') {
+              const conflicts = await chatroom.roomConflictsFor(patch.telegramGroupIds)
+              const before = new Set((await chatroom.roomConflictsFor(current.telegramGroupIds || '')).map((c) => c.roomId + '\u0000' + c.chatId))
+              const added = conflicts.filter((c) => !before.has(c.roomId + '\u0000' + c.chatId))
+              if (added.length) return sendJson(res, 409, { ok: false, error: roomConflictMessage(added) })
+            }
             const localEnabled = pickLocalEnabled({ ...current, ...patch })
             const next = RuntimeSettingsSchema({ ...current, ...patch, ...localEnabled })
             // 启动门控：未安装 / 正在安装的组件不能从停用改为启用（builtin 组件不受限）。
@@ -662,12 +867,19 @@ export function apply(ctx, config) {
             await telegram.sync()
             await map.sync()
             await gptImage.sync()
+            await video.sync()
+            await balance.sync()
             await calendar.sync()
             await notes.sync()
             await boards.sync()
             await cards.sync()
+            await minecraftMembers.sync()
             await chatroom.sync()
+            if (roomSyncWanted(patch, current)) await mcRoom.sync(patch['gamebot-minecraftEnabled'] === true ? 'launch' : 'save')
             return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
+          }
+          if (sub === '/gamebot/minecraft/room' && req.method === 'GET') {
+            return sendJson(res, 200, { ok: true, rooms: await mcRoom.rooms(), bound: String(current[MC_ROOM_KEY] || ''), last: mcRoom.last() })
           }
           if (sub === '/components' && req.method === 'GET') {
             // 顺带探测已启动组件的连接（有缓存、不并发）；最多等 1.5 秒，没探完的下次请求再带上。
@@ -737,6 +949,15 @@ export function apply(ctx, config) {
             return sendJson(res, 200, { ok: true, job: getUpdateJob() })
           }
           if (sub === '/health') return sendJson(res, 200, { ok: true, name, persisted: settingsPersisted() })
+          if (sub.startsWith('/balance/')) {
+            // 余额查询：各服务商单独的密钥只经 /balance/config 保存；接口只返回「已配置」。
+            const handled = await handleBalanceApi(req, res, sub, { sendJson, readBody, feature: balance, secretMask: SECRET_MASK, applyPatch: async (patch) => { await applyPatch(patch); await balance.sync() } })
+            if (handled !== false) return
+          }
+          if (sub.startsWith('/video/')) {
+            const handled = await handleVideoApi(req, res, sub, { sendJson, readBody, getConfig: () => current, feature: video, applyPatch, dataRoot: dataDir() })
+            if (handled !== false) return
+          }
           if (sub.startsWith('/gpt-image/')) {
             const handled = await handleGptImageApi(req, res, sub, { sendJson, getConfig: () => current, feature: gptImage })
             if (handled !== false) return
@@ -752,8 +973,18 @@ export function apply(ctx, config) {
           if (sub === '/dsh/presets' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, ...await dshCatalog.presets() })
           }
+          if (sub === '/dsh/llm-catalog' && req.method === 'GET') {
+            return sendJson(res, 200, { ok: true, ...await llmCatalogPayload(dshCatalog) })
+          }
+          if (sub === '/dsh/efforts' && req.method === 'GET') {
+            const q = url.searchParams
+            return sendJson(res, 200, { ok: true, ...await reasoningEfforts(dshCatalog, q.get('provider') || '', q.get('model') || '') })
+          }
           if (sub === '/telegram/bots' || sub.startsWith('/telegram/bots/')) {
             if (await telegram.handleApi(req, res, sub, { sendJson, readBody })) return
+          }
+          if (sub === '/telegram/dm-pending' || sub.startsWith('/telegram/dm-pending/')) {
+            if (await telegram.handleDmApi(req, res, sub, { sendJson, readBody })) return
           }
           if (sub === '/chatroom' || sub.startsWith('/chatroom/')) {
             if (await chatroom.handleApi(req, res, sub, { sendJson, readBody })) return

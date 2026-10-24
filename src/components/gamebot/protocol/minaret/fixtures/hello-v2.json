@@ -1,0 +1,13 @@
+{
+  "protocol_version": 2,
+  "event": "hello",
+  "sequence": 1,
+  "timestamp_ms": 1710000000000,
+  "data": {
+    "agent_id": "claude",
+    "display_name": "Claude",
+    "provision": true,
+    "user": "Claude",
+    "client": "dsh-gamebot"
+  }
+}

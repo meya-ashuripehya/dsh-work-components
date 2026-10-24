@@ -8,9 +8,11 @@
  * We never listen to SIGINT / SIGTERM: a listener would override the host's own
  * signal handling (Node stops exiting by default once one is registered).
  */
+import { randomBytes } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 /** @type {import('node:child_process').ChildProcess | null} */
 let owned = null
@@ -77,6 +79,55 @@ export function bodyOwned() {
   return !!(owned && !owned.killed && owned.exitCode == null)
 }
 
+let memberTokenPath = ''
+let memberTokenValue = ''
+
+/** 数据目录里的成员令牌文件。已有则沿用，不轮换、不打印。 */
+export function ensureMemberToken(state) {
+  const file = join(state, 'data', 'member-token')
+  mkdirSync(join(state, 'data'), { recursive: true })
+  if (!existsSync(file)) writeFileSync(file, randomBytes(32).toString('hex'), 'utf8')
+  memberTokenPath = file
+  memberTokenValue = readFileSync(file, 'utf8').trim()
+  return file
+}
+
+export function memberToken() {
+  if (!memberTokenValue && memberTokenPath && existsSync(memberTokenPath)) {
+    memberTokenValue = readFileSync(memberTokenPath, 'utf8').trim()
+  }
+  return memberTokenValue
+}
+
+/** 与 src/tools.mjs 的 dataDir() 相同，避免 process 去加载整份工具表。 */
+function claimKeyPath() {
+  if (process.env.GAMEBOT_CLAIM_KEY_FILE) return process.env.GAMEBOT_CLAIM_KEY_FILE
+  const data = process.env.DSH_WORKBENCH_DATA_DIR
+    ? resolve(process.env.DSH_WORKBENCH_DATA_DIR)
+    : join(process.env.DSH_HOME ? resolve(process.env.DSH_HOME) : join(homedir(), '.dsh'), 'data', 'dsh-work-components')
+  return join(data, 'minecraft-work', 'claim.key')
+}
+
+/** 交给 GameBot body 的环境。成员接口只认 GAMEBOT_MEMBER_TOKEN_FILE 指向的文件。 */
+export function gamebotChildEnv({ host, port, state, root }) {
+  const tokenFile = ensureMemberToken(state)
+  return {
+    ...process.env,
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1',
+    GAMEBOT_HOST: host === 'localhost' ? '127.0.0.1' : host,
+    GAMEBOT_PORT: port,
+    GAMEBOT_OPEN_UI: '0',
+    GAMEBOT_MINARET_JAR_DIR: process.env.GAMEBOT_MINARET_JAR_DIR || join(state, 'minaret', 'dist'),
+    GAMEBOT_CONFIG_FILE: process.env.GAMEBOT_CONFIG_FILE || join(state, 'data', 'game-configs.json'),
+    GAMEBOT_MEMORY_DIR: process.env.GAMEBOT_MEMORY_DIR || join(state, 'data', 'memory'),
+    GAMEBOT_MEMBER_TOKEN_FILE: tokenFile,
+    GAMEBOT_CLAIM_KEY_FILE: claimKeyPath(),
+    PYTHONPATH: [join(root, 'src'), process.env.PYTHONPATH].filter(Boolean).join(IS_WIN ? ';' : ':'),
+    PYTHONPYCACHEPREFIX: join(state, 'pycache'),
+  }
+}
+
 async function healthOk(baseUrl, timeoutMs = 1500) {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), timeoutMs)
@@ -135,19 +186,7 @@ export async function ensureBodyRunning(opts) {
   }
 
   log?.(`正在启动 GameBot REST：${base}`)
-  const env = {
-    ...process.env,
-    PYTHONIOENCODING: 'utf-8',
-    PYTHONUTF8: '1',
-    GAMEBOT_HOST: host === 'localhost' ? '127.0.0.1' : host,
-    GAMEBOT_PORT: port,
-    GAMEBOT_OPEN_UI: '0',
-    GAMEBOT_CONFIG_FILE: process.env.GAMEBOT_CONFIG_FILE || join(state, 'data', 'game-configs.json'),
-    GAMEBOT_MEMORY_DIR: process.env.GAMEBOT_MEMORY_DIR || join(state, 'data', 'memory'),
-    PYTHONPATH: [join(root, 'src'), process.env.PYTHONPATH].filter(Boolean).join(IS_WIN ? ';' : ':'),
-    // 字节码缓存写数据目录，不在包里生成 __pycache__。
-    PYTHONPYCACHEPREFIX: join(state, 'pycache'),
-  }
+  const env = gamebotChildEnv({ host, port, state, root })
   mkdirSync(join(state, 'data'), { recursive: true })
   // cwd = state：GameBot 的相对路径 data/…（outbox 等）都落在数据目录，不写包目录。
   const child = spawn(python, ['-m', 'gamebot'], {

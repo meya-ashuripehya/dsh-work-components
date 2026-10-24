@@ -102,6 +102,9 @@ export function cardsPage() {
 <p id="prompt"></p>
 <script>
 var API = "/dsh-workbench/api/cards";
+var tableKey = "";
+try { tableKey = new URLSearchParams(location.search).get("key") || ""; } catch (e) { tableKey = ""; }
+function sessionQuery() { return tableKey ? ("?key=" + encodeURIComponent(tableKey)) : ""; }
 var title = document.getElementById("title");
 var meta = document.getElementById("meta");
 var table = document.getElementById("table");
@@ -392,7 +395,11 @@ function paint(session) {
     return;
   }
   title.textContent = (session.label || "牌桌") + " · " + session.playerName;
-  if (session.over) meta.textContent = winnerText(session.over) + " · " + session.over.reason;
+  if (session.mode === "room" && session.occupants && session.occupants.length) {
+    var who = session.occupants.map(function (o) { return o.name + (o.status === "pending" ? "（待入座）" : ""); }).join("、");
+    var turnLine = session.over ? (winnerText(session.over) + " · " + session.over.reason) : (session.waiting && session.waiting.length ? ("等待入座：" + session.waiting.join("、")) : ("轮到 " + (session.turnName || "下一位")));
+    meta.textContent = turnLine + " · " + who;
+  } else if (session.over) meta.textContent = winnerText(session.over) + " · " + session.over.reason;
   else if (session.summary) meta.textContent = session.summary;
   else meta.textContent = session.turn === "ai" ? "对手回合" : "玩家回合";
   if (!session.over && session.mode === "versus" && session.canAct === false) meta.textContent = "轮到 " + (session.turnName || "对手") + " · " + meta.textContent;
@@ -512,7 +519,7 @@ function act(action) {
   fetch(API + "/play", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: action })
+    body: JSON.stringify({ action: action, key: tableKey })
   }).then(function (r) { return r.json(); }).then(function (body) {
     if (!body || body.ok === false) {
       showPrompt((body && body.error) || "没有打成");
@@ -532,7 +539,7 @@ function act(action) {
     }
     window.addEventListener("message", onMsg);
     // 与棋盘共用对话输入框那条通道，避免再挂一套发送逻辑。
-    try { parent.postMessage({ source: "dsh-boards", prompt: body.prompt }, location.origin); } catch (e) {}
+    try { parent.postMessage({ source: "dsh-boards", prompt: body.prompt, key: tableKey, roomId: tableKey.indexOf("room:") === 0 ? tableKey.slice(5) : "" }, location.origin); } catch (e) {}
     setTimeout(function () {
       window.removeEventListener("message", onMsg);
       if (!acked) showPrompt(body.prompt || "");
@@ -540,7 +547,7 @@ function act(action) {
   }).catch(function (e) { showPrompt(String(e && e.message || e)); });
 }
 function load() {
-  fetch(API + "/session").then(function (r) { return r.json(); }).then(function (body) {
+  fetch(API + "/session" + sessionQuery()).then(function (r) { return r.json(); }).then(function (body) {
     var session = body && body.open ? body.session : null;
     if (session && seen && seen !== session.id) showPrompt("");
     seen = session ? session.id : "";

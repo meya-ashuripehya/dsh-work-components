@@ -6,12 +6,16 @@ import { cardsRoot, ensureGame } from './download.mjs'
 import { CardError } from './errors.mjs'
 import { engineFor, verbOf } from './games/index.mjs'
 import { GAMES } from './sources.mjs'
-import { agentSeatOf, agentView, annotateUserView, normalizeMode, roleOf, seatLabel, seatsProblem, turnSeat, userSeatOf, viewerSeatOf } from './seats.mjs'
+import { agentSeatOf, agentView, annotateUserView, normalizeMode, normalizeRoomOccupants, occupantMatches, roleOf, seatLabel, seatPrivate, seatsProblem, turnSeat, userSeatOf, viewerSeatOf } from './seats.mjs'
 
 const SAVE_VERSION = 1
 
-let current = null
+const tables = new Map()
 const listeners = new Set()
+
+function lone() {
+  return tables.size === 1 ? tables.values().next().value : null
+}
 
 export function onSessionChange(fn) {
   listeners.add(fn)
@@ -25,7 +29,7 @@ async function emit(event) {
 }
 
 export function resetSession() {
-  current = null
+  tables.clear()
 }
 
 export function savesDir() {
@@ -75,7 +79,7 @@ function validSave(data, key, game) {
     && (!engine.validOptions || engine.validOptions(data.options))
     && Number.isInteger(data.seed) && data.seed > 0
     && Array.isArray(data.actions) && data.actions.every((action) => engine.accepts(action))
-    && (data.mode === undefined || data.mode === 'versus' || data.mode === 'solo')
+    && (data.mode === undefined || data.mode === 'versus' || data.mode === 'solo' || data.mode === 'room')
     && (data.over == null || (data.over && typeof data.over.winner === 'string'))
 }
 
@@ -103,20 +107,21 @@ function clearSave(key, game) {
   return had
 }
 
-function persist() {
-  if (!current || current.persist === false) return
-  const origin = current.origin
+function persist(session) {
+  if (!session || session.persist === false) return
+  const origin = session.origin
   const data = {
     version: SAVE_VERSION,
-    game: current.game,
-    contextKey: current.contextKey,
-    id: current.id,
-    seed: current.seed,
-    actions: current.actions.slice(),
-    ...(current.options ? { options: { ...current.options } } : {}),
-    mode: current.mode,
-    over: current.state.over ? { winner: current.state.over.winner, reason: current.state.over.reason || '' } : null,
-    playerName: current.playerName,
+    game: session.game,
+    contextKey: session.contextKey,
+    id: session.id,
+    seed: session.seed,
+    actions: session.actions.slice(),
+    ...(session.options ? { options: { ...session.options } } : {}),
+    ...(session.occupants ? { occupants: session.occupants.map((o) => ({ ...o })) } : {}),
+    mode: session.mode,
+    over: session.state.over ? { winner: session.state.over.winner, reason: session.state.over.reason || '' } : null,
+    playerName: session.playerName,
     telegram: origin ? {
       chatId: origin.chatId,
       threadId: origin.threadId || '',
@@ -124,22 +129,39 @@ function persist() {
       conversationType: origin.conversationType,
       starterId: origin.starterId || '',
     } : null,
-    createdAt: current.createdAt,
+    createdAt: session.createdAt,
     updatedAt: new Date().toISOString(),
   }
-  try { writeAtomic(saveFileFor(current.contextKey, current.game), JSON.stringify(data) + '\n') } catch { /* 存档失败不影响这一手 */ }
+  try { writeAtomic(saveFileFor(session.contextKey, session.game), JSON.stringify(data) + '\n') } catch { /* 存档失败不影响这一手 */ }
 }
 
-export function saveSessionNow() {
-  persist()
+export function saveSessionNow(key) {
+  const session = key ? tables.get(key) : lone()
+  if (session) persist(session)
 }
 
-export function sessionOrigin() {
-  return current?.origin || null
+export function sessionOrigin(key) {
+  const session = key ? tables.get(key) : lone()
+  return session?.origin || null
 }
 
-export function hasSession() {
-  return current != null
+export function hasSession(key) {
+  if (key) return tables.has(key)
+  return tables.size > 0
+}
+
+export function listSessions() {
+  return [...tables.values()]
+}
+
+export function roomOfCardUser(userId) {
+  const id = String(userId || '')
+  if (!id) return ''
+  for (const session of tables.values()) {
+    if (session.mode !== 'room') continue
+    if ((session.occupants || []).some((o) => String(o.telegramUserId || '') === id)) return String(session.contextKey).replace(/^room:/, '')
+  }
+  return ''
 }
 
 function listed(actions) {
@@ -156,21 +178,27 @@ function instruction(game, view) {
   return `现在是玩家回合。请调用 card_play，action 只能是 ${listed(view.legal)}。不要使用 RLCard 或其他上游对手。对手的暗牌不会出现。`
 }
 
-function present(perspective = 'user', extra = {}) {
-  const engine = engineFor(current.game)
-  const pub = engine.publicView(current.state, viewerSeatOf(current))
-  if (perspective === 'agent') return agentView(current, engine, pub, { label: GAMES[current.game].label, ...extra })
+function present(session, perspective = 'user', extra = {}) {
+  const engine = engineFor(session.game)
+  const viewer = viewerSeatOf(session)
+  const pub = engine.publicView(session.state, viewer == null ? 0 : viewer)
+  const caller = extra.caller
+  const rest = { ...extra }
+  delete rest.caller
+  if (perspective === 'agent') return agentView(session, engine, pub, { label: GAMES[session.game].label, ...rest }, caller)
   const view = {
-    id: current.id,
-    game: current.game,
-    label: GAMES[current.game].label,
-    playerName: current.playerName,
+    id: session.id,
+    key: session.contextKey,
+    game: session.game,
+    label: GAMES[session.game].label,
+    playerName: session.playerName,
+    mode: session.mode,
     legal: pub.legal,
     over: pub.over,
-    turn: current.game === 'blackjack' ? (pub.over ? 'over' : 'player') : pub.turn,
-    moveCount: current.actions.length,
-    instruction: instruction(current.game, pub),
-    ...(current.game === 'blackjack' ? {
+    turn: session.game === 'blackjack' ? (pub.over ? 'over' : 'player') : pub.turn,
+    moveCount: session.actions.length,
+    instruction: instruction(session.game, pub),
+    ...(session.game === 'blackjack' ? {
       player: pub.player,
       dealer: pub.dealer,
       playerScore: pub.playerScore,
@@ -187,14 +215,54 @@ function present(perspective = 'user', extra = {}) {
       summary: pub.summary,
       ...(pub.board === undefined ? {} : { board: pub.board }),
     }),
-    ...(current.lastAi?.length ? { aiActions: current.lastAi.slice() } : {}),
-    ...(current.notice ? { notice: current.notice } : {}),
-    ...(current.origin ? { delivery: 'telegram', deliveryNote: '每一步后插件会自动把牌桌图片发到这个 Telegram 对话，不需要再调用 mm_send_image 或描述暗牌。' } : {}),
+    ...(session.lastAi?.length ? { aiActions: session.lastAi.slice() } : {}),
+    ...(session.notice ? { notice: session.notice } : {}),
+    ...(session.origin ? { delivery: 'telegram', deliveryNote: '每一步后插件会自动把牌桌图片发到这个 Telegram 对话，不需要再调用 mm_send_image 或描述暗牌。' } : {}),
   }
-  if (current.lastAi?.length) view.instruction = `对手已行动：${current.lastAi.join('、')}。` + view.instruction
-  if (current.recent?.length) view.recent = current.recent.map((m) => ({ seat: m.seat, name: seatLabel(current, m.seat), action: m.action }))
-  Object.assign(view, extra)
-  return annotateUserView(current, engine, view)
+  if (session.mode === 'room') {
+    const pending = (session.occupants || []).filter((o) => o.status === 'pending')
+    view.occupants = (session.occupants || []).map((o) => ({ seat: o.seat, kind: o.kind, name: o.name, status: o.status, ...(o.memberId ? { memberId: o.memberId } : {}), ...(o.local ? { local: true } : {}) }))
+    if (pending.length) view.waiting = pending.map((o) => o.name)
+    const now = turnSeat(session.game, session.state)
+    const occ = (session.occupants || []).find((o) => o.seat === now)
+    if (occ) view.turnSeatInfo = { seat: occ.seat, kind: occ.kind, name: occ.name, ...(occ.memberId ? { memberId: occ.memberId } : {}) }
+  }
+  if (session.lastAi?.length) view.instruction = `对手已行动：${session.lastAi.join('、')}。` + view.instruction
+  if (session.recent?.length) view.recent = session.recent.map((m) => ({ seat: m.seat, name: seatLabel(session, m.seat), action: m.action }))
+  Object.assign(view, rest)
+  const annotated = annotateUserView(session, engine, view)
+  if (session.mode === 'room' && viewer == null) return stripPrivate(annotated)
+  return annotated
+}
+
+/** 群图与共享记录用：手牌改成牌背，说明里不写牌面。公共牌（当前牌、底牌、公共牌）保留。 */
+export function stripPrivate(view) {
+  if (!view || typeof view !== 'object') return view
+  const copy = JSON.parse(JSON.stringify(view))
+  delete copy.player
+  delete copy.yourHand
+  delete copy.drawnCard
+  delete copy.opponentHand
+  delete copy.revealedHands
+  if (Array.isArray(copy.rows)) {
+    for (const row of copy.rows) {
+      if (!row || row.label === 'T' || row.label === 'BD') continue
+      if (row.label === 'D' && copy.game === 'blackjack') continue
+      row.cards = (row.cards || []).map((card) => ({ hidden: true, ...(Number.isInteger(card?.count) ? { count: card.count } : {}) }))
+    }
+  }
+  const counts = []
+  for (const row of copy.rows || []) {
+    if (!row || row.label === 'T' || row.label === 'BD') continue
+    const n = (row.cards || []).reduce((sum, card) => sum + (Number.isInteger(card?.count) ? card.count : 1), 0)
+    if (n) counts.push(`${row.title || row.label} ${n} 张`)
+  }
+  const top = (copy.rows || []).find((row) => row && (row.label === 'T' || row.label === 'BD'))
+  const topCode = top?.cards?.map((card) => card?.code).filter(Boolean).join(' ')
+  copy.caption = [copy.label, topCode ? `公开 ${topCode}` : '', counts.join('，')].filter(Boolean).join('。')
+  copy.summary = copy.caption
+  if (Array.isArray(copy.legal)) copy.legal = []
+  return copy
 }
 
 function resultOf(over, moveCount, endedAt) {
@@ -203,14 +271,17 @@ function resultOf(over, moveCount, endedAt) {
 }
 
 function requireKey(options) {
-  const key = options.contextKey || contextKey({ sessionId: options.sessionId, origin: options.origin })
+  if (options.contextKey) return String(options.contextKey)
+  if (options.roomId) return `room:${options.roomId}`
+  const key = contextKey({ sessionId: options.sessionId, origin: options.origin })
   if (!key) throw new CardError('无法确定会话，已拒绝', 400)
   return key
 }
 
 function requireOwn(key) {
-  if (!current || current.contextKey !== key) throw new CardError('这个会话没有进行中的牌局', 404)
-  return current
+  const session = tables.get(key)
+  if (!session) throw new CardError('这个会话没有进行中的牌局', 404)
+  return session
 }
 
 function settle(session) {
@@ -235,10 +306,11 @@ export async function openSession(options = {}) {
   const game = String(options.game || 'blackjack').trim()
   if (!GAMES[game]) throw new CardError(`game 只能是 ${Object.keys(GAMES).join('、')}`)
   const key = requireKey(options)
-  if (current?.contextKey === key) throw new CardError('这个会话已经有一局进行中，请先 card_close', 409)
-  if (current) throw new CardError('另一会话正在使用牌桌，请先在那个会话 card_close', 409)
+  if (tables.has(key)) throw new CardError('这个会话已经有一局进行中，请先 card_close', 409)
   const persistOn = options.persist !== false
-  const requestedMode = normalizeMode(options.mode, 'solo')
+  let occupants = null
+  if (options.roomSeats) occupants = normalizeRoomOccupants(game, options.roomSeats, playerName(options.playerName))
+  const requestedMode = occupants ? 'room' : normalizeMode(options.mode, 'solo')
   if (options.skipSource !== true) await ensureGame(game)
   const engine = engineFor(game)
   const saved = persistOn ? readSave(key, game) : null
@@ -250,11 +322,13 @@ export async function openSession(options = {}) {
   let actions = []
   let state = null
   // 新开局的参数（如 UNO 人数）；续局沿用存档里的，旧存档没有就按旧版走法
-  const custom = options.gameOptions || {}
+  const custom = { ...(options.gameOptions || {}) }
+  if (occupants && game === 'uno') custom.players = occupants.length
+  if (occupants) delete custom.seats
   const asked = ['players', 'teams', 'seats'].filter((k) => custom[k] !== undefined && custom[k] !== null && custom[k] !== '')
   if (asked.length && game !== 'uno') throw new CardError(`${asked.join(', ')} only apply to uno`)
   let gameOptions = engine.defaultOptions ? engine.defaultOptions(custom) : null
-  if (gameOptions?.seats) {
+  if (gameOptions?.seats && requestedMode !== 'room') {
     const problem = seatsProblem(gameOptions.seats, requestedMode, gameOptions.players)
     if (problem) throw new CardError(problem)
   }
@@ -283,7 +357,7 @@ export async function openSession(options = {}) {
       conversationType: resume.telegram.conversationType === 'group' ? 'group' : origin.conversationType,
     }
   }
-  current = {
+  const session = {
     id: resume?.id || randomBytes(4).toString('hex'),
     game,
     contextKey: key,
@@ -291,6 +365,7 @@ export async function openSession(options = {}) {
     actions,
     state,
     options: gameOptions,
+    occupants: resume?.occupants ? resume.occupants.map((o) => ({ ...o })) : occupants,
     playerName: resume?.playerName || playerName(options.playerName),
     mode: resume?.mode ? normalizeMode(resume.mode, requestedMode) : requestedMode,
     persist: persistOn,
@@ -300,13 +375,17 @@ export async function openSession(options = {}) {
     lastAi: [],
     recent: [],
   }
-  current.lastAi = settle(current)
-  persist()
+  if (resume && occupants) notices.push('已从存档续局，本次的座位未生效；要换座位请先 card_reset。')
+  session.notice = notices.join('')
+  tables.set(key, session)
+  if (session.mode !== 'room') session.lastAi = settle(session)
+  persist(session)
   const extra = {}
   if (resume) extra.resumed = { moveCount: resume.actions.length, savedAt: resume.updatedAt || '' }
   if (lastResult) extra.lastResult = lastResult
-  if (current.notice) extra.notice = current.notice
-  const view = present()
+  if (session.notice) extra.notice = session.notice
+  const caller = options.caller
+  const view = present(session, 'user', caller ? { caller } : {})
   if (resume) {
     view.resumed = { moveCount: resume.actions.length, savedAt: resume.updatedAt || '' }
     const lead = game === 'blackjack'
@@ -315,16 +394,17 @@ export async function openSession(options = {}) {
     view.instruction = lead + view.instruction
   }
   if (lastResult) view.lastResult = lastResult
-  const forAgent = options.perspective === 'agent' ? present('agent', extra) : null
-  current.notice = ''
-  await emit({ type: 'open', view, origin: current.origin, resumed: Boolean(resume) })
-  persist()
+  const forAgent = options.perspective === 'agent' ? present(session, 'agent', { ...extra, ...(caller ? { caller } : {}) }) : null
+  session.notice = ''
+  await emit({ type: 'open', table: session.mode === 'room' ? 'card' : undefined, key, view, origin: session.origin, resumed: Boolean(resume) })
+  persist(session)
   return forAgent || view
 }
 
 export async function resetGame(key, game, settings = {}) {
   if (!key) throw new CardError('无法确定会话，已拒绝', 400)
-  const which = String(game || (current?.contextKey === key ? current.game : 'blackjack')).trim()
+  const current = tables.get(key) || null
+  const which = String(game || (current ? current.game : 'blackjack')).trim()
   if (!GAMES[which]) throw new CardError(`game 只能是 ${Object.keys(GAMES).join('、')}`)
   const asked = ['players', 'teams', 'seats'].filter((k) => settings?.[k] !== undefined && settings?.[k] !== null && settings?.[k] !== '')
   if (asked.length && which !== 'uno') throw new CardError(`${asked.join(', ')} only apply to uno`)
@@ -359,18 +439,19 @@ export async function resetGame(key, game, settings = {}) {
   current.lastAi = []
   current.recent = []
   current.mode = nextMode
-  current.lastAi = settle(current)
   current.createdAt = new Date().toISOString()
   current.id = randomBytes(4).toString('hex')
   if (current.origin) current.origin.messageId = null
-  persist()
-  const view = present()
+  current.lastAi = current.mode === 'room' ? [] : settle(current)
+  persist(current)
+  const caller = settings.caller
+  const view = present(current, 'user', caller ? { caller } : {})
   view.reset = true
   view.instruction = '已重新开局。' + view.instruction
-  await emit({ type: 'open', view, origin: current.origin, reset: true })
-  persist()
+  await emit({ type: 'open', table: current.mode === 'room' ? 'card' : undefined, key, view, origin: current.origin, reset: true })
+  persist(current)
   if (settings.perspective === 'agent') {
-    const mine = present('agent', { reset: true })
+    const mine = present(current, 'agent', { reset: true, ...(caller ? { caller } : {}) })
     mine.instruction = '已重新开局。' + mine.instruction
     return mine
   }
@@ -378,9 +459,40 @@ export async function resetGame(key, game, settings = {}) {
 }
 
 /** perspective：'user'（页面 / Telegram，用户座位）或 'agent'（card_* 工具，AI 自己的座位）。 */
-export function lookSession(key, perspective = 'user') {
-  requireOwn(key)
-  return present(perspective)
+export function lookSession(key, perspective = 'user', caller) {
+  const session = key ? requireOwn(key) : lone()
+  if (!session) throw new CardError('这个会话没有进行中的牌局', 404)
+  return present(session, perspective, caller ? { caller } : {})
+}
+
+/** 中转站调度用：不含手牌。 */
+export function roomSnapshot(key) {
+  const session = tables.get(key)
+  if (!session || session.mode !== 'room') return null
+  const seat = session.state.over ? null : turnSeat(session.game, session.state)
+  const occ = seat == null ? null : (session.occupants || []).find((o) => o.seat === seat)
+  const waiting = (session.occupants || []).filter((o) => o.status === 'pending').map((o) => o.name)
+  return {
+    key,
+    table: 'card',
+    game: session.game,
+    label: GAMES[session.game].label,
+    over: Boolean(session.state.over),
+    waiting,
+    occupants: (session.occupants || []).map((o) => ({ seat: o.seat, kind: o.kind, name: o.name, status: o.status, ...(o.memberId ? { memberId: o.memberId } : {}), ...(o.telegramUserId ? { telegramUserId: o.telegramUserId } : {}), ...(o.local ? { local: true } : {}) })),
+    actor: session.state.over || waiting.length || !occ ? null : { seat: occ.seat, kind: occ.kind, name: occ.name, ...(occ.memberId ? { memberId: occ.memberId } : {}) },
+  }
+}
+
+export function holeNotes(key) {
+  const session = tables.get(key)
+  if (!session || session.mode !== 'room') return []
+  return (session.occupants || []).filter((o) => o.kind === 'human' && o.status === 'seated').map((o) => {
+    const priv = seatPrivate(session, o.seat)
+    const hand = priv?.yourHand
+    const text = Array.isArray(hand) ? hand.join(' ') : (typeof hand === 'string' ? hand : '')
+    return { seat: o.seat, name: o.name, ...(o.telegramUserId ? { telegramUserId: o.telegramUserId } : {}), ...(o.local ? { local: true } : {}), text: text ? `你的手牌：${text}` : '你目前没有手牌。' }
+  })
 }
 
 function turnTail(view) {
@@ -427,13 +539,21 @@ export function humanActionPrompt(name, action, view) {
  * versus：AI 只能在轮到 AI 座位时出牌，用户只能在轮到座位 0 时出牌；机器人座位自动走。
  * solo（代打）：两者都只能走座位 0，与旧版一致。
  */
-export async function playSession(key, text, who) {
+export async function playSession(key, text, who, caller) {
   const session = requireOwn(key)
   if (session.state.over) throw new CardError('这手已经结束')
   const engine = engineFor(session.game)
   const seat = turnSeat(session.game, session.state)
   const versus = session.mode === 'versus'
-  if (who === 'ai' && versus) {
+  if (session.mode === 'room') {
+    if ((session.occupants || []).some((o) => o.status === 'pending')) throw new CardError('还有玩家未入座', 409)
+    const occ = (session.occupants || []).find((o) => o.seat === seat)
+    if (who === 'ai') {
+      if (!occ || occ.kind !== 'ai' || occ.memberId !== caller?.memberId) throw new CardError('只能走自己这一方的牌', 403)
+    } else if (who === 'human') {
+      if (!occ || occ.kind !== 'human' || (caller && !occupantMatches(occ, caller))) throw new CardError('只能出自己这一方的牌', 403)
+    }
+  } else if (who === 'ai' && versus) {
     if (session.game === 'blackjack') throw new CardError('Versus mode: this blackjack hand belongs to the user, who plays it on the page or in Telegram. You cannot hit or stand for them; use card_look to watch, or card_reset and reopen with mode "solo" to play your own hand.', 409)
     const mine = agentSeatOf(session)
     if (mine == null) throw new CardError('You have no seat at this table (seat assignment has no "ai" seat); you can only watch with card_look.', 409)
@@ -453,35 +573,61 @@ export async function playSession(key, text, who) {
   session.state = engine.apply(session.state, action)
   session.actions.push(action)
   session.recent = [{ seat, action }]
-  session.lastAi = settle(session)
-  persist()
-  const view = present()
-  await emit({ type: 'play', view, origin: session.origin, action, who })
-  persist()
+  session.lastAi = session.mode === 'room' ? [] : settle(session)
+  persist(session)
+  const view = present(session, 'user', caller ? { caller } : {})
+  await emit({ type: 'play', table: session.mode === 'room' ? 'card' : undefined, key, view, origin: session.origin, action, who, seat: (session.occupants || []).find((o) => o.seat === seat) || null })
+  persist(session)
   return {
     view,
-    agentView: present('agent'),
+    agentView: present(session, 'agent', caller ? { caller } : {}),
     action,
     aiActions: session.lastAi.slice(),
     prompt: who === 'human' ? humanActionPrompt(session.playerName, action, view) : '',
   }
 }
 
-export function closeSession(key) {
+export async function confirmCardSeat(key, caller) {
+  const session = requireOwn(key)
+  if (session.mode !== 'room') return null
+  const occ = (session.occupants || []).find((o) => o.kind === 'human' && o.status === 'pending' && occupantMatches(o, caller))
+  if (!occ) return null
+  occ.status = 'seated'
+  persist(session)
+  const view = present(session)
+  await emit({ type: 'seat', table: 'card', key, view, seat: { ...occ }, origin: session.origin })
+  return { seat: occ, view }
+}
+
+function closeOne(key) {
+  const current = tables.get(key)
   if (!current) return { closed: false }
-  if (key && current.contextKey !== key) return { closed: false }
-  persist()
+  persist(current)
   const unfinished = current.persist !== false && !current.state.over
   const game = current.game
   const origin = current.origin
-  current = null
-  emit({ type: 'close', origin })
+  tables.delete(key)
+  emit({ type: 'close', table: current.mode === 'room' ? 'card' : undefined, key, origin })
   return {
     closed: true,
-    ...(unfinished ? { saved: true, game, note: '本会话的存档已保留，下次 card_open 同一游戏会续这手；不想续请 card_reset。' } : {}),
+    game,
+    ...(unfinished ? { saved: true, note: '本会话的存档已保留，下次 card_open 同一游戏会续这手；不想续请 card_reset。' } : {}),
   }
 }
 
+export function closeSession(key) {
+  if (!key) {
+    if (!tables.size) return { closed: false }
+    if (tables.size > 1) {
+      const closed = [...tables.keys()].map((k) => closeOne(k))
+      return { closed: true, all: true, games: closed.map((c) => c.game).filter(Boolean) }
+    }
+    return closeOne(lone().contextKey)
+  }
+  return closeOne(key)
+}
+
 export function activeContextKey() {
-  return current?.contextKey || ''
+  const live = [...tables.values()].filter((s) => !String(s.contextKey).startsWith('room:'))
+  return live.length === 1 ? live[0].contextKey : ''
 }

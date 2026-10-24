@@ -13,7 +13,7 @@
 import { BoardError } from './errors.mjs'
 import { displayMove, looksLikeMove, splitLeadingMove } from './notation.mjs'
 import { renderBoard } from './render.mjs'
-import { lookSession, onSessionChange, playSession, saveSessionNow, sessionLabel, sessionOrigin } from './session.mjs'
+import { lookSession, onSessionChange, playSession, saveSessionNow, sessionLabel, telegramTableKey } from './session.mjs'
 import { clearBoardsInbound, getTelegramBridge, setBoardsInbound } from './telegram-bridge.mjs'
 import { sameAccount } from '../channels/telegram/accounts.mjs'
 
@@ -99,11 +99,10 @@ function sentence(text) {
  * 混合消息遇到不是玩家 / 不是人的回合时当普通聊天放过（null），免得把聊天吞掉。
  */
 export async function handleBoardInbound({ chatId, senderId, accountId, text }) {
-  const origin = sessionOrigin()
-  if (!origin || origin.channel !== 'telegram' || String(chatId) !== origin.chatId) return null
-  if (!sameAccount(origin.accountId, accountId)) return null
+  const key = telegramTableKey(chatId, accountId)
+  if (!key) return null
   let view
-  try { view = lookSession() } catch { return null }
+  try { view = lookSession(key) } catch { return null }
   if (view.over) return null
   const whole = looksLikeMove(view.game, text)
   const split = whole ? null : splitLeadingMove(view.game, text)
@@ -111,13 +110,13 @@ export async function handleBoardInbound({ chatId, senderId, accountId, text }) 
   const move = whole ? text : split.move
   const said = whole ? '' : split.rest
   const sender = String(senderId ?? '')
-  if (origin.conversationType === 'group') {
-    const players = new Set([origin.starterId, origin.opponentId].filter(Boolean))
+  if (view.conversationType === 'group') {
+    const players = new Set([view.starterId, view.opponentId].filter(Boolean))
     if (!players.has(sender)) return said ? null : { notice: NOT_PLAYER_NOTICE }
   }
   if (view.turn !== 'human') return said ? null : { notice: AI_TURN_NOTICE }
   try {
-    const played = await playSession(move, 'human')
+    const played = await playSession(move, 'human', { key })
     const name = played.view.playerName
     const saying = said ? `，并说：${sentence(said)}` : '。'
     if (played.view.over) {
@@ -147,7 +146,7 @@ export function installBoardsTelegram({ logger } = {}) {
     const background = event.who === 'human'
     const job = chain.then(() => publishBoard(event)).then(() => {
       // 后台出图时 playSession 已经写过存档，这里补写新的 messageId。
-      if (background && sessionOrigin() === event.origin) saveSessionNow()
+      if (background && event.key) saveSessionNow(event.key)
     }).catch((error) => {
       logger?.warn?.('dsh-workbench: board image to telegram failed', String(error?.message ?? error).slice(0, 160))
     })

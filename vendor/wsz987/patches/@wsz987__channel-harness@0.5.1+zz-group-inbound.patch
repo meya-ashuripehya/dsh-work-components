@@ -2,8 +2,6 @@ diff --git a/lib/bridge.js b/lib/bridge.js
 index 0000000..1111111 100644
 --- a/lib/bridge.js
 +++ b/lib/bridge.js
---- "a/C:\\Users\\10917\\AppData\\Local\\Temp\\zz-diff-50388\\a\\lib\\bridge.js"
-+++ "b/C:\\Users\\10917\\AppData\\Local\\Temp\\zz-diff-50388\\b\\lib\\bridge.js"
 @@ -34,6 +34,9 @@
   * race).
   */

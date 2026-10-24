@@ -101,8 +101,13 @@ export class ChannelModelSelectionController {
             };
         }
         const { provider, model } = agent.options;
-        if (provider && model)
-            return { provider, model };
+        if (provider && model) {
+            return {
+                provider,
+                model,
+                ...(agent.options.reasoningEffort ? { reasoningEffort: ReasoningEffortId(String(agent.options.reasoningEffort)) } : {}),
+            };
+        }
         const defaults = agent.ctx.get('agentDefaultModel')?.currentSelection();
         if (!defaults?.provider || !defaults.model)
             return undefined;

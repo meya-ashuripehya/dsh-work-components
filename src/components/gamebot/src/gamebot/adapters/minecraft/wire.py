@@ -1,6 +1,7 @@
 """Minaret WebSocket v1 编解码与字段校验。旧版 hello/聊天/命令仍可解析。"""
 from __future__ import annotations
 
+import json
 import math
 import re
 import time
@@ -8,6 +9,8 @@ import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 PROTOCOL_VERSION = 1
+AGENT_PROTOCOL_VERSION = 2
+AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 ERROR_CODES = frozenset(
     {
@@ -23,9 +26,18 @@ ERROR_CODES = frozenset(
         "rate_limited",
         "timeout",
         "action_rejected",
+        "position_occupied",
+        "state_mismatch",
         "internal_error",
+        "agent_id_required",
+        "agent_mismatch",
+        "agent_not_available",
+        "not_bound",
+        "busy",
     }
 )
+STATE_TEXT = re.compile(r"^[a-z0-9_]+$")
+MAX_STATE_PROPERTIES = 16
 FACES = frozenset({"down", "up", "north", "south", "west", "east"})
 HANDS = frozenset({"main_hand", "off_hand"})
 EFFECTS = frozenset({"confirmed", "observed", "unverified", "failed"})
@@ -48,6 +60,9 @@ CORE_ACTIONS = frozenset(
         "select_item",
         "use_item_on_block",
         "attack_block",
+        "break_block",
+        "place_block",
+        "probe_blocks",
         "attack_entity",
         "drop_item",
         "use_item",
@@ -131,9 +146,10 @@ def build_envelope(
     request_id: Optional[str] = None,
     timestamp_ms: Optional[int] = None,
     extra: Optional[Mapping[str, Any]] = None,
+    protocol_version: Optional[int] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
-        "protocol_version": PROTOCOL_VERSION,
+        "protocol_version": PROTOCOL_VERSION if protocol_version is None else int(protocol_version),
         "event": event,
         "sequence": int(sequence),
         "timestamp_ms": now_ms() if timestamp_ms is None else int(timestamp_ms),
@@ -146,10 +162,56 @@ def build_envelope(
     return payload
 
 
-def build_hello(user: str, sequence: int) -> Dict[str, Any]:
-    envelope = build_envelope("hello", {"user": user, "client": "dsh-gamebot"}, sequence)
+def build_hello(
+    user: str,
+    sequence: int,
+    agent_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+    provision: bool = False,
+    claim_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    data: Dict[str, Any] = {"user": user, "client": "dsh-gamebot"}
+    version = PROTOCOL_VERSION
+    if agent_id:
+        if not AGENT_ID.fullmatch(str(agent_id)):
+            raise WireError("invalid_params", "agent_id is invalid")
+        data["agent_id"] = str(agent_id)
+        data["provision"] = bool(provision)
+        if display_name:
+            data["display_name"] = str(display_name)[:32]
+        version = AGENT_PROTOCOL_VERSION
+    if claim_key:
+        data["claim_key"] = str(claim_key)
+    envelope = build_envelope("hello", data, sequence, protocol_version=version)
     envelope["user"] = user
     return envelope
+
+
+def build_claim_revoke(agent_id: str, pid: str, tid: str, gen: int, sig: str, sequence: int) -> Dict[str, Any]:
+    if not AGENT_ID.fullmatch(str(agent_id)):
+        raise WireError("invalid_params", "agent_id is invalid")
+    return build_envelope(
+        "claim_revoke",
+        {"agent_id": str(agent_id), "pid": str(pid), "tid": str(tid), "gen": int(gen), "sig": str(sig)},
+        sequence,
+        protocol_version=AGENT_PROTOCOL_VERSION,
+    )
+
+
+MAX_CLAIM_BYTES = 1024
+
+
+def _clean_claim(claim: Mapping[str, Any]) -> Dict[str, Any]:
+    """认领凭证：协调进程签发，模组只原样回显；这里只限类型和大小。"""
+    if not isinstance(claim, Mapping):
+        raise WireError("invalid_params", "claim must be an object")
+    try:
+        text = json.dumps(dict(claim), ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise WireError("invalid_params", "claim must be JSON serializable") from exc
+    if len(text.encode("utf-8")) > MAX_CLAIM_BYTES:
+        raise WireError("invalid_params", "claim is too large")
+    return json.loads(text)
 
 
 def build_action_request(
@@ -158,34 +220,49 @@ def build_action_request(
     sequence: int,
     request_id: Optional[str] = None,
     goal: Optional[str] = None,
+    claim: Optional[Mapping[str, Any]] = None,
+    agent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cleaned = validate_action_params(action, params)
     data: Dict[str, Any] = {"action": action, "params": cleaned}
     if goal:
         data["goal"] = str(goal)[:200]
+    if claim is not None:
+        data["claim"] = _clean_claim(claim)
+    if agent_id:
+        if not AGENT_ID.fullmatch(str(agent_id)):
+            raise WireError("invalid_params", "agent_id is invalid")
+        data["agent_id"] = str(agent_id)
     return build_envelope(
         "action_request",
         data,
         sequence,
         request_id=request_id or new_request_id(),
+        protocol_version=AGENT_PROTOCOL_VERSION if agent_id else PROTOCOL_VERSION,
     )
 
 
-def build_cancel(target_request_id: str, sequence: int) -> Dict[str, Any]:
+def build_cancel(target_request_id: str, sequence: int, agent_id: Optional[str] = None) -> Dict[str, Any]:
     if not target_request_id:
         raise WireError("invalid_params", "target_request_id is required")
+    data: Dict[str, Any] = {"target_request_id": target_request_id}
+    if agent_id:
+        if not AGENT_ID.fullmatch(str(agent_id)):
+            raise WireError("invalid_params", "agent_id is invalid")
+        data["agent_id"] = str(agent_id)
     return build_envelope(
         "cancel_action",
-        {"target_request_id": target_request_id},
+        data,
         sequence,
         request_id=new_request_id(),
+        protocol_version=AGENT_PROTOCOL_VERSION if agent_id else PROTOCOL_VERSION,
     )
 
 
 def merged_view(message: Mapping[str, Any]) -> Dict[str, Any]:
     view = dict(message)
     inner = message.get("data")
-    if message.get("protocol_version") == PROTOCOL_VERSION and isinstance(inner, Mapping):
+    if message.get("protocol_version") in (PROTOCOL_VERSION, AGENT_PROTOCOL_VERSION) and isinstance(inner, Mapping):
         for key, value in inner.items():
             if key not in view or key == "data":
                 continue
@@ -203,16 +280,88 @@ def merged_view(message: Mapping[str, Any]) -> Dict[str, Any]:
     return view
 
 
+def _validate_place_block(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    pos = raw.get("pos")
+    if pos is None and all(axis in raw for axis in ("x", "y", "z")):
+        # 兼容 Mineflayer 风格的平铺坐标（x/y/z 可为小数，取所在方块）。
+        pos = {axis: math.floor(finite_number(raw.get(axis), axis)) for axis in ("x", "y", "z")}
+    block_id = raw.get("block_id") or raw.get("block")
+    if isinstance(block_id, str) and block_id and ":" not in block_id:
+        block_id = f"minecraft:{block_id}"
+    out: Dict[str, Any] = {
+        "pos": block_pos(pos),
+        "block_id": require_resource_id(block_id, "block_id"),
+    }
+    if raw.get("face") is not None:
+        face = str(raw.get("face"))
+        if face not in FACES:
+            raise WireError("invalid_params", "face is invalid")
+        out["face"] = face
+    state = raw.get("state")
+    if state is not None:
+        if not isinstance(state, Mapping):
+            raise WireError("invalid_params", "state must be an object")
+        if len(state) > MAX_STATE_PROPERTIES:
+            raise WireError("invalid_params", "state has too many properties")
+        cleaned: Dict[str, str] = {}
+        for key, value in state.items():
+            if not isinstance(key, str) or not STATE_TEXT.fullmatch(key):
+                raise WireError("invalid_params", "state properties must be lowercase names")
+            if isinstance(value, bool):
+                text = "true" if value else "false"
+            elif isinstance(value, (str, int)):
+                text = str(value).lower()
+            else:
+                raise WireError("invalid_params", "state values must be scalars")
+            if not STATE_TEXT.fullmatch(text):
+                raise WireError("invalid_params", "state values must be lowercase words")
+            cleaned[key] = text
+        out["state"] = cleaned
+    max_distance = finite_number(raw.get("max_distance", 4.5), "max_distance")
+    if max_distance <= 0 or max_distance > MAX_INTERACT_DISTANCE:
+        raise WireError("invalid_params", "max_distance must be within (0, 6]")
+    out["max_distance"] = max_distance
+    if raw.get("auto_move") is not None:
+        out["auto_move"] = bool(raw.get("auto_move"))
+    if raw.get("hit_offset") is not None:
+        out["hit_offset"] = hit_offset(raw.get("hit_offset"))
+    if raw.get("exclusions") is not None:
+        exclusions = raw.get("exclusions")
+        if not isinstance(exclusions, list):
+            raise WireError("invalid_params", "exclusions must be an array")
+        out["exclusions"] = exclusions
+    return out
+
+
+def _validate_probe_blocks(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    positions = raw.get("positions")
+    if not isinstance(positions, list) or not positions or len(positions) > 16:
+        raise WireError("invalid_params", "positions must contain 1 to 16 block positions")
+    return {"positions": [block_pos(item, "positions") for item in positions]}
+
+
 def validate_action_params(action: str, params: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     raw = dict(params or {})
     if action not in CORE_ACTIONS:
         return raw
     if action in ("look_at", "move_to"):
-        return {
+        out = {
             "x": finite_number(raw.get("x"), "x"),
             "y": finite_number(raw.get("y"), "y"),
             "z": finite_number(raw.get("z"), "z"),
         }
+        if action == "move_to":
+            if raw.get("arrival_tolerance") is not None:
+                tolerance = finite_number(raw.get("arrival_tolerance"), "arrival_tolerance")
+                if tolerance <= 0 or tolerance > 2.0:
+                    raise WireError("invalid_params", "arrival_tolerance must be within (0, 2]")
+                out["arrival_tolerance"] = tolerance
+            if raw.get("exclusions") is not None:
+                exclusions = raw.get("exclusions")
+                if not isinstance(exclusions, list):
+                    raise WireError("invalid_params", "exclusions must be an array")
+                out["exclusions"] = exclusions
+        return out
     if action == "attack_entity":
         out: Dict[str, Any] = {}
         if raw.get("uuid") is not None:
@@ -235,7 +384,11 @@ def validate_action_params(action: str, params: Optional[Mapping[str, Any]]) -> 
                 raise WireError("unsupported", "only hotbar slots 0-8 can be selected")
             out["slot"] = slot_no
         return out
-    if action in ("interact", "use_item_on_block", "attack_block"):
+    if action == "place_block":
+        return _validate_place_block(raw)
+    if action == "probe_blocks":
+        return _validate_probe_blocks(raw)
+    if action in ("interact", "use_item_on_block", "attack_block", "break_block"):
         out = {"pos": block_pos(raw.get("pos"))}
         face = str(raw.get("face") or "up")
         if face not in FACES:
@@ -258,6 +411,8 @@ def validate_action_params(action: str, params: Optional[Mapping[str, Any]]) -> 
         item_id = raw.get("item_id") or raw.get("item")
         if item_id is not None:
             out["item_id"] = require_resource_id(item_id, "item_id")
+        if action == "break_block":
+            out["expected_block"] = require_resource_id(raw.get("expected_block"), "expected_block")
         return out
     if action == "drop_item":
         item_id = raw.get("item_id") or raw.get("item")
@@ -428,10 +583,12 @@ def normalize_snapshot(message: Mapping[str, Any]) -> Dict[str, Any]:
         },
         "inventory": {"slots": slots, "counts": clean_counts},
         "nearby_blocks": blocks,
+        "nearby_blocks_truncated": None if view.get("nearby_blocks_truncated") is None else bool(view.get("nearby_blocks_truncated")),
         "nearby_players": players,
         "screen": {"id": str(screen_id) if is_resource_id(screen_id) else None, "open": bool(screen.get("open") or False)},
         "actor_type": str(view.get("actor_type") or "local_player"),
         "agent_id": None if not view.get("agent_id") else str(view.get("agent_id")),
+        "entity_uuid": None if not view.get("entity_uuid") else str(view.get("entity_uuid")),
     }
 
 
@@ -491,7 +648,9 @@ def normalize_activity(message: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def action_timeout_seconds(action: str, params: Mapping[str, Any]) -> float:
-    if action in ("move_to", "attack_block"):
+    if action in ("move_to", "attack_block", "break_block"):
+        return 30.0
+    if action == "place_block" and params.get("auto_move", True):
         return 30.0
     if action == "use_item" and str(params.get("mode") or "") == "until_finished":
         return 30.0

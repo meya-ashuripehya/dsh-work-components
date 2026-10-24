@@ -11,14 +11,14 @@ import { createOwnerGate, isOpenTool } from '../channels/telegram/owner-gate.mjs
 import { BoardError } from './errors.mjs'
 import { displayMove, looksLikeMove, normalizeMove, splitLeadingMove } from './notation.mjs'
 import { renderBoard } from './render.mjs'
-import { closeSession, lookSession, openSession, resetGame, resetSession } from './session.mjs'
+import { boardKey, closeSession, lookSession, openSession, resetGame, resetSession, saveFileFor } from './session.mjs'
 import { clearTelegramBridge, getBoardsInbound, setTelegramBridge } from './telegram-bridge.mjs'
 import { ILLEGAL_NOTICE, NOT_PLAYER_NOTICE, captionFor, handleBoardInbound, installBoardsTelegram, telegramOriginFor, whenBoardsPublished } from './telegram.mjs'
 import { createBoardsTools } from './tools.mjs'
 
-const CHAT = '6153059771'
-const GROUP = '-1003435238151'
-const OWNER = '6153059771'
+const CHAT = '9000000001'
+const GROUP = '-1009000000001'
+const OWNER = '9000000001'
 const FRIEND = '7000000002'
 const STRANGER = '7000000001'
 
@@ -259,17 +259,21 @@ test('inbound hook on the harness bridge: notice swallows, forward rewrites, oth
   }
 })
 
-test('owner gate: board_look/board_play are open, board_open/board_close stay gated', () => {
-  assert.ok(isOpenTool('board_play'))
-  assert.ok(isOpenTool('board_look'))
+test('owner gate: board action tools are not open; only the owner may open, close, or play', () => {
+  assert.equal(isOpenTool('board_play'), false)
+  assert.equal(isOpenTool('board_look'), false)
+  assert.equal(isOpenTool('board_hint'), false)
   assert.ok(!isOpenTool('board_open'))
   assert.ok(!isOpenTool('board_close'))
   assert.ok(!isOpenTool('board_reset'))
-  assert.ok(isOpenTool('board_hint'))
   const gate = createOwnerGate({ authorized: [OWNER] })
   gate.noteTurn('s1', STRANGER)
   assert.ok(gate.check({ name: 'board_open', agent: { id: 's1' } }))
-  assert.equal(gate.check({ name: 'board_play', agent: { id: 's1' } }), undefined)
+  assert.ok(gate.check({ name: 'board_play', agent: { id: 's1' } }))
+  assert.ok(gate.check({ name: 'board_look', agent: { id: 's1' } }))
+  const ownerGate = createOwnerGate({ authorized: [OWNER] })
+  ownerGate.noteTurn('s2', OWNER)
+  assert.equal(ownerGate.check({ name: 'board_play', agent: { id: 's2' } }), undefined)
 })
 
 test('resume from a save re-binds to the current chat and sends a fresh photo; reset re-sends', async () => {
@@ -289,13 +293,13 @@ test('resume from a save re-binds to the current chat and sends a fresh photo; r
     await openSession({ game: 'gomoku', aiSide: 'white', engineFactory, origin: telegramOriginFor('sess-a') })
     await handleBoardInbound({ chatId: CHAT, senderId: OWNER, text: 'H8' })
     await whenBoardsPublished()
-    resetSession() // 模拟 DSH 退出
-    register(store, 'sess-b', GROUP, OWNER, 'group')
+    resetSession() // 模拟 DSH 退出。存档按聊天隔离：同一个聊天、新的会话 id 会续局。
+    register(store, 'sess-b', CHAT, OWNER)
     tg.calls.length = 0
     const view = await openSession({ game: 'gomoku', aiSide: 'white', engineFactory, origin: telegramOriginFor('sess-b') })
     assert.equal(view.resumed.moveCount, 1)
     assert.deepEqual(tg.calls.map((c) => c.method), ['sendPhoto'], 'fresh photo, no edit of the old message')
-    assert.equal(tg.calls[0].fields.chat_id, GROUP)
+    assert.equal(tg.calls[0].fields.chat_id, CHAT)
     assert.match(tg.calls[0].fields.caption, /续局（已走 1 步）/)
     tg.calls.length = 0
     await resetGame()
@@ -366,7 +370,9 @@ test('typed move wakes the AI without waiting for the photo upload; the new mess
   try {
     const store = new ReplyContextStore()
     register(store, 'sess-dm', CHAT, OWNER)
-    await openSession({ game: 'gomoku', aiSide: 'white', engineFactory: async () => fakeGomoku(), origin: telegramOriginFor('sess-dm') })
+    const origin = telegramOriginFor('sess-dm')
+    const key = boardKey({ origin })
+    await openSession({ game: 'gomoku', aiSide: 'white', engineFactory: async () => fakeGomoku(), origin })
     const slow = fakeTelegram({ startId: 200, sendGate: new Promise((r) => { release = r }) })
     setTelegramBridge(createBoardsTelegramBridge(slow.upstream))
     const r = await Promise.race([
@@ -376,7 +382,7 @@ test('typed move wakes the AI without waiting for the photo upload; the new mess
     assert.match(r.forward, /下在了H8/, 'forward must not wait for sendPhoto')
     release()
     await whenBoardsPublished()
-    const save = JSON.parse(await readFile(join(root, 'boards', 'saves', 'gomoku.json'), 'utf8'))
+    const save = JSON.parse(await readFile(saveFileFor(key, 'gomoku'), 'utf8'))
     assert.equal(save.telegram.messageId, '200')
     assert.equal(slow.calls[1].fields.message_id, '100')
     assert.deepEqual(slow.calls.map((c) => c.method), ['sendPhoto', 'deleteMessage'])

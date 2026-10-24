@@ -138,6 +138,14 @@ static class ActionOverlay
     public static void ShowType(int x, int y, string text) =>
         Enqueue(new Cue(OverlayKind.Type, x, y, 0, false, text ?? "", 1, null));
 
+    /// <summary>同 ShowType，但等光标滑到落点再返回（最多和 ShowClick 一样等 1800ms）。UIA 写值前用，让输入提示先于写入出现。</summary>
+    public static void ShowTypeAndWait(int x, int y, string text)
+    {
+        var done = new ManualResetEventSlim(false);
+        Enqueue(new Cue(OverlayKind.Type, x, y, 0, false, text ?? "", 1, done));
+        done.Wait(1800);
+    }
+
     static void Enqueue(Cue cue)
     {
         try
@@ -399,7 +407,7 @@ static class ActionOverlay
         GlideStamp = now;
         var span = Math.Max(GlidePlan.DurationMs, 1);
         var remain = Math.Max(0.04f, 1f - GlideBase);
-        GlideU = Math.Min(1f, GlideU + step / span * remain);
+        GlideU = Math.Min(1f, GlideU + step / (float)span * remain);
         CursorMotion.Sample(GlidePlan, GlideU, out var x, out var y, out Heading);
         CursorX = x;
         CursorY = y;

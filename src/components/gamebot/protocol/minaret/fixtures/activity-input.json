@@ -1,0 +1,35 @@
+{
+  "matched": {
+    "swings": [
+      {
+        "player": "Steve",
+        "uuid": "123e4567-e89b-12d3-a456-426614174000",
+        "time_ms": 900,
+        "x": 0.0,
+        "y": 64.0,
+        "z": 0.0,
+        "look": { "x": 1.0, "y": 0.0, "z": 0.0 }
+      }
+    ],
+    "changes": [
+      { "time_ms": 950, "block_id": "create:depot", "x": 4, "y": 64, "z": 0 }
+    ],
+    "expected_confidence": 0.214
+  },
+  "unlinked": {
+    "swings": [
+      {
+        "player": "Steve",
+        "uuid": "123e4567-e89b-12d3-a456-426614174000",
+        "time_ms": 900,
+        "x": 0.0,
+        "y": 64.0,
+        "z": 0.0,
+        "look": { "x": 1.0, "y": 0.0, "z": 0.0 }
+      }
+    ],
+    "changes": [
+      { "time_ms": 950, "block_id": "minecraft:stone", "x": -8, "y": 64, "z": 0 }
+    ]
+  }
+}

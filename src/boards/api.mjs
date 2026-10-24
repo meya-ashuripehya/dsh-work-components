@@ -4,7 +4,7 @@ import { BoardError } from './errors.mjs'
 import { ensureGame, gameStatus, sourceDir } from './download.mjs'
 import { playerName } from './names.mjs'
 import { boardsPage } from './page.mjs'
-import { lookSession, playSession, setPlayerName } from './session.mjs'
+import { boardKey, lookSession, playSession, setPlayerName } from './session.mjs'
 import { BOARD_SOURCES, GAMES } from './sources.mjs'
 import { assistStatus, cancelAssistDownload, removeAssist, startAssistDownload } from './assist/install.mjs'
 
@@ -44,7 +44,8 @@ export async function handleBoardsApi(req, res, sub, helpers) {
       const game = String(body.game || '').trim()
       if (!GAMES[game]) throw new BoardError('game 只能是 xiangqi、chess、gomoku、go')
       // 后台下载，页面轮询 /boards/status 取进度
-      startAssistDownload(game).catch(() => {})
+      // 与其他下载相同：设置「下载代理」，留空时用环境变量 HTTPS_PROXY / HTTP_PROXY
+      startAssistDownload(game, { proxy: String(getConfig?.()?.proxy || '').trim() || undefined }).catch(() => {})
       sendJson(res, 200, { ok: true, games: withAssist(gameStatus()) })
       return true
     }
@@ -76,9 +77,16 @@ export async function handleBoardsApi(req, res, sub, helpers) {
     }
     if (sub === '/boards/session' && req.method === 'GET') {
       try {
-        sendJson(res, 200, { ok: true, open: true, session: lookSession() })
+        const url = new URL(req.url ?? '/', 'http://local')
+        const key = boardKey({
+          ...(url.searchParams.get('key') ? { key: url.searchParams.get('key') } : {}),
+          ...(url.searchParams.get('room') ? { roomId: url.searchParams.get('room') } : {}),
+          ...(url.searchParams.get('session') ? { sessionId: url.searchParams.get('session') } : {}),
+        })
+        const explicit = url.searchParams.has('key') || url.searchParams.has('room') || url.searchParams.has('session')
+        sendJson(res, 200, { ok: true, open: true, session: lookSession(explicit ? key : undefined) })
       } catch (error) {
-        if (error instanceof BoardError && error.status === 404) sendJson(res, 200, { ok: true, open: false, session: null })
+        if (error instanceof BoardError && (error.status === 404 || error.status === 400)) sendJson(res, 200, { ok: true, open: false, session: null })
         else throw error
       }
       return true
@@ -87,8 +95,10 @@ export async function handleBoardsApi(req, res, sub, helpers) {
       if (crossSite(req)) { sendJson(res, 403, { ok: false, error: 'cross-site request refused' }); return true }
       const body = JSON.parse(await readBody(req) || '{}')
       const cfg = getConfig() || {}
-      setPlayerName(playerName(cfg.boardsPlayerName))
-      const played = await playSession(body.move, 'human')
+      const key = body.key ? boardKey({ key: body.key }) : (body.roomId ? boardKey({ roomId: body.roomId }) : undefined)
+      setPlayerName(playerName(cfg.boardsPlayerName), key)
+      const caller = body.roomId || (typeof body.key === 'string' && body.key.startsWith('room:')) ? { local: true } : undefined
+      const played = await playSession(body.move, 'human', { key, caller })
       sendJson(res, 200, { ok: true, prompt: played.prompt, notation: played.notation, session: played.view })
       return true
     }

@@ -52,9 +52,11 @@ if (existsSync(join(root, 'lib', 'channel-telegram.mjs'))) {
   }
 }
 {
-  const { TELEGRAM_KEYS, TELEGRAM_SECRET_KEY } = await import(new URL('../src/channels/telegram/index.mjs', import.meta.url).href)
+  const { TELEGRAM_KEYS, TELEGRAM_SECRET_KEY, TELEGRAM_LEGACY_KEYS } = await import(new URL('../src/channels/telegram/index.mjs', import.meta.url).href)
   const client = readFileSync(join(root, 'lib', 'client.js'), 'utf8')
+  const legacy = new Set(TELEGRAM_LEGACY_KEYS || [])
   for (const key of [...TELEGRAM_KEYS, TELEGRAM_SECRET_KEY]) {
+    if (legacy.has(key)) continue
     if (!client.includes(`key: "${key}"`)) problems.push(`lib/client.js lacks INPUT_FIELDS entry ${key}`)
   }
   if (!client.includes('group: "通道"')) problems.push('lib/client.js lacks the 通道 group')
@@ -105,6 +107,13 @@ try {
   problems.push('src/notes/notes.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
 }
 
+// AI 档案注册表：resolveProfile、出厂模板种子、实体化序号（node:test）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'profiles', 'profiles.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/profiles/profiles.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
 // 「多模态」› GPT Image 2 生图：模拟 OpenAI 兼容服务（b64_json / url / 401 / 403 / 429 / 5xx / 超时 / 网络错误 / multipart 编辑），不发真实付费请求。
 try {
   const noProxy = ['127.0.0.1', 'localhost', process.env.NO_PROXY || process.env.no_proxy || ''].filter(Boolean).join(',')
@@ -120,8 +129,70 @@ try {
   if (!client.includes('"/gpt-image/test"')) problems.push('lib/client.js lacks the 测试连接 button for GPT Image 2')
 }
 
+// 「多模态」› 视频理解：设置兼容 / 迁移、组件挂载、describe_video / watch_video 工具与状态接口（模拟 Gemini，不发真实请求）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'video', 'video.test.mjs'), join(root, 'src', 'video', 'videokey.test.mjs'), join(root, 'src', 'video', 'bucket.test.mjs'), join(root, 'src', 'video', 'credential.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/video/video.test.mjs / videokey.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+{
+  const { VIDEO_KEYS } = await import(new URL('../src/video/index.mjs', import.meta.url).href)
+  const client = readFileSync(join(root, 'lib', 'client.js'), 'utf8')
+  for (const key of VIDEO_KEYS) if (!client.includes(`key: "${key}"`)) problems.push(`lib/client.js lacks INPUT_FIELDS entry ${key}`)
+  if (!client.includes('id: "video", group: "多模态"')) problems.push('lib/client.js lacks the 多模态 › 视频理解 feature')
+  if (!client.includes('"/video/status"')) problems.push('lib/client.js lacks the 视频理解 status box')
+}
+
+// 「工作组件」› Termalin：启动方案（本机 / 托管 API 密钥）、OAuth 端点拒绝、模拟 MCP 服务器、所有者门禁（不访问 termal.in）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'components', 'termalin', 'termalin.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/components/termalin/termalin.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
+// 「工作组件」› 游戏 › Minecraft：Minaret 模组「打包下载」（mods 目录归一、备份替换、源码哈希；不跑 Gradle）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'components', 'gamebot', 'minaret.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/components/gamebot/minaret.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'store.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'blueprint.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'preview.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'tasks.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'claims.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'materials.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'auth.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'conflicts.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'handoff.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'control.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'scaffold.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'slots.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'loop.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'red-carpet.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'safety-regression.test.mjs'), join(root, 'src', 'components', 'gamebot', 'minecraft-work', 'tools.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/components/gamebot/minecraft-work failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
+// 「工作组件」› KiCad：启动方案（uvx / 自定义命令、环境变量）、模拟 stdio MCP 服务器、所有者门禁（不下载 kicad-mcp-pro）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'components', 'kicad', 'kicad.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/components/kicad/kicad.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
+// 「工作组件」› Fusion / FreeCAD / MATLAB / ESP-IDF / 串口 / Rhino / Altium：启动方案、模拟 HTTP 与 stdio MCP 服务器、状态探测、所有者门禁（不访问真实服务）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'components', 'mcp6.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/components/mcp6.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
+// 「通用 › 余额查询」：各官方服务商的解析与单位换算、打码、缓存、设置接口、balance_query 工具（node:test，模拟 fetch，不访问真实接口）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'balance', 'balance.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/balance/balance.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+{
+  const { BALANCE_KEYS } = await import(new URL('../src/balance/index.mjs', import.meta.url).href)
+  const client = readFileSync(join(root, 'lib', 'client.js'), 'utf8')
+  for (const key of BALANCE_KEYS) if (!client.includes(`key: "${key}"`)) problems.push(`lib/client.js lacks INPUT_FIELDS entry ${key}`)
+  if (!client.includes('id: "balance", group: "通用"')) problems.push('lib/client.js lacks the 通用 › 余额查询 feature')
+  if (!client.includes('"/balance/state"')) problems.push('lib/client.js lacks the 余额查询 panel')
+}
+
 // Telegram 通道：群消息映射、授权用户工具闸门、群聊预设路由（node:test）。
-for (const file of ['group-inbound.test.mjs', 'owner-gate.test.mjs', 'accounts.test.mjs']) {
+for (const file of ['group-inbound.test.mjs', 'owner-gate.test.mjs', 'accounts.test.mjs', 'group-conflict.test.mjs', 'dm-pending.test.mjs']) {
   try {
     execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'telegram', file)], { stdio: 'pipe' })
   } catch (error) {
@@ -178,7 +249,7 @@ try {
 
 // 聊天室：席位迁移 / DSH 目录（服务商、模型、预设人设）/ ctx.llm.stream 调用 / 记录持久化 / 主持顺序、跳过、停止（node:test，模拟 DSH 服务，不联网）。
 try {
-  execFileSync(process.execPath, ['--test', join(root, 'src', 'chatroom', 'chatroom.test.mjs'), join(root, 'src', 'chatroom', 'orchestra.test.mjs')], { stdio: 'pipe' })
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'chatroom', 'chatroom.test.mjs'), join(root, 'src', 'chatroom', 'orchestra.test.mjs'), join(root, 'src', 'chatroom', 'main-answer.test.mjs'), join(root, 'src', 'chatroom', 'msg-delete.test.mjs'), join(root, 'src', 'chatroom', 'heartbeat.test.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push('src/chatroom/chatroom.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
 }
@@ -186,6 +257,9 @@ try {
   const { CHATROOM_KEYS } = await import(new URL('../src/chatroom/seats.mjs', import.meta.url).href)
   const client = readFileSync(join(root, 'lib', 'client.js'), 'utf8')
   for (const key of CHATROOM_KEYS) if (!client.includes(`key: "${key}"`)) problems.push(`lib/client.js lacks INPUT_FIELDS entry ${key}`)
+  if (!client.includes('type: "seatmain"') || !client.includes('请选择主答成员')) problems.push('lib/client.js lacks 主答 seatmain picker')
+  if (!client.includes('type: "hbsession"') || !client.includes('function buildHeartbeatSessionField') || !client.includes('请选择目标会话')) problems.push('lib/client.js lacks 心跳目标会话 hbsession picker')
+  if (client.includes('key: "chatroomHeartbeatSessionId"') && /key: "chatroomHeartbeatSessionId"[^\n]*type: "text"/.test(client)) problems.push('lib/client.js chatroomHeartbeatSessionId must be type hbsession (not text)')
 }
 
 if (problems.length) {

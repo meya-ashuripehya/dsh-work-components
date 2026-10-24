@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import websockets
@@ -16,6 +18,7 @@ from gamebot.adapters.minecraft.wire import (
     action_timeout_seconds,
     build_action_request,
     build_cancel,
+    build_claim_revoke,
     build_hello,
     normalize_activity,
     normalize_snapshot,
@@ -56,13 +59,18 @@ class MinaretBackend:
         self._last_action_pending = False
         self._actor_type = "local_player"
         self._agent_id: Optional[str] = None
+        self._entity_uuid: Optional[str] = None
         self._agent_name: Optional[str] = None
         self._actor_goal: Optional[str] = None
         self._block_scan_known = False
         self._entity_nearby_known = False
         self._on_chat = None
         self._sequence = 0
-        self._pending: Dict[str, asyncio.Future] = {}
+        self._conn_gen = 0
+        self._pending: Dict[str, Any] = {}
+        self._unresolved: Set[str] = set()
+        self._hello_waiter: Optional[tuple] = None
+        self._hello_error: Optional[str] = None
 
     def _ws_url(self) -> str:
         return str(self.config.get("NEOFORGE_WS_URL") or self.config.get("ws_url") or "ws://127.0.0.1:8765").strip()
@@ -83,7 +91,7 @@ class MinaretBackend:
         return self._sequence
 
     def _push(self, entry: Dict[str, Any]) -> None:
-        self._recent_events.append(entry)
+        self._recent_events.append(_without_claim_key(entry))
         while len(self._recent_events) > 50:
             drop_at = next(
                 (
@@ -97,14 +105,26 @@ class MinaretBackend:
                 break
             del self._recent_events[drop_at]
 
-    def _fail_pending(self, code: str, message: str) -> None:
-        pending = list(self._pending.items())
-        self._pending.clear()
-        self._item_search = None
-        self._item_search_pending = False
-        self._last_action = None
-        self._last_action_pending = False
-        for _request_id, future in pending:
+    def _configured_agent_id(self) -> Optional[str]:
+        raw = str(self.config.get("MC_AGENT_ID") or "").strip()
+        return raw or None
+
+    def _fail_pending(self, code: str, message: str, generation: Optional[int] = None) -> None:
+        failed = []
+        kept: Dict[str, Any] = {}
+        for request_id, item in self._pending.items():
+            future, gen = item
+            if generation is not None and gen != generation:
+                kept[request_id] = item
+                continue
+            failed.append(future)
+        self._pending = kept
+        if generation is None:
+            self._item_search = None
+            self._item_search_pending = False
+            self._last_action = None
+            self._last_action_pending = False
+        for future in failed:
             if not future.done():
                 future.set_result(
                     {
@@ -117,6 +137,17 @@ class MinaretBackend:
                         "evidence": {},
                     }
                 )
+        self._fail_hello(generation, message)
+
+    def _fail_hello(self, generation: Optional[int], message: str) -> None:
+        waiter = self._hello_waiter
+        if waiter is None:
+            return
+        future, gen, _expected = waiter
+        if generation is not None and gen != generation:
+            return
+        if not future.done():
+            future.set_result({"ok": False, "error": message})
 
     def set_chat_handler(self, handler) -> None:
         self._on_chat = handler
@@ -158,6 +189,7 @@ class MinaretBackend:
             "agent_id": self._agent_id,
             "block_scan_known": self._block_scan_known,
             "entity_nearby_known": self._entity_nearby_known,
+            "entity_uuid": self._entity_uuid,
             "ws_url": self._ws_url(),
             "user_wants_connected": self._user_wants_connected,
         }
@@ -183,10 +215,16 @@ class MinaretBackend:
         agent_id = view.get("agent_id")
         if agent_id:
             new_id = str(agent_id)
-            if self._agent_id and new_id != self._agent_id:
+            expected = self._configured_agent_id()
+            if expected and new_id != expected:
+                self._last_error = f"agent_id {new_id} does not match this session"
+                return
+            if not expected and self._agent_id and new_id != self._agent_id:
                 self._last_action = None
                 self._last_action_pending = False
             self._agent_id = new_id
+        if view.get("entity_uuid"):
+            self._entity_uuid = str(view.get("entity_uuid"))
         if self._actor_type == "server_npc" and view.get("username"):
             self._agent_name = str(view.get("username"))
 
@@ -264,8 +302,48 @@ class MinaretBackend:
                 self._online_players.add(str(item["name"]))
         self._capture_actor({"data": snapshot})
 
-    async def _handle_event(self, data: Dict[str, Any]) -> None:
+    def _message_agent_id(self, data: Dict[str, Any]) -> str:
+        inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+        agent = inner.get("agent_id") if isinstance(inner, dict) else None
+        if not agent:
+            agent = data.get("agent_id")
+        return str(agent) if agent else ""
+
+    def _reject_foreign_agent(self, data: Dict[str, Any]) -> bool:
+        claimed = self._message_agent_id(data)
+        if not claimed:
+            return False
+        expected = self._configured_agent_id() or self._agent_id
+        if expected and claimed != expected:
+            self._last_error = f"agent_mismatch: {claimed}"
+            return True
+        return False
+
+    def _complete_hello(self, data: Dict[str, Any], generation: int) -> None:
+        waiter = self._hello_waiter
+        if waiter is None:
+            return
+        future, gen, expected = waiter
+        if gen != generation or future.done():
+            return
+        view = data.get("data") if isinstance(data.get("data"), dict) else data
+        got = str((view or {}).get("agent_id") or "")
+        if got != expected:
+            future.set_result({"ok": False, "error": f"hello agent_id {got or 'missing'} does not match {expected}"})
+            return
+        if isinstance(view, dict) and view.get("world_ready") is False:
+            future.set_result({"ok": False, "error": "server npc is not ready"})
+            return
+        future.set_result({"ok": True, "agent_id": got})
+
+    async def _handle_event(self, data: Dict[str, Any], generation: int) -> None:
+        if generation != self._conn_gen:
+            return
         event = str(data.get("event") or data.get("type") or "message").strip()
+        if self._reject_foreign_agent(data):
+            if event == "hello":
+                self._complete_hello(data, generation)
+            return
         self._push({"type": event, "data": data, "at": time.time()})
         apply_presence_event(data, self._online_players)
         if event == "snapshot":
@@ -294,15 +372,24 @@ class MinaretBackend:
                 "error_code": result.get("error_code"),
             }
             self._last_action_pending = True
-            future = self._pending.pop(request_id, None)
-            if future is not None and not future.done():
+            item = self._pending.get(request_id)
+            if item is None:
+                return
+            future, gen = item
+            if gen != generation:
+                return
+            self._pending.pop(request_id, None)
+            if not future.done():
                 future.set_result(result)
         elif event == "error":
             message = data.get("data") if isinstance(data.get("data"), dict) else data
             self._last_error = str((message or {}).get("error") or (message or {}).get("message") or "bridge error")
+            self._fail_hello(generation, self._last_error)
         else:
             self._capture_actor(data)
             self._apply_handshake(data)
+            if event == "hello":
+                self._complete_hello(data, generation)
         chat = parse_incoming_chat(data, self._bot_name())
         if chat:
             asyncio.create_task(self._emit_chat(chat[0], chat[1]))
@@ -315,9 +402,11 @@ class MinaretBackend:
         if asyncio.iscoroutine(result):
             await result
 
-    async def _listen_loop(self, ws: WebSocketClientProtocol) -> None:
+    async def _listen_loop(self, ws: WebSocketClientProtocol, generation: int) -> None:
         try:
             async for raw in ws:
+                if generation != self._conn_gen:
+                    return
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", errors="ignore")
                 text = (raw or "").strip()
@@ -331,56 +420,97 @@ class MinaretBackend:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(data, dict):
-                    await self._handle_event(data)
+                    await self._handle_event(data, generation)
                 elif isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict):
-                            await self._handle_event(item)
+                            await self._handle_event(item, generation)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self._last_error = str(e)
-            self._push({"type": "system", "text": f"listen ended: {e}", "at": time.time()})
+            if generation == self._conn_gen:
+                self._last_error = str(e)
+                self._push({"type": "system", "text": f"listen ended: {e}", "at": time.time()})
         finally:
-            self._fail_pending("not_connected", "Minaret WebSocket closed")
+            self._fail_pending("not_connected", "Minaret WebSocket closed", generation)
 
     async def _connect_once(self) -> bool:
-        if self._ws is not None and not self._ws.closed:
+        async with self._lock:
+            if self._hello_error:
+                return False
+            if self._ws is not None and not self._ws.closed:
+                existing = self._hello_waiter
+                waiter = existing[0] if existing is not None and not existing[0].done() else None
+                opened = False
+            else:
+                url = self._ws_url()
+                headers = self._headers()
+                self._connecting = True
+                self._last_error = None
+                generation = self._conn_gen + 1
+                try:
+                    ws = await websockets.connect(
+                        url,
+                        extra_headers=headers,
+                        ping_interval=20,
+                        ping_timeout=20,
+                        close_timeout=5,
+                    )
+                except Exception as e:
+                    self._last_error = str(e)
+                    self._ws = None
+                    self._connecting = False
+                    return False
+                self._conn_gen = generation
+                self._ws = ws
+                agent_id = self._configured_agent_id()
+                waiter = None
+                if agent_id:
+                    loop = asyncio.get_running_loop()
+                    waiter = loop.create_future()
+                    self._hello_waiter = (waiter, generation, agent_id)
+                self._listen_task = asyncio.create_task(self._listen_loop(ws, generation))
+                self._push({"type": "system", "text": f"Connected {url}", "at": time.time()})
+                try:
+                    hello = build_hello(
+                        self._bot_name(),
+                        self._next_sequence(),
+                        agent_id=agent_id,
+                        display_name=str(self.config.get("MC_AGENT_NAME") or self._bot_name()) if agent_id else None,
+                        provision=bool(agent_id),
+                        claim_key=self._claim_key(),
+                    )
+                    await ws.send(json.dumps(hello, ensure_ascii=False))
+                except Exception as exc:
+                    self._last_error = str(exc)
+                    self._connecting = False
+                    return False
+                self._connecting = False
+                opened = True
+        if waiter is None:
             return True
-        url = self._ws_url()
-        headers = self._headers()
-        self._connecting = True
-        self._last_error = None
         try:
-            ws = await websockets.connect(
-                url,
-                extra_headers=headers,
-                ping_interval=20,
-                ping_timeout=20,
-                close_timeout=5,
-            )
-            self._ws = ws
-            self._listen_task = asyncio.create_task(self._listen_loop(ws))
-            self._push({"type": "system", "text": f"Connected {url}", "at": time.time()})
-            try:
-                await ws.send(json.dumps(build_hello(self._bot_name(), self._next_sequence()), ensure_ascii=False))
-            except Exception:
-                pass
-            return True
-        except Exception as e:
-            self._last_error = str(e)
-            self._ws = None
+            payload = await asyncio.wait_for(waiter, timeout=8)
+        except asyncio.TimeoutError:
+            if opened:
+                self._last_error = "hello was not acknowledged"
+                self._hello_error = self._last_error
+                self._user_wants_connected = False
             return False
-        finally:
-            self._connecting = False
+        if not payload.get("ok"):
+            if opened:
+                self._last_error = str(payload.get("error") or "hello was rejected")
+                self._hello_error = self._last_error
+                self._user_wants_connected = False
+            return False
+        return True
 
     async def _reconnect_loop(self) -> None:
         delay = 3.0
-        while self._user_wants_connected:
-            async with self._lock:
-                needs = self._user_wants_connected and (self._ws is None or self._ws.closed)
-                ok = await self._connect_once() if needs else True
-            if not self._user_wants_connected:
+        while self._user_wants_connected and not self._hello_error:
+            needs = self._user_wants_connected and (self._ws is None or self._ws.closed)
+            ok = await self._connect_once() if needs else True
+            if not self._user_wants_connected or self._hello_error:
                 break
             if ok and self._ws is not None and not self._ws.closed:
                 await asyncio.sleep(1.0)
@@ -391,11 +521,15 @@ class MinaretBackend:
 
     async def connect(self) -> None:
         async with self._lock:
+            self._hello_error = None
             self._user_wants_connected = True
+            needs = self._ws is None or self._ws.closed
             if self._reconnect_task is None or self._reconnect_task.done():
                 self._reconnect_task = asyncio.create_task(self._reconnect_loop())
-            if self._ws is None or self._ws.closed:
-                await self._connect_once()
+        if needs:
+            ok = await self._connect_once()
+            if self._configured_agent_id() and not ok:
+                raise RuntimeError(self._last_error or "member hello failed")
 
     async def disconnect(self) -> None:
         async with self._lock:
@@ -432,7 +566,11 @@ class MinaretBackend:
         await self._ws.send(encoded)
 
     async def send_say(self, text: str) -> str:
-        await self._send_json({"message": text, "user": self._bot_name()})
+        payload: Dict[str, Any] = {"message": text, "user": self._bot_name()}
+        agent_id = self._configured_agent_id()
+        if agent_id:
+            payload["agent_id"] = agent_id
+        await self._send_json(payload)
         self._push({"type": "chat_out", "text": text, "at": time.time()})
         return text
 
@@ -448,7 +586,12 @@ class MinaretBackend:
         return sent
 
     async def cancel_action(self, target_request_id: str) -> None:
-        await self._send_json(build_cancel(target_request_id, self._next_sequence()))
+        item = self._pending.get(target_request_id)
+        if item is None or item[1] != self._conn_gen:
+            raise WireError("action_rejected", "no such request for this session")
+        await self._send_json(
+            build_cancel(target_request_id, self._next_sequence(), agent_id=self._configured_agent_id())
+        )
 
     def _result(self, action: str, payload: Dict[str, Any]) -> ActionResult:
         ok = bool(payload.get("ok"))
@@ -480,17 +623,48 @@ class MinaretBackend:
             cleaned = validate_action_params(action, params)
         except WireError as exc:
             return ActionResult(ok=False, action=action, error=exc.message, degraded=True, degrade_reason=exc.code)
-        envelope = build_action_request(action, cleaned, self._next_sequence(), goal=self._actor_goal)
+        claim = params.get("claim") if isinstance(params, dict) else None
+        fingerprint = _fingerprint(action, cleaned) if action in {"place_block", "break_block"} else None
+        if fingerprint and fingerprint in self._unresolved:
+            return ActionResult(
+                ok=False,
+                action=action,
+                error="previous world change is unresolved",
+                degraded=True,
+                degrade_reason="needs_reconciliation",
+                extras={"effect": "unknown", "replay": False, "error_code": "needs_reconciliation"},
+            )
+        try:
+            envelope = build_action_request(
+                action,
+                cleaned,
+                self._next_sequence(),
+                goal=self._actor_goal,
+                claim=claim if isinstance(claim, dict) else None,
+                agent_id=self._configured_agent_id(),
+            )
+        except WireError as exc:
+            return ActionResult(ok=False, action=action, error=exc.message, degraded=True, degrade_reason=exc.code)
         request_id = str(envelope["request_id"])
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
-        self._pending[request_id] = future
+        self._pending[request_id] = (future, self._conn_gen)
         try:
             await self._send_json(envelope)
-            payload = await asyncio.wait_for(future, timeout=action_timeout_seconds(action, cleaned))
+            payload = await asyncio.wait_for(future, timeout=self._action_timeout(action, cleaned))
         except asyncio.TimeoutError:
             self._pending.pop(request_id, None)
             await self._cancel_quietly(request_id)
+            if fingerprint:
+                self._unresolved.add(fingerprint)
+                return ActionResult(
+                    ok=False,
+                    action=action,
+                    error="world change result is unknown",
+                    degraded=True,
+                    degrade_reason="needs_reconciliation",
+                    extras={"effect": "unknown", "replay": False, "error_code": "needs_reconciliation"},
+                )
             return ActionResult(
                 ok=False,
                 action=action,
@@ -512,3 +686,40 @@ class MinaretBackend:
             await self.cancel_action(request_id)
         except Exception:
             return
+
+    def _action_timeout(self, action: str, params: Dict[str, Any]) -> float:
+        raw = self.config.get("MINARET_ACTION_TIMEOUT")
+        if raw not in (None, ""):
+            try:
+                return max(0.05, float(raw))
+            except (TypeError, ValueError):
+                pass
+        return action_timeout_seconds(action, params)
+
+    def _claim_key(self) -> Optional[str]:
+        path = self.config.get("GAMEBOT_CLAIM_KEY_FILE") or os.environ.get("GAMEBOT_CLAIM_KEY_FILE")
+        if not path:
+            return None
+        try:
+            text = Path(str(path)).read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return text or None
+
+    async def send_claim_revoke(self, pid: str, tid: str, gen: int, sig: str) -> None:
+        agent_id = self._configured_agent_id()
+        if not agent_id:
+            raise WireError("invalid_params", "agent_id is required")
+        await self._send_json(build_claim_revoke(agent_id, pid, tid, int(gen), sig, self._next_sequence()))
+
+
+def _fingerprint(action: str, params: Dict[str, Any]) -> str:
+    return action + "\n" + json.dumps(params, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _without_claim_key(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _without_claim_key(item) for key, item in value.items() if key != "claim_key"}
+    if isinstance(value, list):
+        return [_without_claim_key(item) for item in value]
+    return value

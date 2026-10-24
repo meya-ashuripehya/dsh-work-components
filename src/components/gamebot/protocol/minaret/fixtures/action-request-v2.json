@@ -1,0 +1,12 @@
+{
+  "protocol_version": 2,
+  "event": "action_request",
+  "request_id": "4f2c0a1e-6b7d-4c8e-9f10-112233445566",
+  "sequence": 4,
+  "timestamp_ms": 1710000000600,
+  "data": {
+    "agent_id": "claude",
+    "action": "look_at",
+    "params": { "x": 1, "y": 64, "z": 2 }
+  }
+}

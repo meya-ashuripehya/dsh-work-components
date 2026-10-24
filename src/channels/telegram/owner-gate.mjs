@@ -24,6 +24,7 @@ export const DENY_MESSAGE = '该请求来自非授权用户，无法使用会更
 export const OPEN_TOOLS = new Set([
   'web_search',
   'web_fetch',
+  'search_history',
   'get_time',
   'get_weather',
   'todo_write',
@@ -32,18 +33,28 @@ export const OPEN_TOOLS = new Set([
   'group_memory',
   'read_channel_attachment',
   'mm_send_image',
-  // 棋类：只读 / 改内存里的棋局，不碰本机文件、命令或桌面。board_open（会下载棋库）、board_close 与 board_reset（会写 / 删本地存档）仍按改动类处理。
-  'board_look',
-  'board_play',
-  // 牌类：card_look 只读当前局面，card_play 只改内存里的这一手。card_open（会下载规则源）、card_close 与 card_reset（会写 / 删本地存档）仍按改动类处理。
-  'card_look',
-  'card_play',
-  // 只读分析：用已下载的辅助引擎算一次（时长上限 10 秒），不改棋局、不下载、不写文件。
-  'board_hint',
+  // 棋类、牌类的看局面和出牌按座位校验，不在这里放行。开局、结束、重开会下载或写存档，仅所有者可用。
 ])
 
+/**
+ * 无论 OPEN_TOOLS 怎么改都只给所有者的工具前缀（会在服务器 / 本机上执行命令或改文件）。
+ * Termalin：SSH 执行命令、读写远程文件。
+ * KiCad：write / manufacturing 模式会改工程文件、出生产文件；只读模式按「MCP 工具仅所有者」的常规规则，同样只给所有者。
+ * Fusion / FreeCAD / MATLAB / ESP-IDF / 串口 / Rhino / Altium：改设计、运行代码、烧录或写真实设备。
+ */
+export const OWNER_ONLY_PREFIXES = Object.freeze(['mcp__termalin__', 'mcp__kicad__', 'mcp__fusion__', 'mcp__freecad__', 'mcp__matlab__', 'mcp__espidf__', 'mcp__serial__', 'mcp__rhino__', 'mcp__altium__', 'mcp__windows__'])
+
+export function isOwnerOnlyTool(name) {
+  const n = String(name ?? '')
+  return OWNER_ONLY_PREFIXES.some((p) => n.startsWith(p))
+}
+
+/** 按前缀对所有人开放的只读工具（DeepSlate 渲染：只读结构文件、生成预览图）。 */
+export const OPEN_PREFIXES = Object.freeze(['mcp__deepslate__'])
+
 export function isOpenTool(name) {
-  return OPEN_TOOLS.has(String(name ?? ''))
+  const n = String(name ?? '')
+  return !isOwnerOnlyTool(n) && (OPEN_TOOLS.has(n) || OPEN_PREFIXES.some((p) => n.startsWith(p)))
 }
 
 function idOf(value) {

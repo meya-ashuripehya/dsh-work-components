@@ -10,7 +10,16 @@ import { createEngine, readInstalled, setBeforeRemove } from './install.mjs'
 
 export const DEFAULT_HINT_MS = 1000
 const engines = new Map()
+const tails = new Map()
 let factory = createEngine
+
+/** 同一棋种共用一个引擎进程，分析请求排队，避免两盘棋的局面串在一起。 */
+function enqueue(game, fn) {
+  const prev = tails.get(game) || Promise.resolve()
+  const run = prev.catch(() => {}).then(fn)
+  tails.set(game, run.catch(() => {}))
+  return run
+}
 
 /** 测试用：替换引擎构造（模拟进程）。传 null 还原。 */
 export function setEngineFactory(fn) {
@@ -147,7 +156,7 @@ export async function computeHints(options = {}) {
     const position = positionFor(ctx)
     if (!position) return null
     const ms = options.ms || DEFAULT_HINT_MS
-    const raw = await engine.analyze(position, ms)
+    const raw = await enqueue(ctx.game, () => engine.analyze(position, ms))
     if (!Array.isArray(raw) || !raw.length) return null
     const aiToMove = ctx.turnSide === ctx.aiSide
     const candidates = []

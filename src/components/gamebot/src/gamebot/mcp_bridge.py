@@ -85,10 +85,28 @@ def tool_create_session_from_config(game: str) -> str:
     return _req("POST", f"/v1/games/{game}/session")
 
 
+_MEMBER_SESSION = re.compile(r"^minecraft-[a-z0-9][a-z0-9-]{0,31}$")
+_LEGACY_MEMBER_ERROR = (
+    "minecraft-<member> sessions are not available through the legacy gamebot MCP bridge. "
+    "Use the chatroom mc_* tools."
+)
+
+
+def _legacy_member_block(session_id: str) -> Optional[str]:
+    if _MEMBER_SESSION.fullmatch((session_id or "").strip()):
+        return _dump({"ok": False, "error": _LEGACY_MEMBER_ERROR})
+    return None
+
+
 def tool_create_session(game: str, driver: str, config_json: str = "{}", session_id: str = "") -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     config, err = _parse_obj(config_json, "config_json")
     if err:
         return _dump({"ok": False, "error": err})
+    if isinstance(config, dict) and ("MC_AGENT_ID" in config or "MC_MEMBER_MANAGED" in config):
+        return _dump({"ok": False, "error": _LEGACY_MEMBER_ERROR})
     body: Dict[str, Any] = {"game": game, "driver": driver, "config": config}
     if (session_id or "").strip():
         body["session_id"] = session_id.strip()
@@ -96,26 +114,44 @@ def tool_create_session(game: str, driver: str, config_json: str = "{}", session
 
 
 def tool_connect(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("POST", f"/v1/sessions/{session_id}/connect")
 
 
 def tool_disconnect(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("POST", f"/v1/sessions/{session_id}/disconnect")
 
 
 def tool_probe(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("POST", f"/v1/sessions/{session_id}/probe")
 
 
 def tool_observe(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("GET", f"/v1/sessions/{session_id}/observe")
 
 
 def tool_capabilities(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("GET", f"/v1/sessions/{session_id}/capabilities")
 
 
 def tool_action(session_id: str, action: str, params_json: str = "{}", require_confirm: bool = False) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     params, err = _parse_obj(params_json, "params_json")
     if err:
         return _dump({"ok": False, "error": err})
@@ -127,14 +163,23 @@ def tool_action(session_id: str, action: str, params_json: str = "{}", require_c
 
 
 def tool_events(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("GET", f"/v1/sessions/{session_id}/events")
 
 
 def tool_brain_status(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("GET", f"/v1/sessions/{session_id}/brain")
 
 
 def tool_brain_decide(session_id: str, goal: str = "", player: str = "", message: str = "") -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     body: Dict[str, Any] = {}
     if (goal or "").strip():
         body["goal"] = goal
@@ -152,6 +197,9 @@ def tool_brain_task(
     interrupt: bool = True,
     execute: bool = True,
 ) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     body: Dict[str, Any] = {"goal": goal, "interrupt": bool(interrupt), "execute": bool(execute)}
     if max_steps and int(max_steps) > 0:
         body["max_steps"] = int(max_steps)
@@ -159,6 +207,9 @@ def tool_brain_task(
 
 
 def tool_brain_chat(session_id: str, player: str, message: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req(
         "POST",
         f"/v1/sessions/{session_id}/brain/chat",
@@ -167,14 +218,23 @@ def tool_brain_chat(session_id: str, player: str, message: str) -> str:
 
 
 def tool_brain_cancel(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("POST", f"/v1/sessions/{session_id}/brain/cancel")
 
 
 def tool_memory(session_id: str) -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req("GET", f"/v1/sessions/{session_id}/memory")
 
 
 def tool_memory_search(session_id: str, query: str = "") -> str:
+    blocked = _legacy_member_block(session_id)
+    if blocked:
+        return blocked
     return _req(
         "POST",
         f"/v1/sessions/{session_id}/memory/search",
@@ -231,7 +291,7 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "gamebot_create_session",
-        "description": "POST /v1/sessions — create/overwrite a session. config_json is a JSON object string.",
+        "description": "Legacy. POST /v1/sessions — create/overwrite a session. Cannot create minecraft-<member> NPC sessions; those use chatroom mc_* tools.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -249,7 +309,7 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "gamebot_connect",
-        "description": "POST /v1/sessions/{id}/connect — connect the session driver.",
+        "description": "Legacy. POST /v1/sessions/{id}/connect. Refuses minecraft-<member> sessions.",
         "inputSchema": {
             "type": "object",
             "properties": {"session_id": _prop("string", "Session id")},

@@ -17,6 +17,7 @@ LOOK_AT = "minecraft.player.look_at"
 COLLECT = "minecraft.world.collect"
 CRAFT = "minecraft.inventory.craft"
 PLACE_BLOCK = "minecraft.world.place_block"
+PROBE_BLOCKS = "minecraft.world.probe_blocks"
 INTERACT = "minecraft.world.interact"
 OPEN_CONTAINER = "minecraft.container.open"
 TRANSFER_ITEM = "minecraft.container.transfer"
@@ -25,6 +26,7 @@ DROP_ITEM = "minecraft.inventory.drop"
 USE_ITEM = "minecraft.item.use"
 USE_ITEM_ON_BLOCK = "minecraft.world.use_item_on_block"
 ATTACK_BLOCK = "minecraft.world.attack_block"
+BREAK_BLOCK = "minecraft.world.break_block"
 ENTITY_ATTACK = "minecraft.entity.attack"
 PLAYER_ACTIVITY = "minecraft.player.activity.observe"
 CONTAINER_FIND_ITEM = "minecraft.container.find_item"
@@ -56,6 +58,7 @@ ACTION_REQUIRED_CAPABILITY = {
     "collect": COLLECT,
     "craft": CRAFT,
     "place_block": PLACE_BLOCK,
+    "probe_blocks": PROBE_BLOCKS,
     "interact": INTERACT,
     "open_container": OPEN_CONTAINER,
     "transfer_item": TRANSFER_ITEM,
@@ -64,6 +67,7 @@ ACTION_REQUIRED_CAPABILITY = {
     "use_item": USE_ITEM,
     "use_item_on_block": USE_ITEM_ON_BLOCK,
     "attack_block": ATTACK_BLOCK,
+    "break_block": BREAK_BLOCK,
     "attack_entity": ENTITY_ATTACK,
     "find_item": CONTAINER_FIND_ITEM,
     "vision_observe": VISION_OBSERVE,
@@ -78,6 +82,7 @@ SEMANTIC_ACTIONS = (
     "collect",
     "craft",
     "place_block",
+    "probe_blocks",
     "interact",
     "open_container",
     "transfer_item",
@@ -86,6 +91,7 @@ SEMANTIC_ACTIONS = (
     "use_item",
     "use_item_on_block",
     "attack_block",
+    "break_block",
     "attack_entity",
     "find_item",
 )

@@ -350,10 +350,10 @@ function tunnel(proxyUrl, host, port, timeoutMs) {
   })
 }
 
-async function request(url, proxy, timeoutMs) {
+async function request(url, proxy, timeoutMs, extraHeaders) {
   const u = new URL(url)
   const p = proxyFor(u, proxy)
-  const headers = { 'user-agent': 'dsh-workbench', accept: '*/*' }
+  const headers = { 'user-agent': 'dsh-workbench', accept: '*/*', ...(extraHeaders || {}) }
   let opts = { method: 'GET', headers, agent: false }
   let mod = u.protocol === 'https:' ? https : http
   if (p && u.protocol === 'https:') {
@@ -382,8 +382,41 @@ async function request(url, proxy, timeoutMs) {
 
 function mb(n) { return (n / 1048576).toFixed(1) }
 
-/** 下载到 dest（先写 .part 再改名），跟随重定向，失败重试。onProgress(received, total|null)。 */
-export async function download(url, dest, { proxy, onProgress, retries = 3, timeoutMs = 60000, log } = {}) {
+/** HTTP 错误：带 status；403 / 429 且限流头显示用完时 rateLimited = true。403 / 404 / 429 不重试。 */
+function httpError(res, url) {
+  const status = res.statusCode
+  const h = res.headers || {}
+  const rateLimited = status === 429 || (status === 403 && (h['x-ratelimit-remaining'] === '0' || /rate limit/i.test(res.statusMessage || '')))
+  return Object.assign(new Error(`HTTP ${status}：${url}`), { status, rateLimited, noRetry: status === 403 || status === 404 || status === 429 })
+}
+
+/** 失败原因（中文，不含密钥；网址只留主机）。 */
+export function downloadReason(e, what = 'GitHub') {
+  if (e?.rateLimited) return `${what} 未登录请求已达每小时上限（HTTP ${e.status} rate limit，多见于多人共用的代理出口，约一小时后恢复）`
+  if (e?.status === 403) return `${what} 拒绝访问（HTTP 403）`
+  if (e?.status === 404) return `${what} 找不到该地址（HTTP 404）`
+  if (e?.status) return `${what} 返回 HTTP ${e.status}`
+  const m = String(e?.message || e || '未知错误')
+  if (/代理/.test(m)) return m
+  if (/ECONNREFUSED/.test(m)) return '连接被拒绝（代理或网络未就绪？）'
+  if (/ETIMEDOUT|超时|无响应|无数据/.test(m)) return '连接超时'
+  if (/ENOTFOUND|EAI_AGAIN/.test(m)) return '无法解析域名（网络未连接？）'
+  return m.replace(/https?:\/\/\S+/g, (u) => { try { return new URL(u).hostname } catch { return '' } }).slice(0, 160)
+}
+
+/**
+ * 只取第一跳重定向的目标（不跟随、不下载正文），例如 github.com/<repo>/releases/latest → …/releases/tag/<tag>。
+ * 与 download 用同一个代理设置。非 3xx 时抛 httpError。
+ */
+export async function resolveRedirect(url, { proxy, timeoutMs = 20000, headers } = {}) {
+  const res = await request(url, proxy, timeoutMs, headers)
+  res.resume()
+  if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) return new URL(res.headers.location, url).toString()
+  throw httpError(res, url)
+}
+
+/** 下载到 dest（先写 .part 再改名），跟随重定向，失败重试。onProgress(received, total|null)。headers：附加请求头。 */
+export async function download(url, dest, { proxy, onProgress, retries = 3, timeoutMs = 60000, log, headers } = {}) {
   await mkdir(dirname(dest), { recursive: true })
   const signal = currentAbortSignal()
   let lastError
@@ -396,13 +429,13 @@ export async function download(url, dest, { proxy, onProgress, retries = 3, time
     try {
       let current = url
       for (let hop = 0; hop < 10; hop++) {
-        res = await raceAbort(request(current, proxy, timeoutMs), signal)
+        res = await raceAbort(request(current, proxy, timeoutMs, headers), signal)
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume()
           current = new URL(res.headers.location, current).toString()
           continue
         }
-        if (res.statusCode !== 200) { res.resume(); throw new Error(`HTTP ${res.statusCode}：${current}`) }
+        if (res.statusCode !== 200) { res.resume(); throw httpError(res, current) }
         const total = Number(res.headers['content-length']) || null
         let received = 0
         onProgress?.(0, total)
@@ -430,6 +463,7 @@ export async function download(url, dest, { proxy, onProgress, retries = 3, time
       }
       lastError = error
       log?.(`下载失败（第 ${attempt}/${retries} 次）：${error.message}`)
+      if (error?.noRetry) break
       if (attempt < retries) await raceAbort(new Promise((r) => setTimeout(r, 2000 * attempt)), signal).catch(() => {})
     } finally {
       signal?.removeEventListener('abort', onAbort)

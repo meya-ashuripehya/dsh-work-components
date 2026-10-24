@@ -1,0 +1,43 @@
+diff --git a/lib/config.js b/lib/config.js
+--- a/lib/config.js
++++ b/lib/config.js
+@@ -16,6 +16,8 @@ const routeSchema = Schema.object({
+     provider: Schema.string(),
+     model: Schema.string(),
+     maxTokens: Schema.natural(),
++    // [dsh-workbench patch] per-bot reasoning effort, same field new sessions get from /model.
++    reasoningEffort: Schema.string(),
+ });
+ export const Config = Schema.object({
+     agent: Schema.object({
+diff --git a/lib/agent-manager.js b/lib/agent-manager.js
+--- a/lib/agent-manager.js
++++ b/lib/agent-manager.js
+@@ -75,6 +75,8 @@ export function optionsFor(route) {
+         options.model = route.model;
+     if (route.maxTokens !== undefined)
+         options.maxTokens = route.maxTokens;
++    if (route.reasoningEffort)
++        options.reasoningEffort = route.reasoningEffort;
+     return Object.keys(options).length > 0 ? options : undefined;
+ }
+ /**
+diff --git a/lib/model-selection.js b/lib/model-selection.js
+--- a/lib/model-selection.js
++++ b/lib/model-selection.js
+@@ -101,8 +101,12 @@ export class ChannelModelSelectionController {
+             };
+         }
+         const { provider, model } = agent.options;
+-        if (provider && model)
+-            return { provider, model };
++        if (provider && model) {
++            return {
++                provider,
++                model,
++                ...(agent.options.reasoningEffort ? { reasoningEffort: ReasoningEffortId(String(agent.options.reasoningEffort)) } : {}),
++            };
++        }
+         const defaults = agent.ctx.get('agentDefaultModel')?.currentSelection();
+         if (!defaults?.provider || !defaults.model)
+             return undefined;

@@ -81,12 +81,12 @@ test('a map place is sent as sendVenue and its preview image is not forwarded', 
   const calls = []
   await router.deliverTurnImages('s1', 3, {
     adapter: { upstream: { requestOk: async (method, body) => { calls.push({ method, body }); return { data: { ok: true } } } } },
-    target: { conversationId: '6153059771' },
+    target: { conversationId: '9000000001' },
   })
   assert.equal(router.deliveredImages, true)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].method, 'sendVenue')
-  assert.equal(calls[0].body.chat_id, '6153059771')
+  assert.equal(calls[0].body.chat_id, '9000000001')
   assert.equal(calls[0].body.latitude, 30.569)
   assert.equal(calls[0].body.longitude, 104.057)
   assert.equal(calls[0].body.title, '蜜雪冰城')
@@ -103,4 +103,44 @@ test('a map place is sent as sendVenue and its preview image is not forwarded', 
   router.dispose()
   assert.equal(router.disposed, true)
   assert.equal(router.pendingPlaces.size, 0)
+})
+
+test('fanout-style adapter uses upstreamFor(accountId) for sendVenue', async () => {
+  class FanRouter {
+    constructor() {
+      this.options = { replyContexts: { getTurn: () => ({}) }, logger: { warn() {} } }
+      this.active = new Map()
+      this.currentTurns = new Map()
+      this.pendingImages = new Map()
+    }
+    collectToolResultImages() {}
+    async deliverTurnImages() { this.deliveredImages = true }
+    dispose() {}
+  }
+  installMapPlaceDelivery(FanRouter)
+  const router = new FanRouter()
+  router.collectToolResultImages({ id: 's1' }, placeEvent())
+  const calls = []
+  const warns = []
+  router.options.logger.warn = (msg) => warns.push(String(msg))
+  const childUpstream = {
+    requestOk: async (method, body) => { calls.push({ method, body, account: 'chatgpt' }); return { data: { ok: true } } },
+  }
+  await router.deliverTurnImages('s1', 3, {
+    adapter: {
+      // no .upstream — like createTelegramFanout facade
+      upstreamFor(target) {
+        if (target?.accountId === 'chatgpt') return childUpstream
+        return null
+      },
+      send() {},
+    },
+    target: { conversationId: '6153059771', accountId: 'chatgpt' },
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].method, 'sendVenue')
+  assert.equal(calls[0].body.chat_id, '6153059771')
+  assert.equal(calls[0].body.title, '蜜雪冰城')
+  assert.equal(warns.some((w) => w.includes('upstream unavailable')), false)
+  assert.equal(router.deliveredImages, true)
 })

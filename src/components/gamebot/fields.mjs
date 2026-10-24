@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { activeAgents } from './agents.mjs'
 
 export const PROVIDERS = ['openai', 'deepseek', 'xai', 'anthropic', 'ollama', 'custom']
 export const PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages']
@@ -66,15 +67,23 @@ export const GAME_FIELDS = {
     { cfg: 'NEOFORGE_WS_URL', label: 'NeoForge WS 地址', kind: 'text', def: 'ws://127.0.0.1:8765' },
     { cfg: 'NEOFORGE_WS_AUTH_USER', label: 'NeoForge WS 用户', kind: 'text', def: '' },
     { cfg: 'NEOFORGE_WS_AUTH_PASS', label: 'NeoForge WS 密码', kind: 'password', def: '' },
-    { cfg: 'MC_USERNAME', label: '机器人用户名', kind: 'text', def: 'Player' },
+    { cfg: 'MC_AUTO_CONNECT', label: '进世界自动连接全部 AI', kind: 'select', options: ONOFF, def: '0', desc: '关闭（默认）时，NPC 只在该 AI 于聊天室调用 mc_connect 时生成，用完可 mc_disconnect 下线；打开后保持旧行为：启用 Minecraft 时一次性把全部已启用成员连进世界。' },
+    { cfg: 'MC_AGENTS', label: 'Minecraft AI', kind: 'mcagents', def: '', desc: '每行一个 Minecraft AI。编码从已启用的聊天室席位选择，与席位 id 相同，只读，保存后不可修改。名称即游戏内 NPC 名，最多 12 个显示宽度（一个汉字算 2），允许重名。删除只标记为已移除并下线，可恢复。编码对不上现有席位的旧行会标红，需要重新选择。只有已启用、未移除且对应已启用聊天室成员的 AI 会连接。修改后请点击「保存」。' },
+    { cfg: 'MC_CHATROOM', label: '绑定聊天室', kind: 'mcroom', def: '', desc: '选择 Minecraft AI 所在的聊天室房间（以后游戏内发言写入这里）。保存本卡或启用 Minecraft 时自动同步：房间成员按「编码 = 成员 id」自动建立对应的 Minecraft AI（复制配置，不修改成员）；已启用但不在成员中的 Minecraft AI 自动加入成员。已删除的 AI 不会重新加入，也不会从成员中移除。选择「未绑定（自动新建）」时自动新建房间「Minecraft」。注意：聊天室成员对所有房间通用。' },
+    { cfg: 'MC_USERNAME', label: '机器人用户名（旧）', kind: 'text', def: 'Player', hidden: true, desc: '已由「Minecraft AI」的名称取代，仅用于迁移；下发时取第一个已启用 AI 的名称。' },
+    { cfg: 'MC_MEMBER_IDS', label: '成员 NPC（旧）', kind: 'text', def: '', hidden: true, desc: '已由「Minecraft AI」取代，仅用于迁移；下发时由已启用的 AI 编码生成。' },
     { cfg: 'MC_VERSION', label: 'MC 版本', kind: 'text', def: '1.21.1' },
     { cfg: 'MC_ARCHIVE', label: '存档 / 档案名', kind: 'text', def: '' },
     { cfg: 'MC_CHAT_FORWARD', label: '转发游戏聊天', kind: 'select', options: ONOFF, def: '1' },
     { cfg: 'MC_USE_TOOLS', label: '允许工具动作', kind: 'select', options: ONOFF, def: '1' },
     { cfg: 'MC_CHAT_PREFIX', label: '聊天触发前缀', kind: 'text', def: '', desc: '留空 = 所有聊天都处理。' },
     { cfg: 'MC_CHAT_COOLDOWN_MS', label: '聊天冷却（毫秒）', kind: 'text', def: '3000' },
-    { cfg: 'MC_MODS_DIR', label: 'mods 目录', kind: 'text', def: '', desc: '安装 NeoForge 模组时使用的 .minecraft/versions/<版本>/mods。' },
-    ...llmBlock(BASE_LLM),
+    {
+      cfg: 'MC_MODS_DIR', label: 'mods 目录', kind: 'text', def: '',
+      desc: 'NeoForge 1.21.1 的 mods 文件夹（填游戏 / 实例目录也行，会自动找到其中的 mods）。「打包下载」用包内自带的 Minaret 源码在本机构建 jar 并放进这里：旧版先备份再替换；需要已装 JDK（17+，推荐 21）并能联网（下载 Gradle 与 NeoForge，走「通用 → 下载代理」）。构建好的 jar 路径会显示在按钮旁。装完重启 Minecraft。',
+      action: { path: '/addon', label: '打包下载并安装 Minaret 模组', busy: '正在构建 Minaret（首次需下载 Gradle 与 NeoForge，可能要几分钟）…', ready: '把包内自带的 Minaret 源码在本机构建成 jar，并放进上方 mods 目录', need: '请先填写 mods 目录' },
+    },
+    // Minecraft 成员 NPC 完全由各自的聊天室成员 AI 控制，沿用聊天室模型设置；不再有决策 / 聊天双脑与记忆参数。
   ],
   civilization: [
     { cfg: 'CIV6_MCP_PROJECT', label: 'civ6-mcp 项目目录', kind: 'text', def: '', desc: 'civ6-mcp 仓库所在目录；留空则沿用 GameBot 已存的值。' },
@@ -128,6 +137,7 @@ export function toGameBotPatch(game, cfg) {
   for (const f of GAME_FIELDS[game]) {
     const v = String(cfg[settingKey(game, f.cfg)] ?? f.def ?? '')
     if (f.cfg === 'driver') { driver = v || f.def; continue }
+    if (f.kind === 'mcagents' || f.kind === 'mcroom') continue // 表本身不下发；下面派生 MC_MEMBER_IDS / MC_USERNAME
     if (f.provider) {
       // 服务商密钥跨游戏共用：只在填写时更新，留空不清掉已存的。
       if (v.trim()) {
@@ -140,6 +150,11 @@ export function toGameBotPatch(game, cfg) {
     }
     if (f.kind === 'textarea' && !v.trim()) continue // 留空 = GameBot 默认人设
     config[f.cfg] = v
+  }
+  if (game === 'minecraft') {
+    const active = activeAgents(cfg)
+    config.MC_MEMBER_IDS = active.map((a) => a.code).join(',')
+    if (active.length) config.MC_USERNAME = active[0].name
   }
   if (game === 'minecraft' && driver && driver !== 'minaret' && !mineflayerBridgeAvailable()) driver = 'minaret'
   const body = { config }

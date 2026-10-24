@@ -18,6 +18,11 @@ from gamebot.registry import create_driver, normalize_driver
 from gamebot.router import gate_action
 
 
+def _member_managed(rec: SessionRecord) -> bool:
+    value = str((rec.session.config or {}).get("MC_MEMBER_MANAGED") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 class SessionRecord:
     def __init__(self, session: GameSession, driver: GameDriver, manager: "SessionManager") -> None:
         self.session = session
@@ -103,7 +108,8 @@ class SessionManager:
         obs = await rec.driver.connect()
         rec.last_observation = obs
         rec.session.connected = obs.connected
-        rec.brain.start()
+        if not _member_managed(rec):
+            rec.brain.start()
         if rec.companion is not None:
             rec.companion.start()
         return obs

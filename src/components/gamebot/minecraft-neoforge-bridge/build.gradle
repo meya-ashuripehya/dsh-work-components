@@ -1,0 +1,71 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '1.0.11'
+}
+
+version = mod_version
+group = mod_group
+base.archivesName = mod_id
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = uri('libs/m2') }
+    mavenCentral()
+}
+
+neoForge {
+    version = neoforge_version
+    mods {
+        minaret {
+            sourceSet sourceSets.main
+        }
+    }
+    unitTest {
+        enable()
+        testedMod = mods.minaret
+    }
+}
+
+sourceSets.main.resources {
+    srcDir('src/generated/resources')
+}
+
+dependencies {
+    compileOnly('com.google.code.gson:gson:2.10.1')
+    jarJar(implementation('org.java-websocket:Java-WebSocket:1.5.7')) {
+        version {
+            strictly '[1.5.7,1.6)'
+            prefer '1.5.7'
+        }
+    }
+    testImplementation('com.google.code.gson:gson:2.10.1')
+    testImplementation('org.mockito:mockito-core:5.14.2') {
+        exclude group: 'org.objenesis', module: 'objenesis'
+    }
+    testImplementation files('libs/objenesis-3.3.jar')
+    testImplementation(platform('org.junit:junit-bom:5.10.2'))
+    testImplementation('org.junit.jupiter:junit-jupiter')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
+}
+
+jar {
+    manifest {
+        attributes([
+                'Specification-Title'  : mod_id,
+                'Specification-Vendor' : 'TRIX',
+                'Specification-Version': '1',
+                'Implementation-Title' : project.name,
+                'Implementation-Version': project.version,
+                'Implementation-Vendor': 'TRIX'
+        ])
+    }
+}
