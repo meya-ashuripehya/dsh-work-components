@@ -45,21 +45,28 @@ NPC 模式的 hello/snapshot 带 `actor_type=server_npc` 和 `agent_id`。`scree
 
 - `pos`（必填，整数坐标）：要放方块的位置。
 - `block_id`（必填，`namespace:path`）：要放的方块。对应的方块物品必须在快捷栏 0–8 里；只在背包其余槽位返回 `unsupported`，完全没有返回 `item_not_found`。
-- `face`（可选）：指定从哪一侧的相邻方块上点击放置；缺省按 下、北、南、西、东、上 找第一个已加载且非空气、不可替换的相邻方块，找不到返回 `action_rejected`。
-- `state`（可选，字符串字典，键值都是小写 `[a-z0-9_]+`，最多 16 项）：放完后读回核对，不一致时直接写入，并在证据 `state_adjusted` 里标 `true`、`effect` 为 `unverified`（写入后仍对不上时）或 `confirmed`。
-- `max_distance`（默认 4.5，上限 6）：到支撑方块的可触及距离，同样检查视线。
+- `face`（可选）：**支撑方块位于目标 `pos` 的哪一侧**（从 `pos` 指向支撑块的方向）。实际被点击的面是其反方向，结果证据里用 `support_pos` / `clicked_face` 区分。
+- `hit_offset`（可选，0–1 相对支撑块局部坐标）：点击位置；会传入原版 `BlockItem.place`。
+- `state`（可选，最多 16 项）：**只约束列出的属性**（部分匹配），不是整块默认状态。原版单次放置无法产生的组合返回 `state_unachievable`。
+- `max_distance`（默认 4.5，上限 6）：到点击点的距离与视线。
+- `auto_move`（默认 `true`）：为 `true` 时，距离/视线不足会先调用内部移动服务走到有限候选站位之一，再执行**一次**放置；为 `false` 时仅原地放置（与旧「不自动走过去」行为兼容）。
+- `exclusions`（可选）：禁入轴对齐盒数组，移动阶段规划与跟随都会避开；省略时证据标明未应用外部禁入区。
 
-目标位置已经是同一方块（且 `state` 一致）时幂等成功，`effect=observed`，证据 `already_present:true`。目标位置有其他实体方块返回 `position_occupied`，证据里有 `actual_block`；空气、水、草等可替换方块可以直接放。
+默认 `auto_move=true` 时与 `move_to` 同为 30 秒长动作超时；`auto_move=false` 为 5 秒。到位后若距离/视线/材料/目标占用复检失败，**不会**再次导航或放置。`effect=unverified` 表示已提交放置但读回未完全确认，不能当作成功继续施工。
+
+目标位置已满足 `block_id` 与请求的 `state` 时幂等成功，`effect=observed`，证据 `already_present:true`，不移动、不扣料。目标被不可替换方块占用返回 `position_occupied`。
 
 `break_block` 参数同 `attack_block`，另加必填 `expected_block`。目标位置的方块与 `expected_block` 不一致时不改世界，返回 `state_mismatch`，证据里有 `expected_block` 和 `actual_block`；一致时走与 `attack_block` 相同的挖掘流程（30 秒超时）。
 
 `action_request.data` 可带可选的 `claim` 对象（上限 1 KiB）。第一版模组只把它原样放进 `action_result.evidence.claim` 回显，不做校验；签发与核对在协调进程一侧。
 
-`select_item` 与 `drop_item` 只接受快捷栏槽位 0–8。背包其余槽位返回 `unsupported`，不会静默搬运。`use_item.mode` 为 `once` 或 `until_finished`。普通动作 5 秒超时，`move_to`、挖掘和持续使用 30 秒。待处理动作最多 32 个，每秒最多 10 个。
+`move_to` 可选 `arrival_tolerance`（0–2，默认约 0.45）与 `exclusions`（同放置）。到达以实际脚部坐标与容差为准，并确认导航已停止；不再使用旧的 1.6 格宽松半径。
+
+`select_item` 与 `drop_item` 只接受快捷栏槽位 0–8。背包其余槽位返回 `unsupported`，不会静默搬运。`use_item.mode` 为 `once` 或 `until_finished`。普通动作 5 秒超时；`move_to`、`place_block`（`auto_move=true`）、挖掘和持续使用 30 秒。待处理动作最多 32 个，每秒最多 10 个。
 
 `action_result.ok` 只表示流程完成。`effect` 为 `confirmed|observed|unverified|failed`。
 
-稳定错误码：`invalid_params`、`not_connected`、`client_not_ready`、`item_not_found`、`block_unloaded`、`out_of_reach`、`line_of_sight_blocked`、`unsupported`、`unsupported_adapter`、`rate_limited`、`timeout`、`action_rejected`、`position_occupied`、`state_mismatch`、`internal_error`。
+稳定错误码：`invalid_params`、`not_connected`、`client_not_ready`、`item_not_found`、`block_unloaded`、`out_of_reach`、`line_of_sight_blocked`、`unsupported`、`unsupported_adapter`、`rate_limited`、`timeout`、`action_rejected`、`position_occupied`、`state_mismatch`、`state_unachievable`、`internal_error`。
 
 ## 其他玩家
 

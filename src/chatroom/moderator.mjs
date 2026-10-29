@@ -236,7 +236,7 @@ export function truncationNote(seat, out, maxTokens) {
   return `${seat?.name || '成员'} 的输出达到长度上限（${capText}）被截断${dropped ? `，${dropped} 个工具调用未执行` : '，可能有工具调用未执行'}。如经常出现，可在聊天室设置中调高「单次输出上限」（0 或不填表示不设上限）。`
 }
 
-export function createModerator({ store, getRoomConfig, resolvePersona = () => '', call, emit = () => {}, tg = noopTg, runCursor, toolkit = null, isVision = async () => false, onVisionRejected = () => {}, saveRoomControl = null, games = null, logCall = null, pendingDescriptions = null, presetNames = null, now = () => Date.now(), streamRetryMs = STREAM_DROP_RETRY_MS, ensureContext = null, compactContext = null, contextWindowOf = null }) {
+export function createModerator({ store, getRoomConfig, resolvePersona = () => '', call, emit = () => {}, tg = noopTg, runCursor, toolkit = null, isVision = async () => false, onVisionRejected = () => {}, saveRoomControl = null, games = null, logCall = null, pendingDescriptions = null, presetNames = null, now = () => Date.now(), streamRetryMs = STREAM_DROP_RETRY_MS, ensureContext = null, compactContext = null, contextWindowOf = null, resolveMcInfo = null }) {
   /** 调试日志（只记元数据）；失败不影响聊天。 */
   const logStep = (x) => { try { void Promise.resolve(logCall?.(x)).catch(() => {}) } catch {} }
   /** 调用一次模型并记日志；截断丢工具时写一条只给所有者看的系统提示。 */
@@ -465,7 +465,11 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
     let attachmentMeta
     // 只有房间里确有附件时才读附件索引（描述 / 转写在入库后补上）
     if (attachOn(cfg) && history.some((m) => (Array.isArray(m.attachments) && m.attachments.length) || (Array.isArray(m.videoLinks) && m.videoLinks.length))) { try { attachmentMeta = await toolkit.attachments.list(roomId) } catch { attachmentMeta = undefined } }
-    return buildPrompt({ seat: { ...seat, presetPersona }, seats: cfg.seats, userName: cfg.userName, rules: cfg.rules, messages: history, maxHistory: cfg.maxHistory || 0, mainName: main?.name, away: awayNames(roomId, cfg.seats, seat.id), extraUser, toolsInfo, vision: !!vision && cfg.attachments?.enabled !== false, visionRelay, imageWindow, attachmentMeta, binned, videoInput, contextSummary, contextUntilSeq })
+    let mcInfo = null
+    if (typeof resolveMcInfo === 'function') {
+      try { mcInfo = await resolveMcInfo(seat) } catch { mcInfo = null }
+    }
+    return buildPrompt({ seat: { ...seat, presetPersona }, seats: cfg.seats, userName: cfg.userName, rules: cfg.rules, messages: history, maxHistory: cfg.maxHistory || 0, mainName: main?.name, away: awayNames(roomId, cfg.seats, seat.id), extraUser, toolsInfo, vision: !!vision && cfg.attachments?.enabled !== false, visionRelay, imageWindow, attachmentMeta, binned, videoInput, contextSummary, contextUntilSeq, mcInfo })
   }
 
   /** 房间回收站里（且确实存在）的卡片消息 id。 */

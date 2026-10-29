@@ -2,6 +2,7 @@ package com.trix.gamebot.bridge.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.trix.gamebot.bridge.MinaretMod;
 import com.trix.gamebot.bridge.config.CommonBridgeConfig;
 import com.trix.gamebot.bridge.entity.AgentEntity;
 import com.trix.gamebot.bridge.entity.AgentRecord;
@@ -19,12 +20,27 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /** 成员 NPC 的生成、查询和认领。旧的单 NPC 不会自动分给任何成员。 */
+@EventBusSubscriber(modid = MinaretMod.MOD_ID)
 public final class AgentCommands {
+    private static final Logger LOGGER = LoggerFactory.getLogger(AgentCommands.class);
+
     private AgentCommands() {
+    }
+
+    @SubscribeEvent
+    public static void onRegisterCommands(RegisterCommandsEvent event) {
+        register(event.getDispatcher());
     }
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -51,6 +67,13 @@ public final class AgentCommands {
                                                 context.getSource(),
                                                 StringArgumentType.getString(context, "agent_id")
                                         ))))
+                        .then(Commands.literal("heal")
+                                .executes(context -> healAll(context.getSource()))
+                                .then(Commands.argument("agent_id", StringArgumentType.word())
+                                        .executes(context -> healOne(
+                                                context.getSource(),
+                                                StringArgumentType.getString(context, "agent_id")
+                                        ))))
                         .then(Commands.literal("status")
                                 .executes(context -> list(context.getSource()))
                                 .then(Commands.argument("agent_id", StringArgumentType.word())
@@ -73,7 +96,12 @@ public final class AgentCommands {
         return resolve(server, AgentRegistry.get(server).find(agentId));
     }
 
-    /** 已有记录但实体不在世界里时不补生成。没有记录时在主世界出生点创建一个。 */
+    /**
+     * 保证这个成员有一只可用的 NPC。
+     * 已有实体（含先强制加载上次坐标所在区块）→ 直接复用。
+     * 只有存档记录、实体确实不在 → 清掉幽灵记录并在原位（或出生点）补一只。
+     * 没有任何记录 → 在主世界出生点创建。
+     */
     public static String ensure(MinecraftServer server, String agentId, String displayName) {
         if (!AgentMessages.validAgentId(agentId)) {
             return "invalid";
@@ -81,7 +109,10 @@ public final class AgentCommands {
         AgentRegistry registry = AgentRegistry.get(server);
         AgentRecord record = registry.find(agentId);
         if (record != null) {
-            return resolve(server, record) == null ? "agent_not_available" : null;
+            if (resolve(server, record) != null) {
+                return null;
+            }
+            return respawnMissing(server, agentId, displayName, record);
         }
         ServerLevel level = server.overworld();
         BlockPos spawn = level.getSharedSpawnPos();
@@ -107,9 +138,15 @@ public final class AgentCommands {
             source.sendFailure(Component.literal("成员编码不合法"));
             return 0;
         }
-        if (AgentRegistry.get(source.getServer()).find(agentId) != null) {
-            source.sendFailure(Component.literal("成员 " + agentId + " 已经有 NPC"));
-            return 0;
+        AgentRegistry registry = AgentRegistry.get(source.getServer());
+        AgentRecord existing = registry.find(agentId);
+        if (existing != null) {
+            if (resolve(source.getServer(), existing) != null) {
+                source.sendFailure(Component.literal("成员 " + agentId + " 已经有 NPC"));
+                return 0;
+            }
+            clearGhost(source.getServer(), agentId, existing);
+            source.sendSuccess(() -> Component.literal("已清除成员 " + agentId + " 的幽灵记录，正在重新生成"), false);
         }
         ServerLevel level = source.getLevel();
         Vec3 pos = source.getPosition();
@@ -131,7 +168,9 @@ public final class AgentCommands {
             return 1;
         }
         for (AgentRecord record : registry.table().records()) {
-            source.sendSuccess(() -> Component.literal(describe(record, "active")), false);
+            AgentEntity agent = resolve(source.getServer(), record);
+            String state = agent == null ? "not_loaded" : "active";
+            source.sendSuccess(() -> Component.literal(describe(record, state)), false);
         }
         AgentRecord legacy = registry.legacy();
         if (legacy != null) {
@@ -166,6 +205,54 @@ public final class AgentCommands {
         ServerLifecycle.forget(agentId);
         source.sendSuccess(() -> Component.literal("已移除成员 " + agentId + " 的 NPC"), true);
         return 1;
+    }
+
+    private static int healOne(CommandSourceStack source, String agentId) {
+        if (!AgentMessages.validAgentId(agentId)) {
+            source.sendFailure(Component.literal("成员编码不合法"));
+            return 0;
+        }
+        String error = ensure(source.getServer(), agentId, "");
+        if (error != null) {
+            source.sendFailure(Component.literal(failureText(agentId, error)));
+            return 0;
+        }
+        AgentEntity agent = find(source.getServer(), agentId);
+        source.sendSuccess(() -> Component.literal("成员 " + agentId + " 的 NPC 已就绪 " + (agent == null ? "" : agent.getUUID())), true);
+        ServerLifecycle.refreshHello(agentId);
+        return 1;
+    }
+
+    private static int healAll(CommandSourceStack source) {
+        AgentRegistry registry = AgentRegistry.get(source.getServer());
+        int healed = 0;
+        int ready = 0;
+        int failed = 0;
+        List<AgentRecord> records = new ArrayList<>(registry.table().records());
+        for (AgentRecord record : records) {
+            String agentId = record.agentKey();
+            if (!AgentMessages.validAgentId(agentId)) {
+                continue;
+            }
+            if (resolve(source.getServer(), record) != null) {
+                ready += 1;
+                continue;
+            }
+            String error = ensure(source.getServer(), agentId, record.name());
+            if (error == null) {
+                healed += 1;
+                ServerLifecycle.refreshHello(agentId);
+            } else {
+                failed += 1;
+            }
+        }
+        int finalHealed = healed;
+        int finalReady = ready;
+        int finalFailed = failed;
+        source.sendSuccess(() -> Component.literal(
+                "已修复幽灵 " + finalHealed + "，原本在场 " + finalReady + "，失败 " + finalFailed
+        ), true);
+        return finalHealed + finalReady;
     }
 
     private static int adopt(CommandSourceStack source, String agentId) {
@@ -219,30 +306,100 @@ public final class AgentCommands {
         return null;
     }
 
+    /**
+     * 查找实体。若当前未加载但有上次坐标，先强制加载该区块再查一次，避免把未加载当成幽灵。
+     */
     private static AgentEntity resolve(MinecraftServer server, AgentRecord record) {
         if (record == null || !record.occupied() || record.dimension().isEmpty() || record.legacyUnbound()) {
             return null;
         }
-        ResourceLocation dimensionId = ResourceLocation.tryParse(record.dimension());
-        if (dimensionId == null) {
-            return null;
-        }
-        ServerLevel level = null;
-        for (ServerLevel candidate : server.getAllLevels()) {
-            if (candidate.dimension().location().equals(dimensionId)) {
-                level = candidate;
-                break;
-            }
-        }
+        ServerLevel level = levelOf(server, record.dimension());
         if (level == null) {
             return null;
         }
+        UUID uuid;
         try {
-            Entity entity = level.getEntity(UUID.fromString(record.id()));
-            return entity instanceof AgentEntity agent && agent.isAlive() ? agent : null;
+            uuid = UUID.fromString(record.id());
         } catch (IllegalArgumentException e) {
             return null;
         }
+        AgentEntity live = asLiveAgent(level.getEntity(uuid));
+        if (live != null) {
+            return live;
+        }
+        if (record.hasPosition()) {
+            forceLoadChunk(level, record.x(), record.z());
+            live = asLiveAgent(level.getEntity(uuid));
+            if (live != null) {
+                return live;
+            }
+        }
+        return null;
+    }
+
+    private static String respawnMissing(MinecraftServer server, String agentId, String displayName, AgentRecord record) {
+        String fallbackName = record.name().isEmpty() ? agentId : record.name();
+        String name = sanitize(displayName, fallbackName);
+        ServerLevel level = levelOf(server, record.dimension());
+        double x;
+        double y;
+        double z;
+        if (level != null && record.hasPosition()) {
+            x = record.x();
+            y = record.y();
+            z = record.z();
+        } else {
+            level = server.overworld();
+            BlockPos spawn = level.getSharedSpawnPos();
+            int index = AgentRegistry.get(server).size();
+            x = spawn.getX() + 0.5 + index * 2.0;
+            y = spawn.getY();
+            z = spawn.getZ() + 0.5;
+        }
+        clearGhost(server, agentId, record);
+        LOGGER.info("Cleared stale Minaret seat for {} and provisioning a new NPC body", agentId);
+        return create(server, level, agentId, name, x, y, z, 0.0F);
+    }
+
+    private static void clearGhost(MinecraftServer server, String agentId, AgentRecord record) {
+        AgentRegistry registry = AgentRegistry.get(server);
+        if (record != null && record.occupied()) {
+            ServerLevel level = levelOf(server, record.dimension());
+            if (level != null) {
+                try {
+                    Entity entity = level.getEntity(UUID.fromString(record.id()));
+                    if (entity instanceof AgentEntity agent) {
+                        agent.discard();
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    // bad uuid in stale record
+                }
+            }
+        }
+        registry.remove(agentId);
+        ServerLifecycle.forget(agentId);
+    }
+
+    private static ServerLevel levelOf(MinecraftServer server, String dimension) {
+        ResourceLocation dimensionId = ResourceLocation.tryParse(dimension);
+        if (dimensionId == null) {
+            return null;
+        }
+        for (ServerLevel candidate : server.getAllLevels()) {
+            if (candidate.dimension().location().equals(dimensionId)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static void forceLoadChunk(ServerLevel level, double x, double z) {
+        // Server-thread getChunkAt forces the chunk to FULL so getEntity can see persisted NPCs.
+        level.getChunkAt(BlockPos.containing(x, 0, z));
+    }
+
+    private static AgentEntity asLiveAgent(Entity entity) {
+        return entity instanceof AgentEntity agent && agent.isAlive() ? agent : null;
     }
 
     private static String describe(AgentRecord record, String state) {
@@ -258,7 +415,7 @@ public final class AgentCommands {
             case "limit" -> "NPC 数量已达上限";
             case "no_legacy" -> "没有可认领的旧 NPC";
             case "invalid" -> "成员编码不合法";
-            case "agent_not_available" -> "成员 " + agentId + " 的 NPC 不在世界里，不会自动再生成一个。先 /minaret agent remove " + agentId + " 再重新连接";
+            case "agent_not_available" -> "成员 " + agentId + " 的 NPC 不在世界里。可执行 /minaret agent heal " + agentId + "，或 /minaret agent remove " + agentId + " 后再连接";
             default -> "无法处理成员 " + agentId + " 的 NPC";
         };
     }

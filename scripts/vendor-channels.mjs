@@ -13,7 +13,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 const root = resolve(import.meta.dirname, '..')
 const VENDOR = join(root, 'vendor', 'wsz987')
 const PATCHES = join(VENDOR, 'patches')
-export const CHANNEL_PACKAGES = ['channel-core', 'channel-harness', 'channel-telegram']
+export const CHANNEL_PACKAGES = ['channel-core', 'channel-harness', 'channel-telegram', 'channel-qq']
 const VERSION = '0.5.1'
 const CHECK = process.argv.includes('--check')
 

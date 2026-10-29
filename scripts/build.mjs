@@ -56,7 +56,7 @@ for (const [entry, out] of [
 // @wsz987/channel-{core,harness,telegram} 一律解析到 vendor/wsz987/<pkg>（npm 0.5.1 + vendor/wsz987/patches/*.patch，
 // 由 `npm run vendor:channels` 生成、`npm run check` 校验），所以 npm install 不会把补丁冲掉。
 // 其余依赖（dsh-agent、dsh-llm、undici 等）从 node_modules 打包进来（版本由 devDependencies 精确锁定）。
-const CHANNEL_PKG = /^@wsz987\/(channel-core|channel-harness|channel-telegram)(\/plugin)?$/
+const CHANNEL_PKG = /^@wsz987\/(channel-core|channel-harness|channel-telegram|channel-qq)(\/plugin)?$/
 const vendorChannels = {
   name: 'vendor-wsz987-channels',
   setup(b) {
@@ -92,6 +92,28 @@ await build({
       '/* dsh-workbench Telegram channel runtime (loaded only when the 通道 › Telegram toggle is on).',
       ' * Bundled: @wsz987/channel-core, channel-harness, channel-telegram 0.5.1 (MIT, wsz987/dsh-channels) with patches',
       ' * from vendor/wsz987/patches; DeepSeek Harness packages (MIT); undici (MIT). See NOTICE.',
+      ' */',
+      "import { createRequire as __mmCreateRequire } from 'node:module'; const require = __mmCreateRequire(import.meta.url);",
+    ].join('\n'),
+  },
+  logLevel: 'info',
+})
+
+// 「通道」分组的 QQ 运行时：src/channels/qq/runtime.mjs → lib/channel-qq.mjs。
+// channelId=qq / accountId=main，数据目录同 Telegram（~/.dsh/dsh-channels），可重挂旧 QQ 会话绑定。
+await build({
+  entryPoints: [join(root, 'src', 'channels', 'qq', 'runtime.mjs')],
+  outfile: join(root, 'lib', 'channel-qq.mjs'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+  plugins: [vendorChannels],
+  banner: {
+    js: [
+      '/* dsh-workbench QQ channel runtime (loaded only when the 通道 › QQ toggle is on).',
+      ' * Bundled: @wsz987/channel-core, channel-harness, channel-qq 0.5.1 (MIT, wsz987/dsh-channels);',
+      ' * DeepSeek Harness packages (MIT); @tencent-connect/qqbot-nodejs. See NOTICE.',
       ' */',
       "import { createRequire as __mmCreateRequire } from 'node:module'; const require = __mmCreateRequire(import.meta.url);",
     ].join('\n'),

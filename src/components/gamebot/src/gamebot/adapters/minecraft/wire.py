@@ -28,12 +28,14 @@ ERROR_CODES = frozenset(
         "action_rejected",
         "position_occupied",
         "state_mismatch",
+        "state_unachievable",
         "internal_error",
         "agent_id_required",
         "agent_mismatch",
         "agent_not_available",
         "not_bound",
         "busy",
+        "target_offline",
     }
 )
 STATE_TEXT = re.compile(r"^[a-z0-9_]+$")
@@ -338,6 +340,53 @@ def _validate_probe_blocks(raw: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(positions, list) or not positions or len(positions) > 16:
         raise WireError("invalid_params", "positions must contain 1 to 16 block positions")
     return {"positions": [block_pos(item, "positions") for item in positions]}
+
+
+EMOTE_LIMIT = 32
+LINE_LIMIT = 256
+TARGET_NAME = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+SAY_ID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+
+
+def compose_chat_line(name: str, text: str, emote: str = "") -> str:
+    """与 Java ChatSpeech.line 相同：整行截到 256。"""
+    who = name or ""
+    action = (emote or "").strip()
+    body = text or ""
+    raw = f"<{who}> *{action}* {body}" if action else f"<{who}> {body}"
+    return raw[:LINE_LIMIT]
+
+
+def say_id_of(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if SAY_ID.fullmatch(text):
+        return text
+    return str(uuid.uuid4())
+
+
+def validate_say(params: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    raw = dict(params or {})
+    text = str(raw.get("text") if raw.get("text") is not None else raw.get("message") or "").strip()
+    if not text:
+        raise WireError("invalid_params", "text is required")
+    audience = str(raw.get("audience") or "public").strip() or "public"
+    if audience not in ("public", "private"):
+        raise WireError("invalid_params", "audience must be public or private")
+    target = str(raw.get("target") or "").strip()
+    if audience == "private":
+        if not target:
+            raise WireError("invalid_params", "private say requires target")
+        if TARGET_NAME.fullmatch(target) is None:
+            raise WireError("invalid_params", "target is not a player name")
+    else:
+        target = ""
+    emote = str(raw.get("emote") or "").strip()
+    if len(emote) > EMOTE_LIMIT or "\n" in emote or "\r" in emote or "*" in emote:
+        raise WireError("invalid_params", "emote must be a short line without asterisks")
+    out: Dict[str, Any] = {"text": text, "audience": audience, "emote": emote}
+    if target:
+        out["target"] = target
+    return out
 
 
 def validate_action_params(action: str, params: Optional[Mapping[str, Any]]) -> Dict[str, Any]:

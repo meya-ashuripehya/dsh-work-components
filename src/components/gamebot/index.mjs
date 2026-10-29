@@ -264,9 +264,8 @@ export function createGameModule(game) {
       try { await pushConfig(url, game, cfg) } catch (error) {
         return { ok: false, reason: String(error?.message ?? error) }
       }
-      // 默认不自动连接：NPC 由各自成员在聊天室里 mc_connect 时按需生成（用完可 mc_disconnect）。
-      // 设 MC_AUTO_CONNECT=1 才保持旧行为：启用 Minecraft 时一次性把全部成员连进世界。
-      if (game === 'minecraft' && cfg.MC_AUTO_CONNECT === '1' && memberIdsFor(cfg).length) {
+      // 进世界自动连接固定为开：启用 Minecraft 时把全部已启用成员连进世界（世界未就绪时由 mc-host 重连再 reconcile）。
+      if (game === 'minecraft' && memberIdsFor(cfg).length) {
         void reconcileMembers(cfg).then((summary) => {
           console.info(`[dsh-workbench:${id}] ${summary.note}`)
         }).catch((error) => {

@@ -74,7 +74,7 @@ tmp-asar-*/
 tmp-session-*/
 
 # Local gamebot worktrees / verification dumps
-src/components/gamebot/minecraft-work/
+src/components/gamebot/minecraft-work/verification/
 
 # Balance local extension (中转站等，仅本机；正式条目在数据目录亦可)
 src/balance/*.local.mjs

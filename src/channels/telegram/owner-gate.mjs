@@ -25,6 +25,7 @@ export const OPEN_TOOLS = new Set([
   'web_search',
   'web_fetch',
   'search_history',
+  'search_pre_compaction',
   'get_time',
   'get_weather',
   'todo_write',
@@ -33,6 +34,12 @@ export const OPEN_TOOLS = new Set([
   'group_memory',
   'read_channel_attachment',
   'mm_send_image',
+  'sticker_search',
+  'sticker_send',
+  // Cross-session memory (pull only). OPEN_TOOLS naming alone is not enough — tools also require
+  // an owner-authorized turn + Memory Circle (see createOwnerGate.isAuthorizedTurn).
+  'cross_session_list',
+  'cross_session_search',
   // 棋类、牌类的看局面和出牌按座位校验，不在这里放行。开局、结束、重开会下载或写存档，仅所有者可用。
 ])
 
@@ -78,6 +85,7 @@ export function createOwnerGate({ authorized, getAgent } = {}) {
       if (st.epoch === epoch) {
         st.active = false
         st.senders.clear()
+        st.csCalls = 0
       }
     })
   }
@@ -90,7 +98,7 @@ export function createOwnerGate({ authorized, getAgent } = {}) {
       if (!sid) return
       let st = sessions.get(sid)
       if (!st) { st = { epoch: 0, active: false, senders: new Set() }; sessions.set(sid, st) }
-      if (!st.active) { st.senders.clear(); st.active = true }
+      if (!st.active) { st.senders.clear(); st.active = true; st.csCalls = 0 }
       // 未知发送者记成空串：不在授权集合里，整轮拒绝。
       st.senders.add(idOf(senderId))
       const epoch = ++st.epoch
@@ -111,6 +119,32 @@ export function createOwnerGate({ authorized, getAgent } = {}) {
       return undefined
     },
     tracked(sessionId) { return sessions.has(idOf(sessionId)) },
+    /**
+     * True when this session has no in-progress channel turn, or every sender on the
+     * active turn is authorized. Used by cross_session_* (OPEN_TOOLS alone is insufficient).
+     */
+    isAuthorizedTurn(sessionId) {
+      const sid = idOf(sessionId)
+      if (!sid) return false
+      const st = sessions.get(sid)
+      if (!st || !st.active) return true
+      if (st.senders.size === 0) return false
+      for (const sender of st.senders) if (!sender || !allow.has(sender)) return false
+      return true
+    },
+    /** Per-turn call counter for cross_session_* budget (maxCallsPerTurn). */
+    bumpCrossSessionCall(sessionId) {
+      const sid = idOf(sessionId)
+      if (!sid) return 1
+      let st = sessions.get(sid)
+      if (!st) {
+        st = { epoch: 0, active: false, senders: new Set(), csCalls: 0 }
+        sessions.set(sid, st)
+      }
+      if (typeof st.csCalls !== 'number') st.csCalls = 0
+      st.csCalls += 1
+      return st.csCalls
+    },
   }
 }
 

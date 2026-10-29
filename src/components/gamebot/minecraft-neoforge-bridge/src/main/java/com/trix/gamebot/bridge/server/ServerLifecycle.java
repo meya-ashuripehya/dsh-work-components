@@ -12,6 +12,7 @@ import com.trix.gamebot.bridge.config.CommonBridgeConfig;
 import com.trix.gamebot.bridge.entity.AgentEntity;
 import com.trix.gamebot.bridge.observation.ServerSnapshotService;
 import com.trix.gamebot.bridge.protocol.AgentMessages;
+import com.trix.gamebot.bridge.protocol.ChatSpeech;
 import com.trix.gamebot.bridge.protocol.ProtocolCodec;
 import com.trix.gamebot.bridge.transport.AgentBridgeServer;
 import com.trix.gamebot.bridge.transport.AgentConnections;
@@ -19,6 +20,7 @@ import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -34,6 +36,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /** 服务端 NPC 桥。每个已绑定的成员各自扫描、快照和断线清理。 */
 @EventBusSubscriber(modid = MinaretMod.MOD_ID)
@@ -88,11 +91,14 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
             return;
         }
         JsonObject data = new JsonObject();
+        long sequence = socket.nextSequence();
         data.addProperty("player", event.getUsername());
         data.addProperty("username", event.getUsername());
         data.addProperty("message", event.getRawText());
         data.addProperty("source", "player");
-        socket.broadcast(ProtocolCodec.envelope(ProtocolCodec.AGENT_PROTOCOL_VERSION, "chat", data, socket.nextSequence(), null));
+        data.addProperty("audience", "public");
+        data.addProperty("message_id", "player:" + sequence + ":" + UUID.randomUUID());
+        socket.broadcast(ProtocolCodec.envelope(ProtocolCodec.AGENT_PROTOCOL_VERSION, "chat", data, sequence, null));
     }
 
     public static void refreshHello(String agentId) {
@@ -264,7 +270,7 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
                 : AgentCommands.requireReady(minecraftServer, agentId);
         if (error != null) {
             String message = "agent_not_available".equals(error)
-                    ? "server npc is not available for " + agentId + "; remove the stale record before provisioning a new body"
+                    ? "server npc is not available for " + agentId
                     : "limit".equals(error) ? "too many agents" : "agent_id is not valid";
             String code = "limit".equals(error) || "invalid".equals(error) ? "action_rejected" : "agent_not_available";
             socket.sendDirect(conn, ProtocolCodec.errorEvent(ProtocolCodec.AGENT_PROTOCOL_VERSION, socket.nextSequence(), code, message));
@@ -313,33 +319,79 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
     }
 
     private void handleChat(String agentId, JsonObject payload) {
-        String message = text(payload, "message");
-        if (message == null || message.isBlank()) {
-            AgentConnections.Binding binding = socket.connections().bindingOfAgent(agentId);
-            if (binding != null) {
-                socket.send(agentId, binding.generation, ProtocolCodec.errorEvent(
-                        ProtocolCodec.AGENT_PROTOCOL_VERSION, socket.nextSequence(), "invalid_params", "message is empty"));
-            }
+        String sayId = text(payload, "say_id");
+        if (sayId == null || sayId.isBlank()) {
+            sayId = UUID.randomUUID().toString();
+        }
+        ChatSpeech.Result speech = ChatSpeech.prepare(
+                text(payload, "message"),
+                text(payload, "audience"),
+                text(payload, "target"),
+                text(payload, "emote"));
+        if (!speech.ok) {
+            replyChat(agentId, sayId, false, speech.errorCode, speech.error, null, "public", "");
             return;
         }
         AgentEntity agent = AgentCommands.find(minecraftServer, agentId);
         if (agent == null) {
-            AgentConnections.Binding binding = socket.connections().bindingOfAgent(agentId);
-            if (binding != null) {
-                socket.send(agentId, binding.generation, ProtocolCodec.errorEvent(
-                        ProtocolCodec.AGENT_PROTOCOL_VERSION, socket.nextSequence(), "client_not_ready", "server npc is not spawned"));
-            }
+            replyChat(agentId, sayId, false, "client_not_ready", "server npc is not spawned", null, speech.audience, speech.target);
             return;
         }
-        String clipped = message.length() > 256 ? message.substring(0, 256) : message;
-        minecraftServer.getPlayerList().broadcastSystemMessage(Component.literal("<" + agent.agentName() + "> " + clipped), false);
+        String line = ChatSpeech.line(agent.agentName(), speech);
+        if ("private".equals(speech.audience)) {
+            ServerPlayer target = minecraftServer.getPlayerList().getPlayerByName(speech.target);
+            if (target == null) {
+                replyChat(agentId, sayId, false, "target_offline", "target is offline", null, "private", speech.target);
+                return;
+            }
+            target.sendSystemMessage(Component.literal(line), false);
+            replyChat(agentId, sayId, true, null, null, line, "private", speech.target);
+            return;
+        }
+        minecraftServer.getPlayerList().broadcastSystemMessage(Component.literal(line), false);
         JsonObject data = new JsonObject();
         data.addProperty("agent_id", agentId);
         data.addProperty("player", agent.agentName());
         data.addProperty("username", agent.agentName());
-        data.addProperty("message", clipped);
+        data.addProperty("message", line);
         data.addProperty("source", "agent");
+        data.addProperty("audience", "public");
+        data.addProperty("say_id", sayId);
+        data.addProperty("message_id", sayId);
+        if (!speech.emote.isEmpty()) {
+            data.addProperty("emote", speech.emote);
+        }
         socket.broadcast(ProtocolCodec.envelope(ProtocolCodec.AGENT_PROTOCOL_VERSION, "chat", data, socket.nextSequence(), null));
+        replyChat(agentId, sayId, true, null, null, line, "public", "");
+    }
+
+    /** 只回给说话的这条连接。私聊失败不广播。 */
+    private void replyChat(String agentId, String sayId, boolean ok, String errorCode, String error, String sent, String audience, String target) {
+        if (socket == null) {
+            return;
+        }
+        AgentConnections.Binding binding = socket.connections().bindingOfAgent(agentId);
+        if (binding == null) {
+            return;
+        }
+        JsonObject data = new JsonObject();
+        data.addProperty("agent_id", agentId);
+        data.addProperty("say_id", sayId);
+        data.addProperty("message_id", sayId);
+        data.addProperty("ok", ok);
+        data.addProperty("audience", audience == null ? "public" : audience);
+        if (target != null && !target.isEmpty()) {
+            data.addProperty("target", target);
+        }
+        if (sent != null) {
+            data.addProperty("sent", sent);
+        }
+        if (!ok) {
+            data.addProperty("error_code", errorCode == null ? "invalid_params" : errorCode);
+            data.addProperty("error", error == null ? "" : error);
+        }
+        socket.send(agentId, binding.generation, ProtocolCodec.envelope(
+                ProtocolCodec.AGENT_PROTOCOL_VERSION, "chat_result", data, socket.nextSequence(), null));
     }
 
     private void handleCommand(String agentId, JsonObject payload) {

@@ -60,6 +60,7 @@ import { checkForUpdate, getUpdateJob, ignoreVersion, startApplyUpdate } from '.
 import { mountSessionControls, handleSessionApi } from './session-controls/index.mjs'
 import { roomConflictMessage } from './channels/telegram/group-conflict.mjs'
 import { createTelegramChannel, telegramSchemaShape, TELEGRAM_BOTS_KEY } from './channels/telegram/index.mjs'
+import { createQQChannel, qqSchemaShape } from './channels/qq/index.mjs'
 import { aliasPatchFromBots, migrateTelegramBots, syncAliasesIntoBots } from './channels/telegram/accounts.mjs'
 import { classifyPreview, loadLocalFile, mmFileBlock, registerFilePreview, streamFilePreview, textPreview } from './channels/telegram/files.mjs'
 import { extractContentPreview } from './channels/telegram/office-preview.mjs'
@@ -72,10 +73,18 @@ import { handleCalendarApi } from './calendar/api.mjs'
 import { createCalendarFeature } from './calendar/index.mjs'
 import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
+import { createPreCompactionHistoryFeature, createCompanionCompactionFeature } from './session-history/index.mjs'
+import { createStickersFeature, handleStickersApi } from './stickers/index.mjs'
+import { createCrossSessionFeature } from './channels/cross-session-feature.mjs'
 import { handleBoardsApi, handleBoardsPage } from './boards/api.mjs'
 import { createBoardsFeature } from './boards/index.mjs'
 import { createGamebotMembersFeature } from './components/gamebot/members-tools.mjs'
 import { createMinecraftRoomBinding, roomSyncWanted, ROOM_KEY as MC_ROOM_KEY } from './components/gamebot/room-bind.mjs'
+import { createMcPresenceResolver } from './components/gamebot/members.mjs'
+import { createMcControlHost } from './components/gamebot/mc-host.mjs'
+import { profileChoices } from './components/gamebot/mc-profile.mjs'
+import { ProfileError } from './profiles/errors.mjs'
+import { ensureProfilesStore, listProfiles, materializeProfile } from './profiles/store.mjs'
 import { handleCardsApi, handleCardsPage } from './cards/api.mjs'
 import { createCardsFeature } from './cards/index.mjs'
 import { createDshCatalog, llmCatalogPayload, reasoningEfforts } from './dsh-catalog.mjs'
@@ -329,6 +338,17 @@ export const SettingsSchema = z.object({
     videoYtdlpPath: z.string().default('').description('可选：yt-dlp 程序的完整路径。留空时先找 PATH，再用设置页下载到数据目录 bin/ 的副本。'),
   calendarEnabled: z.boolean().default(true).description('启用日历工具（公历、农历、节气、法定节假日、日程、天气预报）。默认开启。关闭后卸下工具，已保存的日程仍保留。'),
   notesEnabled: z.boolean().default(false).description('启用笔记工具：智能体把总结出的要点与知识库中没有的新知识按「类型 › 类别 › 笔记」三级整理，并在后续任务中检索复用。默认关闭。关闭后卸下工具，已保存的笔记仍保留。'),
+  preCompactionHistoryEnabled: z.boolean().default(true).description('启用官方压缩前历史工具 search_pre_compaction：压缩后模型可见面只剩摘要，但会话日志仍保留被遮蔽的原始回合；本工具只读检索当前会话中被 compact-checkpoint 遮蔽的原文。默认开启。关闭后卸下工具。'),
+  companionCompactionEnabled: z.boolean().default(true).description('启用陪伴向压缩指令：官方压缩（purpose=compaction）时，用陪伴检查点结构覆盖 @deepseek-ai/dsh-compaction-basic 的编码助手指令。默认开启。关闭后恢复官方指令。'),
+  companionCompactionInstruction: z.string().default('').description('可选：自定义陪伴压缩指令（多行）。留空则使用内置中文陪伴检查点结构。'),
+  stickersEnabled: z.boolean().default(true).description('启用表情包工具：sticker_search / sticker_save / sticker_send。本地维护标签化图片库，发送时按普通图片出站。默认开启。关闭后卸下工具，已保存的表情包仍保留。'),
+  stickersDefaultPackId: z.string().default('').description('导入/保存未指定包时使用的默认表情包 id；留空则使用名为「默认」的包。'),
+  crossSessionMemoryEnabled: z.boolean().default(true).description('启用跨会话记忆：cross_session_list / cross_session_search（按需拉取 QQ/Telegram 历史）以及通道入站时的短 [person-memory] 称呼摘要。默认开启。关闭后卸下工具并停止摘要注入。'),
+  crossSessionOwnerTelegramIds: z.string().default('').description('OwnerLink 的 Telegram 用户 ID，逗号/空格分隔。留空使用内置默认（Shiro: 6153059771）。'),
+  crossSessionOwnerQqOpenIds: z.string().default('').description('OwnerLink 的 QQ OpenID，逗号/空格分隔。留空使用内置默认（Shiro: B4C6E62A8A0919E62678494F20F30530）。'),
+  crossSessionPresets: z.string().default('').description('共享记忆圈的预设 ID，逗号/空格分隔。留空默认 lingsnow。'),
+  crossSessionShareGroups: z.boolean().default(true).description('是否把群会话纳入可查询记忆圈。默认开启。'),
+  crossSessionAliases: z.string().default('').description('通道用户/群 ID 到显示称呼的别名表。设置页为按通道类型筛选的表格；保存为行文本：channel peerId 名称 [dm|group]，例如 telegram 6153059771 Shiro。也支持 JSON。优先于聊天记录提取的名字。'),
   boardsEnabled: z.boolean().default(false).description('启用棋类工具：当前会话里的 AI 用 board_open / board_look / board_play / board_close / board_reset / board_hint 下中国象棋、国际象棋、五子棋或围棋。聊天室启用后可按房间座位开局。默认关闭。关闭后卸下工具并结束当前棋局，已下载的棋盘项目仍保留。'),
   boardsHintMs: z.number().default(1000).description('辅助引擎每次分析的时长（毫秒），100–10000，默认 1000。只在下载了辅助引擎时生效。'),
   boardsPlayerName: z.string().default('').description('棋盘上你的名字。留空或只有空白时按 user。显示在棋盘你这一侧，并写进人落子后发给 AI 的那句话。'),
@@ -342,6 +362,8 @@ export const SettingsSchema = z.object({
   ...chatroomSchemaShape(z),
 
   ...telegramSchemaShape(z),
+
+  ...qqSchemaShape(z),
 
   ...gamebotSchemaShape(z),
 })
@@ -631,6 +653,10 @@ export function apply(ctx, config) {
   const balance = createBalanceFeature(ctx, () => current)
   const calendar = createCalendarFeature(ctx, () => current)
   const notes = createNotesFeature(ctx, () => current)
+  const preCompactionHistory = createPreCompactionHistoryFeature(ctx, () => current)
+  const companionCompaction = createCompanionCompactionFeature(ctx, () => current)
+  const stickers = createStickersFeature(ctx, () => current)
+  const crossSessionMemory = createCrossSessionFeature(ctx, () => current)
   const boards = createBoardsFeature(ctx, () => current)
   const cards = createCardsFeature(ctx, () => current)
   const minecraftMembers = createGamebotMembersFeature(ctx, () => current)
@@ -645,6 +671,7 @@ export function apply(ctx, config) {
     saveSeats: (seats) => applyPatch({ [CHATROOM_SEATS_KEY]: seats }),
     savePatch: (patch) => applyPatch(patch),
     onChatsChanged: () => { void telegram.sync() },
+    resolveMcInfo: createMcPresenceResolver({ getConfig: () => current }),
   })
   // 「多模态 › 视频理解」：聊天室直接读本组件的设置；会话工具用本组件的密钥 videoGeminiKey，代理沿用聊天室的 Gemini 路由
   const videoGemini = { resolveKey: async () => resolveVideoKey(current), fetch: () => chatroom.gemini?.fetch?.() }
@@ -657,6 +684,16 @@ export function apply(ctx, config) {
     applyPatch: (patch) => applyPatch(patch),
     normalizeSeats,
   })
+  const mcControl = createMcControlHost({
+    ctx,
+    getConfig: () => current,
+    store: chatroom.store,
+    roomId: () => String(current[MC_ROOM_KEY] || ''),
+    dataRoot: dataDir,
+    llm: () => (typeof ctx.get === 'function' ? ctx.get('llm') : ctx.llm),
+    log: ctx.logger,
+  })
+  minecraftMembers.bindControl(mcControl)
   late.boundChatIds = () => chatroom.boundChatIds()
   late.chatroomSync = (force) => chatroom.sync(force === true)
   const settings = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
@@ -664,7 +701,7 @@ export function apply(ctx, config) {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync(); void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void (async () => { await telegram.sync(); await chatroom.sync() })() })
+      scope.watch?.((next) => { current = next; components.sync(); void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void stickers.sync(); void crossSessionMemory.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync(); void (async () => { await telegram.sync(); await qq.sync(); await chatroom.sync() })() })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -720,6 +757,29 @@ export function apply(ctx, config) {
   }
   telegramSave.bots = (bots) => applyPatch({ [TELEGRAM_BOTS_KEY]: bots, ...aliasPatchFromBots(bots) })
   telegramSave.allowFrom = (raw) => applyPatch({ telegramAllowFrom: String(raw ?? '') })
+
+  // 「通道」分组：QQ（默认关闭；启用后才动态加载 lib/channel-qq.mjs）。
+  // channelId=qq / accountId=main → 复用 ~/.dsh/dsh-channels 既有 qq:main:* 绑定与访问策略。
+  const qqSave = { allowFrom: null, groupAllow: null }
+  const qq = createQQChannel(ctx, () => current, {
+    // 未授权私聊 / 群聊名单（设置页「授权 / 忽略」）；授权写入 qqAllowFrom / qqGroupIds。
+    pendingFile: join(dataDir(), 'qq', 'pending.json'),
+    saveAllowFrom: (raw) => {
+      if (!qqSave.allowFrom) throw Object.assign(new Error('当前环境无法保存设置'), { status: 501 })
+      return qqSave.allowFrom(raw)
+    },
+    saveGroupAllow: (patch) => {
+      if (!qqSave.groupAllow) throw Object.assign(new Error('当前环境无法保存设置'), { status: 501 })
+      return qqSave.groupAllow(patch)
+    },
+  })
+  qqSave.allowFrom = (raw) => applyPatch({ qqAllowFrom: String(raw ?? '') })
+  qqSave.groupAllow = (patch) => {
+    const out = {}
+    if (patch && typeof patch.groupIds === 'string') out.qqGroupIds = patch.groupIds
+    if (patch && typeof patch.groupPolicy === 'string') out.qqGroupPolicy = patch.groupPolicy
+    return applyPatch(out)
+  }
   // 聊天室旧版设置（固定四席位 + 插件内 API Key）→ 席位数组；旧键（含密钥）从设置中清除，密钥不迁移。
   {
     const legacy = migrateLegacyChatroom(current)
@@ -774,14 +834,17 @@ export function apply(ctx, config) {
   void balance.sync()
   void calendar.sync()
   void notes.sync()
+  void stickers.sync()
+  void crossSessionMemory.sync()
   void boards.sync()
   void cards.sync()
   void minecraftMembers.sync()
+  void mcControl.sync()
   // 先通道 claim/轮询，再聊天室决定自拉或委托订阅，避免双 getUpdates 与「consumed 无订阅」黑洞。
-  void (async () => { await telegram.sync(); await chatroom.sync() })()
+  void (async () => { await telegram.sync(); await qq.sync(); await chatroom.sync() })()
   // 宿主的凭据服务可能晚于本插件就绪：就绪时重新同步一次 Telegram（令牌从 credentials 读取）。
   ctx.inject?.(['credentials'], (credCtx) => {
-    credCtx.effect?.(() => { void (async () => { await telegram.resync(); await chatroom.sync() })() }, 'dsh-workbench: telegram credentials')
+    credCtx.effect?.(() => { void (async () => { await telegram.resync(); await qq.resync(); await chatroom.sync() })() }, 'dsh-workbench: telegram credentials')
   })
   ctx.effect?.(() => {
     // GameBot body 是本插件拉起的子进程：宿主退出时同步结束它；插件卸载时等它真正退出。
@@ -790,15 +853,21 @@ export function apply(ctx, config) {
       offExit()
       components.dispose()
       try { await telegram.dispose() } catch {}
+      try { await qq.dispose() } catch {}
       try { await map.dispose() } catch {}
       try { await gptImage.dispose() } catch {}
       try { await video.dispose() } catch {}
       try { await balance.dispose() } catch {}
       try { await calendar.dispose() } catch {}
       try { await notes.dispose() } catch {}
+    try { await preCompactionHistory.dispose() } catch {}
+      try { await companionCompaction.dispose() } catch {}
+      try { await stickers.dispose() } catch {}
+      try { await crossSessionMemory.dispose() } catch {}
       try { await boards.dispose() } catch {}
       try { await cards.dispose() } catch {}
       try { await minecraftMembers.dispose() } catch {}
+      try { await mcControl.dispose() } catch {}
       try { await chatroom.dispose() } catch {}
       try { await stopGamebotBody() } catch {}
     }
@@ -823,12 +892,12 @@ export function apply(ctx, config) {
           const url = new URL(req.url ?? '/', 'http://local')
           const sub = url.pathname.slice(API_PREFIX.length) || '/'
           if (sub === '/settings' && req.method === 'GET') {
-            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
+            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await qq.decorateSettings(await telegram.decorateSettings(maskSecrets(current), SECRET_MASK), SECRET_MASK) })
           }
           if (sub === '/settings' && req.method === 'POST') {
             if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
             // Telegram 令牌：写进宿主凭据（credentials 引用），不进插件设置。
-            const patch = unmaskPatch(await telegram.absorbSecretPatch(JSON.parse(await readBody(req) || '{}'), SECRET_MASK))
+            const patch = unmaskPatch(await qq.absorbSecretPatch(await telegram.absorbSecretPatch(JSON.parse(await readBody(req) || '{}'), SECRET_MASK), SECRET_MASK))
             // 聊天室席位只经 PUT /chatroom/seats 改（表单回传的是旧快照）；旧版聊天室键（含密钥）不再接受。
             delete patch[CHATROOM_SEATS_KEY]
             delete patch[TELEGRAM_BOTS_KEY]
@@ -865,21 +934,51 @@ export function apply(ctx, config) {
             }
             await components.sync()
             await telegram.sync()
+            await qq.sync()
             await map.sync()
             await gptImage.sync()
             await video.sync()
             await balance.sync()
             await calendar.sync()
             await notes.sync()
+  await preCompactionHistory.sync()
+            await companionCompaction.sync()
+        await stickers.sync()
+            await crossSessionMemory.sync()
             await boards.sync()
             await cards.sync()
             await minecraftMembers.sync()
+            await mcControl.sync()
             await chatroom.sync()
             if (roomSyncWanted(patch, current)) await mcRoom.sync(patch['gamebot-minecraftEnabled'] === true ? 'launch' : 'save')
-            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await telegram.decorateSettings(maskSecrets(current), SECRET_MASK) })
+            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await qq.decorateSettings(await telegram.decorateSettings(maskSecrets(current), SECRET_MASK), SECRET_MASK) })
           }
           if (sub === '/gamebot/minecraft/room' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, rooms: await mcRoom.rooms(), bound: String(current[MC_ROOM_KEY] || ''), last: mcRoom.last() })
+          }
+          if (sub === '/gamebot/minecraft/profiles' && req.method === 'GET') {
+            try {
+              await ensureProfilesStore(dataDir())
+              return sendJson(res, 200, { ok: true, profiles: profileChoices(await listProfiles(dataDir())) })
+            } catch {
+              return sendJson(res, 200, { ok: true, profiles: [] })
+            }
+          }
+          if (sub === '/gamebot/minecraft/profiles' && req.method === 'POST') {
+            let body = {}
+            try { body = JSON.parse((await readBody(req)) || '{}') } catch { return sendJson(res, 400, { ok: false, error: '请求不是 JSON' }) }
+            try {
+              await ensureProfilesStore(dataDir())
+              const profile = await materializeProfile(String(body.templateId || 'profile_mc'), {
+                name: body.name,
+                provider: body.provider,
+                model: body.model,
+              }, dataDir())
+              return sendJson(res, 200, { ok: true, profile: { id: profile.id, name: profile.name } })
+            } catch (error) {
+              const status = error instanceof ProfileError ? error.status : 400
+              return sendJson(res, status, { ok: false, error: error?.message || '建立档案失败' })
+            }
           }
           if (sub === '/components' && req.method === 'GET') {
             // 顺带探测已启动组件的连接（有缓存、不并发）；最多等 1.5 秒，没探完的下次请求再带上。
@@ -890,7 +989,7 @@ export function apply(ctx, config) {
               dataDir: dataDir(),
               localComponentsDir: localComponentsDir(),
               contributeCompareUrl: CONTRIBUTE_COMPARE_URL,
-              components: [...await components.list(), await telegram.item()],
+              components: [...await components.list(), await telegram.item(), await qq.item()],
             })
           }
           const addon = /^\/components\/([\w-]+)\/addon$/.exec(sub)
@@ -970,6 +1069,10 @@ export function apply(ctx, config) {
             const handled = await handleNotesApi(req, res, sub, { sendJson, readBody })
             if (handled !== false) return
           }
+          if (sub === '/stickers' || sub.startsWith('/stickers/')) {
+            const handled = await handleStickersApi(req, res, sub, { sendJson, readBody })
+            if (handled !== false) return
+          }
           if (sub === '/dsh/presets' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, ...await dshCatalog.presets() })
           }
@@ -985,6 +1088,9 @@ export function apply(ctx, config) {
           }
           if (sub === '/telegram/dm-pending' || sub.startsWith('/telegram/dm-pending/')) {
             if (await telegram.handleDmApi(req, res, sub, { sendJson, readBody })) return
+          }
+          if (sub === '/qq/pending' || sub.startsWith('/qq/pending/')) {
+            if (await qq.handlePendingApi(req, res, sub, { sendJson, readBody })) return
           }
           if (sub === '/chatroom' || sub.startsWith('/chatroom/')) {
             if (await chatroom.handleApi(req, res, sub, { sendJson, readBody })) return

@@ -53,6 +53,15 @@ def test_five_backends_stay_isolated():
     asyncio.run(_five_backends())
 
 
+def test_foreign_chat_does_not_poison_last_error():
+    asyncio.run(_foreign_chat_no_poison())
+
+
+def test_own_snapshot_clears_stale_agent_mismatch():
+    asyncio.run(_own_snapshot_clears_mismatch())
+
+
+
 async def _member_hello() -> None:
     seen = []
 
@@ -261,3 +270,107 @@ async def _five_backends() -> None:
     assert set(seen) == set(MEMBERS)
     for member in MEMBERS:
         assert seen[member] == ["hello", member]
+
+
+async def _foreign_chat_no_poison() -> None:
+    seen_chat = []
+
+    async def handler(websocket):
+        await websocket.recv()
+        await websocket.send(_hello_reply("seat-1", "entity-seat-1"))
+        await websocket.wait_closed()
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        backend = MinaretBackend(
+            {
+                "NEOFORGE_WS_URL": f"ws://127.0.0.1:{port}",
+                "MC_AGENT_ID": "seat-1",
+                "MC_AGENT_NAME": "DeepSeek",
+                "MC_USERNAME": "DeepSeek",
+            }
+        )
+        backend._on_chat = lambda player, message: seen_chat.append((player, message))
+        await backend.connect()
+        await backend._handle_event(
+            {
+                "protocol_version": 2,
+                "event": "chat",
+                "sequence": 2,
+                "timestamp_ms": 2,
+                "data": {
+                    "agent_id": "seat-2",
+                    "player": "Grok",
+                    "username": "Grok",
+                    "message": "hello from seat-2",
+                    "source": "agent",
+                },
+            },
+            backend._conn_gen,
+        )
+        await asyncio.sleep(0)
+        assert backend.snapshot_fields()["last_error"] is None
+        assert seen_chat == [("Grok", "hello from seat-2")]
+        await backend._handle_event(
+            {
+                "protocol_version": 2,
+                "event": "snapshot",
+                "sequence": 3,
+                "timestamp_ms": 3,
+                "data": {
+                    "agent_id": "seat-2",
+                    "entity_uuid": "entity-seat-2",
+                    "player": {"position": {"x": 9, "y": 64, "z": 9}, "health": 20, "food": 20},
+                    "inventory": {"slots": [], "counts": {}},
+                    "nearby_blocks": [],
+                    "nearby_players": [],
+                    "screen": {"id": None, "open": False},
+                },
+            },
+            backend._conn_gen,
+        )
+        assert backend.snapshot_fields()["last_error"] == "agent_mismatch: seat-2"
+        assert backend.snapshot_fields()["agent_id"] == "seat-1"
+        await backend.disconnect()
+
+
+async def _own_snapshot_clears_mismatch() -> None:
+    async def handler(websocket):
+        await websocket.recv()
+        await websocket.send(_hello_reply("seat-1", "entity-seat-1"))
+        await websocket.wait_closed()
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        backend = MinaretBackend(
+            {
+                "NEOFORGE_WS_URL": f"ws://127.0.0.1:{port}",
+                "MC_AGENT_ID": "seat-1",
+                "MC_AGENT_NAME": "DeepSeek",
+            }
+        )
+        await backend.connect()
+        backend._last_error = "agent_mismatch: seat-2"
+        await backend._handle_event(
+            {
+                "protocol_version": 2,
+                "event": "snapshot",
+                "sequence": 2,
+                "timestamp_ms": 2,
+                "data": {
+                    "agent_id": "seat-1",
+                    "entity_uuid": "entity-seat-1",
+                    "player": {"position": {"x": 3, "y": -61, "z": 0}, "health": 20, "food": 20},
+                    "inventory": {"slots": [], "counts": {}},
+                    "nearby_blocks": [],
+                    "nearby_players": [],
+                    "screen": {"id": None, "open": False},
+                },
+            },
+            backend._conn_gen,
+        )
+        fields = backend.snapshot_fields()
+        assert fields["last_error"] is None
+        assert fields["agent_id"] == "seat-1"
+        assert fields["position"].x == 3
+        await backend.disconnect()

@@ -691,9 +691,26 @@ export class ChannelHarnessBridge {
         }
         else {
             // --- Existing conversation: reconcile route snapshot + resolve ----------
+            // Route drift: provider/model can update in place, but an Agent preset
+            // change cannot recompose a durable session (AgentPresetConflictError).
+            // Mint a fresh session under the new preset — same intent as an explicit /new
+            // after the user switched the channel/conversation preset in settings.
+            let resolvedFromPresetSwitch = false;
             if (!routesEqual(binding.route, route)) {
-                binding = { ...binding, route, updatedAt: now };
-                await this.options.bindingStore.put(binding);
+                const presetChanged = (binding.route?.preset ?? null) !== (route?.preset ?? null);
+                if (presetChanged) {
+                    const archivedSessionId = binding.sessionId;
+                    this.traceInbound({ stage: 'creating', conversationId: event.conversation.id, preset: route?.preset ?? null });
+                    const fresh = await this.sessionFactory.create(this.conversationInput(event), route);
+                    binding = fresh.binding;
+                    agentRef = fresh.agentRef;
+                    await this.options.agentManager.retireSession(archivedSessionId);
+                    resolvedFromPresetSwitch = true;
+                }
+                else {
+                    binding = { ...binding, route, updatedAt: now };
+                    await this.options.bindingStore.put(binding);
+                }
             }
             // Existing-binding resolution follows the official Host resolver order
             // (live agent -> persistence membership -> resume), never the reverse:
@@ -706,30 +723,32 @@ export class ChannelHarnessBridge {
             //   ③ membership hit -> resume;
             //   ④ membership MISS -> durable binding => session-not-found, while an
             //      explicitly ephemeral binding may recreate the recorded id.
-            const borrowed = await this.options.agentManager.borrowIfLive(binding.sessionId, route, this.commandSetup);
-            if (borrowed) {
-                agentRef = borrowed;
-            }
-            else {
-                const probe = await this.options.agentManager.probePersisted(binding.sessionId);
-                if (probe === 'unavailable' && this.bindingDurability(binding) === 'ephemeral') {
-                    const recreated = await this.sessionFactory.recreate(binding, route);
-                    binding = recreated.binding;
-                    agentRef = recreated.agentRef;
-                }
-                else if (probe === 'present') {
-                    agentRef = await this.options.agentManager.resolve(binding.sessionId, route, this.commandSetup);
-                }
-                else if (probe === 'unavailable') {
-                    throw new PersistenceUnavailableError(binding.sessionId, key);
-                }
-                else if (this.bindingDurability(binding) === 'ephemeral') {
-                    const recreated = await this.sessionFactory.recreate(binding, route);
-                    binding = recreated.binding;
-                    agentRef = recreated.agentRef;
+            if (!resolvedFromPresetSwitch) {
+                const borrowed = await this.options.agentManager.borrowIfLive(binding.sessionId, route, this.commandSetup);
+                if (borrowed) {
+                    agentRef = borrowed;
                 }
                 else {
-                    throw new SessionNotFoundError(binding.sessionId, key);
+                    const probe = await this.options.agentManager.probePersisted(binding.sessionId);
+                    if (probe === 'unavailable' && this.bindingDurability(binding) === 'ephemeral') {
+                        const recreated = await this.sessionFactory.recreate(binding, route);
+                        binding = recreated.binding;
+                        agentRef = recreated.agentRef;
+                    }
+                    else if (probe === 'present') {
+                        agentRef = await this.options.agentManager.resolve(binding.sessionId, route, this.commandSetup);
+                    }
+                    else if (probe === 'unavailable') {
+                        throw new PersistenceUnavailableError(binding.sessionId, key);
+                    }
+                    else if (this.bindingDurability(binding) === 'ephemeral') {
+                        const recreated = await this.sessionFactory.recreate(binding, route);
+                        binding = recreated.binding;
+                        agentRef = recreated.agentRef;
+                    }
+                    else {
+                        throw new SessionNotFoundError(binding.sessionId, key);
+                    }
                 }
             }
             this.options.agentManager.registerBinding(binding);

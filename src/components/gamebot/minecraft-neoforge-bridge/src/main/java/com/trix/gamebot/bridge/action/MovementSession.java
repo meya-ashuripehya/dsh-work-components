@@ -12,6 +12,11 @@ public final class MovementSession {
     public int planChecks;
     public boolean awaitingStop;
     public long stopRequestedAtMs;
+    String diagnosticAgentId;
+    long diagnosticGeneration;
+    String diagnosticRequestId;
+    boolean diagnosticStopLogged;
+    boolean diagnosticStopCompleteLogged;
 
     public MovementSession(NavCandidate locked, double tolerance, MovementExclusions exclusions, long deadlineMs) {
         this.locked = locked;
@@ -22,5 +27,11 @@ public final class MovementSession {
 
     public Vec3 goal() {
         return new Vec3(locked.x(), locked.y(), locked.z());
+    }
+
+    void correlate(String agentId, long generation, String requestId) {
+        this.diagnosticAgentId = agentId;
+        this.diagnosticGeneration = generation;
+        this.diagnosticRequestId = requestId;
     }
 }

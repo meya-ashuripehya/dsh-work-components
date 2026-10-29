@@ -1,5 +1,6 @@
 package com.trix.gamebot.bridge.action;
 
+import com.google.gson.JsonObject;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -21,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -57,6 +59,20 @@ class FacingPlacementTest {
             BlockState again = Blocks.POLISHED_DIORITE_STAIRS.getStateForPlacement(chosen);
             assertEquals(predicted, again);
         }
+    }
+
+    @Test
+    void partialStateOnlyConstrainsListedProperties() {
+        Level level = airAroundStoneSupport();
+        BlockHitResult click = upClick(new BlockPos(0, 64, 0));
+        ItemStack stack = new ItemStack(Blocks.POLISHED_DIORITE_STAIRS);
+        JsonObject partial = new JsonObject();
+        partial.addProperty("facing", "east");
+        OrientedPlaceContext chosen = FacingPlacement.choose(level, Blocks.POLISHED_DIORITE_STAIRS, stack, click, partial);
+        assertNotNull(chosen);
+        BlockState predicted = Blocks.POLISHED_DIORITE_STAIRS.getStateForPlacement(chosen);
+        assertEquals(Direction.EAST, predicted.getValue(StairBlock.FACING));
+        assertTrue(FacingPlacement.partialMatches(predicted, partial));
     }
 
     @Test

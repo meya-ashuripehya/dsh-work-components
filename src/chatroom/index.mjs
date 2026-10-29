@@ -76,7 +76,7 @@ export function chatroomDir() {
 /**
  * @param ctx Cordis ctx（llm / agentPresets 按需 ctx.get）
  * @param getConfig 当前插件设置
- * @param {{ dir?: string, llm?: any, presets?: any, catalog?: any, saveSeats?: (seats) => Promise<void> }} [options]
+ * @param {{ dir?: string, llm?: any, presets?: any, catalog?: any, saveSeats?: (seats) => Promise<void>, resolveMcInfo?: (seat) => Promise<any> }} [options]
  *   saveSeats 由宿主半边提供（走插件设置的持久化）；llm / presets 测试注入
  */
 export function createChatroomFeature(ctx, getConfig, options = {}) {
@@ -966,6 +966,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
     saveRoomControl: options.savePatch || options.saveSeats ? saveRoomControl : null,
     getRoomConfig: roomConfig,
     resolvePersona: (seat) => catalog.presetPersona(seat.preset),
+    resolveMcInfo: options.resolveMcInfo || null,
     emit,
     call: seatCall,
     tg,

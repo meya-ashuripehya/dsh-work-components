@@ -37,6 +37,7 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -89,6 +90,7 @@ public final class ServerActionDispatcher {
             reply(agentId, generation, requestId, action, ActionOutcome.failure(decision.code, decision.message));
             return;
         }
+        MinaretDiagnostics.transition(agentId, generation, requestId, "accepted", action);
         AgentEntity agent = AgentCommands.find(minecraftServer, agentId);
         if (agent == null || !agent.isAlive() || !(agent.level() instanceof ServerLevel)) {
             ledger.complete(agentId, requestId, generation);
@@ -118,7 +120,7 @@ public final class ServerActionDispatcher {
             return;
         }
         Pending job = pending.get(key(agentId, target));
-        if (job != null) {
+        if (job != null && job.generation == generation) {
             job.cancel = true;
         }
         tick(minecraftServer);
@@ -131,9 +133,11 @@ public final class ServerActionDispatcher {
         long now = System.currentTimeMillis();
         for (Pending job : pending.values()) {
             AgentEntity agent = AgentCommands.find(minecraftServer, job.agentId);
-            if (job.cancel) {
-                stopMotion(agent, job);
-                finish(job, ActionOutcome.failure("action_rejected", "action cancelled"));
+            if (job.cancel || job.terminalOutcome != null) {
+                ActionOutcome outcome = job.terminalOutcome != null
+                        ? job.terminalOutcome
+                        : ActionOutcome.failure("action_rejected", "action cancelled");
+                holdOrRelease(agent, job, outcome, job.retainRequest);
                 continue;
             }
             if (agent == null || !agent.isAlive()) {
@@ -174,31 +178,32 @@ public final class ServerActionDispatcher {
     }
 
     public void failAgent(MinecraftServer minecraftServer, String agentId, long generation, String code, String message) {
-        for (ActionLedger.Job doomed : ledger.failAgent(agentId, generation)) {
-            Pending job = pending.remove(key(agentId, doomed.requestId));
-            if (job == null) {
+        for (ActionLedger.Job doomed : ledger.snapshot()) {
+            if (!agentId.equals(doomed.agentId) || doomed.generation != generation) {
+                continue;
+            }
+            Pending job = pending.get(key(agentId, doomed.requestId));
+            if (job == null || job.generation != generation) {
+                ledger.complete(agentId, doomed.requestId, generation);
                 continue;
             }
             AgentEntity agent = minecraftServer == null ? null : AgentCommands.find(minecraftServer, agentId);
-            stopMotion(agent, job);
-            if (job.claim != null) {
-                ActionOutcome outcome = ActionOutcome.failure(code, message);
-                outcome.evidence.add("claim", job.claim);
-                reply(job.agentId, job.generation, job.requestId, job.action, outcome);
-            } else {
-                reply(job.agentId, job.generation, job.requestId, job.action, ActionOutcome.failure(code, message));
-            }
+            holdOrRelease(agent, job, ActionOutcome.failure(code, message), true);
         }
     }
 
     public void failAll(MinecraftServer minecraftServer, String code, String message) {
-        ledger.failAll();
-        for (Pending job : pending.values()) {
+        for (Pending job : new ArrayList<>(pending.values())) {
             AgentEntity agent = minecraftServer == null ? null : AgentCommands.find(minecraftServer, job.agentId);
-            stopMotion(agent, job);
-            reply(job.agentId, job.generation, job.requestId, job.action, ActionOutcome.failure(code, message));
+            holdOrRelease(agent, job, ActionOutcome.failure(code, message), true);
         }
-        pending.clear();
+        for (ActionLedger.Job doomed : ledger.snapshot()) {
+            Pending live = pending.get(key(doomed.agentId, doomed.requestId));
+            if (live != null && live.generation == doomed.generation) {
+                continue;
+            }
+            ledger.complete(doomed.agentId, doomed.requestId, doomed.generation);
+        }
     }
 
     private void run(AgentEntity agent, Pending job) {
@@ -234,7 +239,7 @@ public final class ServerActionDispatcher {
             }
             finish(job, outcome);
         } catch (CancelledAction e) {
-            finish(job, ActionOutcome.failure("action_rejected", "action cancelled"));
+            holdOrRelease(agent, job, ActionOutcome.failure("action_rejected", "action cancelled"), false);
         } catch (RuntimeException e) {
             finish(job, ActionOutcome.failure("internal_error", "action failed"));
         }
@@ -273,6 +278,7 @@ public final class ServerActionDispatcher {
         }
         job.moving = true;
         job.movementSession = MovementService.begin(agent, chosen, tolerance, exclusions, job.deadlineMs);
+        job.movementSession.correlate(job.agentId, job.generation, job.requestId);
         return null;
     }
 
@@ -285,6 +291,10 @@ public final class ServerActionDispatcher {
         if (outcome == null) {
             return;
         }
+        if (!outcome.ok) {
+            holdOrRelease(agent, job, outcome, true);
+            return;
+        }
         job.moving = false;
         job.movementSession = null;
         finish(job, outcome);
@@ -293,6 +303,9 @@ public final class ServerActionDispatcher {
     private static ActionOutcome beginPlace(AgentEntity agent, Pending job) {
         PlacementService.Run run = new PlacementService.Run();
         run.params = job.params;
+        run.agentId = job.agentId;
+        run.generation = job.generation;
+        run.requestId = job.requestId;
         ActionOutcome outcome = PlacementService.startWithRun(agent, run, job.deadlineMs);
         if (outcome != null) {
             return outcome;
@@ -307,13 +320,25 @@ public final class ServerActionDispatcher {
             finish(job, ActionOutcome.failure("internal_error", "placement session missing"));
             return;
         }
-        if (job.cancel) {
-            stopMotion(agent, job);
-            finish(job, ActionOutcome.failure("action_rejected", "action cancelled"));
+        if (job.cancel || job.terminalOutcome != null) {
+            ActionOutcome outcome = job.terminalOutcome != null
+                    ? job.terminalOutcome
+                    : ActionOutcome.failure("action_rejected", "action cancelled");
+            holdOrRelease(agent, job, outcome, job.retainRequest);
             return;
         }
-        ActionOutcome outcome = PlacementService.tick(agent, job.placementRun, now, () -> ensureActive(job));
+        ActionOutcome outcome;
+        try {
+            outcome = PlacementService.tick(agent, job.placementRun, now, () -> ensureActive(job));
+        } catch (CancelledAction ignored) {
+            holdOrRelease(agent, job, ActionOutcome.failure("action_rejected", "action cancelled"), false);
+            return;
+        }
         if (outcome == null) {
+            return;
+        }
+        if (!outcome.ok) {
+            holdOrRelease(agent, job, outcome, true);
             return;
         }
         job.placing = false;
@@ -322,7 +347,7 @@ public final class ServerActionDispatcher {
     }
 
     private void ensureActive(Pending job) {
-        if (job.cancel || !pending.containsKey(key(job.agentId, job.requestId))) {
+        if (job.cancel || job.terminalOutcome != null || pending.get(key(job.agentId, job.requestId)) != job) {
             throw new CancelledAction();
         }
     }
@@ -719,6 +744,16 @@ public final class ServerActionDispatcher {
         throw new ActionRejection(ActionOutcome.failure("item_not_found", "item is not in the hotbar"));
     }
 
+    private static MovementSession activeMovementSession(Pending job) {
+        if (job.moving && job.movementSession != null) {
+            return job.movementSession;
+        }
+        if (job.placing && job.placementRun != null && job.placementRun.movement != null) {
+            return job.placementRun.movement;
+        }
+        return null;
+    }
+
     private static void stopMotion(AgentEntity agent, Pending job) {
         if (agent == null) {
             return;
@@ -759,15 +794,66 @@ public final class ServerActionDispatcher {
         }
     }
 
-    private void finish(Pending job, ActionOutcome outcome) {
-        String payloadKey = key(job.agentId, job.requestId);
-        if (pending.remove(payloadKey) == null) {
+    /**
+     * 活着的 NPC 还有移动会话且 {@link MovementService#stopComplete} 未确认时，只请求停止。
+     * 不回执，也不从 pending 或账本摘掉。没有活体或没有移动会话时直接释放。
+     * retainRequest 为真时保留 request_id 指纹（失败/断连）；取消仍按 finish 清掉指纹。
+     */
+    private void holdOrRelease(AgentEntity agent, Pending job, ActionOutcome outcome, boolean retainRequest) {
+        if (pending.get(key(job.agentId, job.requestId)) != job) {
+            if (!replacementOwnsMotion(job)) {
+                stopMotion(agent, job);
+            }
             return;
         }
-        requestPayloads.remove(payloadKey);
+        stopMotion(agent, job);
+        if (stopUnconfirmed(agent, job)) {
+            job.cancel = true;
+            if (job.terminalOutcome == null) {
+                job.terminalOutcome = outcome;
+                job.retainRequest = retainRequest;
+            }
+            return;
+        }
+        boolean retain = job.terminalOutcome != null ? job.retainRequest : retainRequest;
+        ActionOutcome terminal = job.terminalOutcome != null ? job.terminalOutcome : outcome;
+        release(job, terminal, !retain);
+    }
+
+    private boolean replacementOwnsMotion(Pending job) {
+        for (Pending other : pending.values()) {
+            if (other != job && job.agentId.equals(other.agentId) && (other.moving || other.placing || other.mining || other.using)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean stopUnconfirmed(AgentEntity agent, Pending job) {
+        if (agent == null || !agent.isAlive()) {
+            return false;
+        }
+        MovementSession session = activeMovementSession(job);
+        return session != null && !MovementService.stopComplete(agent, session);
+    }
+
+    private void finish(Pending job, ActionOutcome outcome) {
+        release(job, outcome, true);
+    }
+
+    private void release(Pending job, ActionOutcome outcome, boolean clearRequest) {
+        String payloadKey = key(job.agentId, job.requestId);
+        if (!pending.remove(payloadKey, job)) {
+            return;
+        }
+        if (clearRequest) {
+            requestPayloads.remove(payloadKey);
+        }
         if (!ledger.complete(job.agentId, job.requestId, job.generation)) {
             return;
         }
+        MinaretDiagnostics.transition(job.agentId, job.generation, job.requestId, "released",
+                clearRequest ? "pending_and_ledger clear_request" : "pending_and_ledger retain_request");
         if (job.claim != null) {
             outcome.evidence.add("claim", job.claim);
         }
@@ -778,6 +864,8 @@ public final class ServerActionDispatcher {
         if (replies == null || agentId == null || generation <= 0) {
             return;
         }
+        MinaretDiagnostics.transition(agentId, generation, requestId, "send_attempt",
+                "action=" + action + " ok=" + outcome.ok + " effect=" + outcome.effect + " error_code=" + outcome.errorCode);
         replies.send(agentId, generation, ProtocolCodec.actionResult(
                 ProtocolCodec.AGENT_PROTOCOL_VERSION,
                 requestId,
@@ -841,6 +929,8 @@ public final class ServerActionDispatcher {
         private boolean placing;
         private boolean mining;
         private boolean cancel;
+        private boolean retainRequest;
+        private ActionOutcome terminalOutcome;
         private MovementSession movementSession;
         private PlacementService.Run placementRun;
         private float mineProgress;

@@ -23,12 +23,14 @@ from gamebot.adapters.minecraft.wire import (
     normalize_activity,
     normalize_snapshot,
     parse_action_result,
+    say_id_of,
     validate_action_params,
+    validate_say,
 )
 from gamebot.contracts.models import ActionRequest, ActionResult, NearbyPlayer, ProbeResult, Vec3
 
 _WS_TIMEOUT = 3.0
-_PROTECTED_EVENTS = {"action_result", "error", "auth_failed"}
+_PROTECTED_EVENTS = {"action_result", "error", "auth_failed", "chat", "player_chat", "chat_message", "chat_out"}
 
 
 class MinaretBackend:
@@ -70,6 +72,7 @@ class MinaretBackend:
         self._pending: Dict[str, Any] = {}
         self._unresolved: Set[str] = set()
         self._hello_waiter: Optional[tuple] = None
+        self._say_waiter: Optional[tuple] = None
         self._hello_error: Optional[str] = None
 
     def _ws_url(self) -> str:
@@ -90,8 +93,24 @@ class MinaretBackend:
         self._sequence += 1
         return self._sequence
 
+    def _slim_event(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep chat identifiable; strip bulky snapshot payloads so they cannot bury chat."""
+        cleaned = _without_claim_key(entry)
+        event_type = str(cleaned.get("type") or "")
+        if event_type != "snapshot":
+            return cleaned
+        raw = cleaned.get("data") if isinstance(cleaned.get("data"), dict) else {}
+        sequence = raw.get("sequence")
+        if sequence is None:
+            sequence = cleaned.get("sequence")
+        return {
+            "type": "snapshot",
+            "at": cleaned.get("at"),
+            "sequence": sequence,
+        }
+
     def _push(self, entry: Dict[str, Any]) -> None:
-        self._recent_events.append(_without_claim_key(entry))
+        self._recent_events.append(self._slim_event(entry))
         while len(self._recent_events) > 50:
             drop_at = next(
                 (
@@ -104,6 +123,29 @@ class MinaretBackend:
             if drop_at is None:
                 break
             del self._recent_events[drop_at]
+
+    def _recent_for_observe(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Prefer chat-bearing events so mirror/re-arm still see them under snapshot flood."""
+        if limit <= 0:
+            return []
+        chat_types = {"chat", "player_chat", "chat_message", "chat_out"}
+        chats = [item for item in self._recent_events if str(item.get("type") or "") in chat_types]
+        if len(chats) >= limit:
+            return list(chats[-limit:])
+        picked = list(chats)
+        picked_ids = {id(item) for item in picked}
+        need = limit - len(picked)
+        for item in reversed(self._recent_events):
+            if id(item) in picked_ids:
+                continue
+            picked.append(item)
+            picked_ids.add(id(item))
+            need -= 1
+            if need <= 0:
+                break
+        index = {id(item): i for i, item in enumerate(self._recent_events)}
+        picked.sort(key=lambda item: index.get(id(item), 0))
+        return picked
 
     def _configured_agent_id(self) -> Optional[str]:
         raw = str(self.config.get("MC_AGENT_ID") or "").strip()
@@ -138,6 +180,7 @@ class MinaretBackend:
                     }
                 )
         self._fail_hello(generation, message)
+        self._fail_say(generation, message, code)
 
     def _fail_hello(self, generation: Optional[int], message: str) -> None:
         waiter = self._hello_waiter
@@ -148,6 +191,40 @@ class MinaretBackend:
             return
         if not future.done():
             future.set_result({"ok": False, "error": message})
+
+    def _fail_say(self, generation: Optional[int], message: str, code: str = "not_connected") -> None:
+        waiter = self._say_waiter
+        if waiter is None:
+            return
+        future, gen, say_id = waiter
+        if generation is not None and gen != generation:
+            return
+        self._say_waiter = None
+        if not future.done():
+            future.set_result(
+                {
+                    "ok": False,
+                    "say_id": say_id,
+                    "message_id": say_id,
+                    "error": message,
+                    "error_code": code,
+                    "sent": None,
+                }
+            )
+
+    def _complete_say(self, data: Dict[str, Any], generation: int) -> None:
+        waiter = self._say_waiter
+        if waiter is None:
+            return
+        future, gen, say_id = waiter
+        if gen != generation or future.done():
+            return
+        view = data.get("data") if isinstance(data.get("data"), dict) else data
+        got = str((view or {}).get("say_id") or "")
+        if got != say_id:
+            return
+        self._say_waiter = None
+        future.set_result(dict(view or {}))
 
     def set_chat_handler(self, handler) -> None:
         self._on_chat = handler
@@ -172,7 +249,7 @@ class MinaretBackend:
             "username": username,
             "online_players": sorted(self._online_players),
             "nearby_players": list(self._nearby_players),
-            "recent_events": list(self._recent_events[-10:]),
+            "recent_events": self._recent_for_observe(10),
             "last_error": self._last_error,
             "version": self._version or str(self.config.get("MC_VERSION") or "") or None,
             "loader": self._loader,
@@ -309,6 +386,12 @@ class MinaretBackend:
             agent = data.get("agent_id")
         return str(agent) if agent else ""
 
+    @staticmethod
+    def _is_shared_event(event: str) -> bool:
+        # Chat is fan-out to every bound seat and carries the speaker's agent_id.
+        # That id must not be treated as a seat-binding mismatch.
+        return event in ("chat", "player_chat", "chat_message")
+
     def _reject_foreign_agent(self, data: Dict[str, Any]) -> bool:
         claimed = self._message_agent_id(data)
         if not claimed:
@@ -318,6 +401,11 @@ class MinaretBackend:
             self._last_error = f"agent_mismatch: {claimed}"
             return True
         return False
+
+    def _clear_stale_agent_mismatch(self) -> None:
+        err = self._last_error or ""
+        if err.startswith("agent_mismatch:"):
+            self._last_error = None
 
     def _complete_hello(self, data: Dict[str, Any], generation: int) -> None:
         waiter = self._hello_waiter
@@ -340,6 +428,18 @@ class MinaretBackend:
         if generation != self._conn_gen:
             return
         event = str(data.get("event") or data.get("type") or "message").strip()
+        if event == "chat_result":
+            self._complete_say(data, generation)
+            return
+        if self._is_shared_event(event):
+            # Shared broadcasts (agent say / player chat) are intentionally multi-seat.
+            # Process chat for this seat without poisoning last_error on a foreign agent_id.
+            self._push({"type": event, "data": data, "at": time.time()})
+            apply_presence_event(data, self._online_players)
+            chat = parse_incoming_chat(data, self._bot_name())
+            if chat:
+                asyncio.create_task(self._emit_chat(chat[0], chat[1]))
+            return
         if self._reject_foreign_agent(data):
             if event == "hello":
                 self._complete_hello(data, generation)
@@ -348,6 +448,7 @@ class MinaretBackend:
         apply_presence_event(data, self._online_players)
         if event == "snapshot":
             self._apply_snapshot(data)
+            self._clear_stale_agent_mismatch()
         elif event == "player_activity":
             activity = normalize_activity(data)
             self._push({"type": "player_activity", "data": activity, "at": time.time()})
@@ -565,14 +666,79 @@ class MinaretBackend:
             raise WireError("invalid_params", "outbound message exceeds 1 MiB")
         await self._ws.send(encoded)
 
-    async def send_say(self, text: str) -> str:
-        payload: Dict[str, Any] = {"message": text, "user": self._bot_name()}
+    def _say_timeout(self) -> float:
+        raw = self.config.get("MINARET_SAY_TIMEOUT")
+        if raw not in (None, ""):
+            try:
+                return max(0.05, float(raw))
+            except (TypeError, ValueError):
+                pass
+        return _WS_TIMEOUT
+
+    async def send_say(
+        self,
+        text: str,
+        *,
+        audience: str = "public",
+        target: str = "",
+        emote: str = "",
+        say_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        cleaned = validate_say({"text": text, "audience": audience, "target": target, "emote": emote})
+        token = say_id_of(say_id)
+        payload: Dict[str, Any] = {
+            "message": cleaned["text"],
+            "user": self._bot_name(),
+            "audience": cleaned["audience"],
+            "say_id": token,
+        }
+        if cleaned.get("target"):
+            payload["target"] = cleaned["target"]
+        if cleaned.get("emote"):
+            payload["emote"] = cleaned["emote"]
         agent_id = self._configured_agent_id()
         if agent_id:
             payload["agent_id"] = agent_id
-        await self._send_json(payload)
-        self._push({"type": "chat_out", "text": text, "at": time.time()})
-        return text
+        self._fail_say(None, "superseded", "action_rejected")
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        generation = self._conn_gen
+        self._say_waiter = (future, generation, token)
+        try:
+            await self._send_json(payload)
+            view = await asyncio.wait_for(future, timeout=self._say_timeout())
+        except asyncio.TimeoutError:
+            if self._say_waiter and self._say_waiter[2] == token:
+                self._say_waiter = None
+            return {
+                "ok": False,
+                "say_id": token,
+                "message_id": token,
+                "audience": cleaned["audience"],
+                "error": "chat result timed out",
+                "error_code": "timeout",
+                "sent": None,
+            }
+        except Exception as exc:
+            if self._say_waiter and self._say_waiter[2] == token:
+                self._say_waiter = None
+            return {
+                "ok": False,
+                "say_id": token,
+                "message_id": token,
+                "audience": cleaned["audience"],
+                "error": str(exc),
+                "error_code": "not_connected",
+                "sent": None,
+            }
+        if not isinstance(view, dict):
+            view = {}
+        view.setdefault("say_id", token)
+        view.setdefault("message_id", view.get("say_id") or token)
+        view.setdefault("audience", cleaned["audience"])
+        if view.get("ok"):
+            self._push({"type": "chat_out", "text": view.get("sent") or cleaned["text"], "at": time.time(), "say_id": token})
+        return view
 
     async def send_command(self, command: str) -> str:
         cmd = (command or "").strip()
@@ -610,11 +776,36 @@ class MinaretBackend:
         action = request.action
         params = request.params or {}
         if action == "say":
-            text = str(params.get("text") or "").strip()
-            if not text:
-                return ActionResult(ok=False, action=action, error="text is required")
-            sent = await self.send_say(text)
-            return ActionResult(ok=True, action=action, sent=sent)
+            try:
+                cleaned = validate_say(params)
+            except WireError as exc:
+                return ActionResult(ok=False, action=action, error=exc.message, degraded=True, degrade_reason=exc.code, extras={"error_code": exc.code})
+            view = await self.send_say(
+                cleaned["text"],
+                audience=cleaned["audience"],
+                target=str(cleaned.get("target") or ""),
+                emote=str(cleaned.get("emote") or ""),
+                say_id=str(params.get("say_id") or "") or None,
+            )
+            ok = bool(view.get("ok"))
+            code = view.get("error_code")
+            say_token = str(view.get("say_id") or "")
+            return ActionResult(
+                ok=ok,
+                action=action,
+                sent=view.get("sent"),
+                error=None if ok else (view.get("error") or code or "chat was not delivered"),
+                degraded=not ok,
+                degrade_reason=None if ok else (code or view.get("error")),
+                extras={
+                    "effect": "confirmed" if ok else "failed",
+                    "error_code": code,
+                    "say_id": say_token,
+                    "message_id": view.get("message_id") or say_token,
+                    "audience": view.get("audience") or cleaned["audience"],
+                    "target": view.get("target") or cleaned.get("target") or "",
+                },
+            )
         if action == "run_command":
             cmd = str(params.get("command") or params.get("text") or "")
             sent = await self.send_command(cmd)

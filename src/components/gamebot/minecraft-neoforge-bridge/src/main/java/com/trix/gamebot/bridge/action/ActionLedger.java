@@ -137,6 +137,11 @@ public final class ActionLedger {
         return removed;
     }
 
+    /** 只读副本，不摘账。代际是否仍可结算仍由 complete 判断。 */
+    public synchronized List<Job> snapshot() {
+        return new ArrayList<>(jobs.values());
+    }
+
     public synchronized int pending(String agentId) {
         return count(agentId);
     }

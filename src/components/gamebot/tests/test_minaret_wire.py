@@ -232,7 +232,32 @@ def test_new_actions_use_the_long_timeout_only_for_breaking():
     from gamebot.adapters.minecraft.wire import action_timeout_seconds
 
     assert action_timeout_seconds("break_block", {}) == 30.0
-    assert action_timeout_seconds("place_block", {}) == 5.0
+    assert action_timeout_seconds("place_block", {}) == 30.0
+    assert action_timeout_seconds("place_block", {"auto_move": False}) == 5.0
+    assert action_timeout_seconds("move_to", {"x": 0, "y": 64, "z": 0}) == 30.0
+
+
+def test_place_block_accepts_auto_move_and_exclusions():
+    cleaned = validate_action_params(
+        "place_block",
+        {
+            "pos": {"x": 1, "y": 64, "z": 3},
+            "block_id": "minecraft:stone",
+            "auto_move": False,
+            "exclusions": [{"x1": 0, "y1": 60, "z1": 0, "x2": 2, "y2": 70, "z2": 2, "version": 1}],
+        },
+    )
+    assert cleaned["auto_move"] is False
+    assert len(cleaned["exclusions"]) == 1
+
+
+def test_move_to_accepts_arrival_tolerance_and_exclusions():
+    cleaned = validate_action_params(
+        "move_to",
+        {"x": 1.5, "y": 64, "z": -2, "arrival_tolerance": 0.35, "exclusions": []},
+    )
+    assert cleaned["arrival_tolerance"] == 0.35
+    assert cleaned["exclusions"] == []
 
 
 def test_action_request_passes_claim_through_and_caps_its_size():
@@ -250,7 +275,7 @@ def test_action_request_passes_claim_through_and_caps_its_size():
 def test_new_error_codes_survive_result_parsing():
     from gamebot.adapters.minecraft.wire import parse_action_result
 
-    for code in ("position_occupied", "state_mismatch"):
+    for code in ("position_occupied", "state_mismatch", "state_unachievable"):
         parsed = parse_action_result(
             {"protocol_version": 1, "event": "action_result", "sequence": 1, "timestamp_ms": 1, "request_id": "r",
              "data": {"ok": False, "action": "place_block", "effect": "failed", "error": "x", "error_code": code}}

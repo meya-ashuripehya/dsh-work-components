@@ -64,7 +64,7 @@ public final class MovementService {
                 continue;
             }
             Path path = navigation.createPath(candidate.x(), candidate.y(), candidate.z(), 1);
-            if (path == null || path.isDone()) {
+            if (path == null) {
                 continue;
             }
             if (pathCrossesExclusion(path, exclusions)) {
@@ -108,28 +108,34 @@ public final class MovementService {
         if (!(agent.level() instanceof ServerLevel level)) {
             return ActionOutcome.failure("client_not_ready", "server npc is not spawned");
         }
-        if (session.awaitingStop) {
-            if (!agent.getNavigation().isDone() && nowMs - session.stopRequestedAtMs < 2_000L) {
-                return null;
-            }
-            agent.getNavigation().stop();
-            return null;
-        }
+        Vec3 goal = session.goal();
+        Vec3 feet = agent.position();
+        PathNavigation navigation = agent.getNavigation();
         if (nowMs >= session.deadlineMs) {
             requestStop(agent, session);
             return failureMove(session, "timeout", "移动超时", level, agent);
         }
-        Vec3 goal = session.goal();
         if (!WorldQueries.chunkLoaded(level, BlockPos.containing(goal.x, goal.y, goal.z))) {
             requestStop(agent, session);
             return failureMove(session, "block_unloaded", "目标区块未加载", level, agent);
         }
-        Vec3 feet = agent.position();
+        if (session.awaitingStop) {
+            if (!stopComplete(agent, session)) {
+                if (nowMs - session.stopRequestedAtMs >= 2_000L) {
+                    return failureMove(session, "action_rejected", "导航停止确认超时", level, agent);
+                }
+                return null;
+            }
+            double dist = MovementGeometry.feetDistance(feet, goal.x, goal.y, goal.z);
+            if (dist > session.tolerance || !MovementGeometry.canStandAt(level, agent, feet.x, feet.y, feet.z)) {
+                return failureMove(session, "action_rejected", "停止后未满足到位要求", level, agent);
+            }
+            return successMove(session, level, agent, dist);
+        }
         if (session.exclusions.contains(feet)) {
             requestStop(agent, session);
             return failureMove(session, "action_rejected", "已进入禁入区", level, agent);
         }
-        PathNavigation navigation = agent.getNavigation();
         Path path = navigation.getPath();
         if (path != null && path.getNextNodeIndex() < path.getNodeCount()) {
             var next = path.getNode(path.getNextNodeIndex());
@@ -150,14 +156,8 @@ public final class MovementService {
                 requestStop(agent, session);
                 return failureMove(session, "action_rejected", "到达位置不可安全停留", level, agent);
             }
-            if (!session.awaitingStop) {
-                requestStop(agent, session);
-                return null;
-            }
-            if (!stopComplete(agent, session)) {
-                return null;
-            }
-            return successMove(session, level, agent, dist);
+            requestStop(agent, session);
+            return null;
         }
         if (navigation.isDone() && dist > session.tolerance) {
             if (session.replans >= MAX_REPLAN) {
@@ -173,13 +173,23 @@ public final class MovementService {
     }
 
     public static void requestStop(AgentEntity agent, MovementSession session) {
+        boolean firstStop = !session.diagnosticStopLogged;
         session.awaitingStop = true;
         session.stopRequestedAtMs = System.currentTimeMillis();
         agent.getNavigation().stop();
+        if (firstStop) {
+            session.diagnosticStopLogged = true;
+            MinaretDiagnostics.transition(session.diagnosticAgentId, session.diagnosticGeneration, session.diagnosticRequestId, "stop_requested", "navigation.stop");
+        }
     }
 
     public static boolean stopComplete(AgentEntity agent, MovementSession session) {
-        return agent.getNavigation().isDone() && agent.getDeltaMovement().lengthSqr() < 0.02;
+        boolean done = agent.getNavigation().isDone() && agent.getDeltaMovement().lengthSqr() < 0.02;
+        if (done && session.awaitingStop && !session.diagnosticStopCompleteLogged) {
+            session.diagnosticStopCompleteLogged = true;
+            MinaretDiagnostics.transition(session.diagnosticAgentId, session.diagnosticGeneration, session.diagnosticRequestId, "stop_complete", "navigation_done");
+        }
+        return done;
     }
 
     private static ActionOutcome successMove(MovementSession session, ServerLevel level, AgentEntity agent, double remaining) {

@@ -325,6 +325,8 @@ export class AgentManager {
     refs = new Map();
     /** Agents that already received the one-time channel-command setup. */
     configuredAgents = new WeakSet();
+    /** Serializes concurrent ensureBorrowedSetup for the same live agent. */
+    setupInflight = new WeakMap();
     /** sessionId -> binding, the reverse lookup used by the ReplyRouter. */
     bindings = new Map();
     maxConcurrency;
@@ -512,9 +514,26 @@ export class AgentManager {
             return;
         if (this.configuredAgents.has(agent.agent))
             return;
-        const commit = await setup(agent.agent.ctx, agent.agent);
-        commit?.commit();
-        this.configuredAgents.add(agent.agent);
+        const live = agent.agent;
+        const pending = this.setupInflight.get(live);
+        if (pending) {
+            await pending;
+            return;
+        }
+        const run = (async () => {
+            if (this.configuredAgents.has(live))
+                return;
+            const commit = await setup(live.ctx, live);
+            commit?.commit();
+            this.configuredAgents.add(live);
+        })();
+        this.setupInflight.set(live, run);
+        try {
+            await run;
+        }
+        finally {
+            this.setupInflight.delete(live);
+        }
     }
     async doCreate(sessionId, route, setup, meta) {
         return this.withSlot(async () => {

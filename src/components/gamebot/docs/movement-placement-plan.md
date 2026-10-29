@@ -1,6 +1,6 @@
 # 移动与放置功能补全计划
 
-状态：评审定稿；本轮仅更新计划，尚未执行代码修改或游戏实测。候选导航采用固定离散目标集合，后续实现由 Cursor 任务书交接，等待 Shiro「执行」。
+状态：**已实现（代码与协议）**（2026-10-24）。Java 桥接侧已提取 `MovementService` / `PlacementService`，协议与 Python `wire.py` 已同步 `auto_move`、`arrival_tolerance`、`exclusions`、`state_unachievable` 等字段。本机 `compileJava`/`compileTestJava`/`build -x test` 通过；pytest 37/37 通过；`gradlew test` 因 `maven.neoforged.net` 拉取 `junit-fml` 超时失败（见交付说明）。**未启动个人存档或 NeoForge 集成世界**——真实导航、门/床第二格、NPC 与实体碰撞等标 **UNVERIFIED**。
 
 ## 目标与范围
 

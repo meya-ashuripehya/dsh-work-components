@@ -37,6 +37,7 @@
     "lib/local-loader-worker.mjs",
     "lib/component-sdk.mjs",
     "lib/channel-telegram.mjs",
+    "lib/channel-qq.mjs",
     "lib/gmail-server.mjs",
     "lib/client.js",
     "cordis.patch.yml",
@@ -142,6 +143,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@wsz987/channel-qq": "0.5.1",
     "image-size": "^2.0.4",
     "lunar-javascript": "^1.7.7"
   }

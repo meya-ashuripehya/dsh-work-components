@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureMemberToken, gamebotChildEnv, memberToken } from './process.mjs'
-import { memberIdsFor } from './members.mjs'
+import { memberIdsFor, seatMcPresence, createMcPresenceResolver } from './members.mjs'
 import { createGamebotMembersFeature, createMembersTools } from './members-tools.mjs'
 import { WORK_TOOLS } from './minecraft-work/tools.mjs'
 import { bundledRoot } from './index.mjs'
@@ -102,7 +102,7 @@ test('members feature mounts only while Minecraft is enabled', async () => {
   assert.deepEqual(registered, [])
   cfg = { 'gamebot-minecraftEnabled': true }
   await feature.sync()
-  assert.deepEqual(registered, ['mc_connect', 'mc_observe', 'mc_act', 'mc_cancel', 'mc_status', 'mc_disconnect', ...WORK_TOOLS])
+  assert.deepEqual(registered, ['mc_connect', 'mc_observe', 'mc_act', 'mc_cancel', 'mc_status', 'mc_disconnect', 'mc_takeover', 'mc_resume', ...WORK_TOOLS])
   await feature.sync()
   assert.equal(disposed, 0)
   cfg = { 'gamebot-minecraftEnabled': false }
@@ -116,3 +116,74 @@ test('minaret source dir is the bundled bridge', () => {
   assert.match(src.replaceAll('\\', '/'), /src\/components\/gamebot\/minecraft-neoforge-bridge$/)
   assert.equal(existsSync(join(src, 'src', 'main', 'java', 'com', 'trix', 'gamebot', 'bridge', 'transport', 'AgentBridgeServer.java')), true)
 })
+
+
+test('seatMcPresence is null when Minecraft is off', async () => {
+  const info = await seatMcPresence({ 'gamebot-minecraftEnabled': false, chatroomSeats: [{ id: 'claude', enabled: true }], gb_minecraft_MC_AGENTS: JSON.stringify([{ code: 'claude', name: 'Claude', enabled: true }]) }, 'claude')
+  assert.equal(info, null)
+})
+
+test('seatMcPresence reports ineligible seats without calling GameBot', async () => {
+  let calls = 0
+  const fetchImpl = async () => { calls += 1; return { ok: true, status: 200, async text() { return '{}' } } }
+  const cfg = {
+    'gamebot-minecraftEnabled': true,
+    chatroomSeats: [{ id: 'claude', enabled: true }, { id: 'gpt', enabled: true }],
+    gb_minecraft_MC_AGENTS: JSON.stringify([{ code: 'claude', name: 'Claude', enabled: true }]),
+  }
+  const info = await seatMcPresence(cfg, 'gpt', { fetchImpl })
+  assert.equal(info.eligible, false)
+  assert.match(info.lines[0], /not on the Minecraft AI roster/)
+  assert.equal(calls, 0)
+})
+
+test('seatMcPresence surfaces connected status for eligible seats', async () => {
+  const state = tmp()
+  try {
+    ensureMemberToken(state)
+    const fetchImpl = async (url) => {
+      assert.match(url, /\/members\/claude\/status$/)
+      return { ok: true, status: 200, async text() { return JSON.stringify({ ok: true, connected: true, connecting: false, exists: true, last_error: null, username: 'ClaudeBot', agent_id: 'claude' }) } }
+    }
+    const cfg = {
+      'gamebot-minecraftEnabled': true,
+      gamebotUrl: 'http://127.0.0.1:8766',
+      chatroomSeats: [{ id: 'claude', enabled: true }],
+      gb_minecraft_MC_AGENTS: JSON.stringify([{ code: 'claude', name: 'Claude', enabled: true }]),
+    }
+    const info = await seatMcPresence(cfg, 'claude', { fetchImpl })
+    assert.equal(info.eligible, true)
+    assert.equal(info.connected, true)
+    assert.match(info.lines[0], /Status: connected/)
+    assert.match(info.lines[0], /ClaudeBot/)
+    assert.match(info.lines[0], /Chatroom rounds do not drive the world/)
+  } finally { rmSync(state, { recursive: true, force: true }) }
+})
+
+test('createMcPresenceResolver caches and soft-fails', async () => {
+  const state = tmp()
+  try {
+    ensureMemberToken(state)
+    let calls = 0
+    const fetchImpl = async () => {
+      calls += 1
+      return { ok: true, status: 200, async text() { return JSON.stringify({ ok: true, connected: false, connecting: false, exists: true, last_error: 'bridge down' }) } }
+    }
+    let cfg = {
+      'gamebot-minecraftEnabled': true,
+      gamebotUrl: 'http://127.0.0.1:8766',
+      chatroomSeats: [{ id: 'claude', enabled: true }],
+      gb_minecraft_MC_AGENTS: JSON.stringify([{ code: 'claude', name: 'Claude', enabled: true }]),
+    }
+    const resolve = createMcPresenceResolver({ getConfig: () => cfg, fetchImpl, ttlMs: 60_000 })
+    const a = await resolve({ id: 'claude' })
+    const b = await resolve({ id: 'claude' })
+    assert.equal(calls, 1)
+    assert.equal(a.connected, false)
+    assert.match(a.lines[0], /bridge down/)
+    assert.equal(b, a)
+    cfg = { 'gamebot-minecraftEnabled': false }
+    assert.equal(await resolve({ id: 'claude' }), null)
+  } finally { rmSync(state, { recursive: true, force: true }) }
+})
+

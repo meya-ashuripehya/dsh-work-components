@@ -100,11 +100,25 @@ try {
   problems.push(String(error.stderr || error.stdout || error.message).trim() || 'scripts/test-update.mjs failed')
 }
 
+// 「表情包」：catalog / 去重 / 检索 / recent / OPEN_TOOLS（node:test）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'stickers', 'stickers.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/stickers/stickers.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok |^\s*Error|# fail/.test(l) || /AssertionError|StickersError/.test(l)).slice(0, 40).join('\n'))
+}
+
 // 「笔记」：存储、三级规则、删除确认、工具注册（node:test）。
 try {
   execFileSync(process.execPath, ['--test', join(root, 'src', 'notes', 'notes.test.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push('src/notes/notes.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
+// 「跨会话记忆」：bindings 圈、人/群区分、list/search 过滤、owner-turn 闸门与调用预算（node:test）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'cross-session-memory.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/channels/cross-session-memory.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
 }
 
 // AI 档案注册表：resolveProfile、出厂模板种子、实体化序号（node:test）。

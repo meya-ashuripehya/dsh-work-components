@@ -14,7 +14,7 @@ class MovementExclusionsTest {
         MovementExclusions none = MovementExclusions.parse(new JsonObject());
         JsonObject evidence = new JsonObject();
         none.writeEvidence(evidence);
-        assertTrue(evidence.get("exclusions_applied").getAsBoolean() == false);
+        assertFalse(evidence.get("exclusions_applied").getAsBoolean());
         assertTrue(evidence.get("exclusions_note").getAsString().contains("no external"));
     }
 

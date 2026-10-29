@@ -224,7 +224,12 @@ public class AgentEntity extends PathfinderMob {
         tag.putString("AgentMemberId", memberId);
         tag.putString("Goal", goal);
         tag.putInt("SelectedSlot", selectedSlot);
-        tag.put("Offhand", offhand.save(registryAccess()));
+        if (!offhand.isEmpty()) {
+            tag.put("Offhand", offhand.save(registryAccess()));
+        } else {
+            // 1.21+ ItemStack.save throws on EMPTY; reader uses parseOptional
+            tag.put("Offhand", new CompoundTag());
+        }
         ListTag items = new ListTag();
         for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
             ItemStack stack = inventory.getItem(slot);

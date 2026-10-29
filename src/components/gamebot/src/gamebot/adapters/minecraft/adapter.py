@@ -213,12 +213,15 @@ class MinecraftAdapter(GameDriver):
             return ActionResult(ok=True, action=request.action, observation=obs)
         if self._minaret is not None:
             result = await self._minaret.act(request)
-            result.observation = self._obs_minaret()
+            # say already carries extras for chatroom mirror; skip multi-MB observation on the hot path.
+            if request.action != "say":
+                result.observation = self._obs_minaret()
             return result
         assert self._mineflayer is not None
         result = await self._mineflayer.act(request)
-        fields = await self._mineflayer.status()
-        result.observation = self._obs_mf(fields)
+        if request.action != "say":
+            fields = await self._mineflayer.status()
+            result.observation = self._obs_mf(fields)
         return result
 
     async def stream_events(self) -> List[Dict[str, Any]]:

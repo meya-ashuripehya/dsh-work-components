@@ -37,6 +37,7 @@ import { claimPollingToken, releaseAll } from '../../telegram/polling-owners.mjs
 import { dmSenderOf, isUnauthorizedDm, noteDmDiscover } from '../../telegram/dm-discover.mjs'
 import { installBoardsLink, mountBoardsBridge } from './boards-link.mjs'
 import { installCardsLink } from './cards-link.mjs'
+import { installPersonMemoryInject } from '../person-memory-inject.mjs'
 
 installMapPlaceDelivery(harness.ReplyRouter)
 installCalendarDelivery(harness.ReplyRouter)
@@ -45,6 +46,7 @@ installOwnerGate(harness.ReplyContextStore)
 installGroupRoute(harness.AgentRouter)
 installBoardsLink(harness.ReplyContextStore, harness.ChannelHarnessBridge)
 installCardsLink(harness.ChannelHarnessBridge)
+installPersonMemoryInject(harness.ChannelHarnessBridge)
 
 export { DENY_MESSAGE, createOwnerGate, resolveAuthorizedIds, setGroupPreset }
 
@@ -476,12 +478,14 @@ export function startTelegram(ctx, options) {
   const fork = ctx.plugin({
     name: 'dsh-workbench-telegram',
     apply(sub) {
+      // Isolate channels so Telegram+QQ each own a ChannelService (see qq/runtime.mjs).
+      const scoped = typeof sub.isolate === 'function' ? sub.isolate('channels') : sub
       // ① ChannelService（ctx.channels）：数据目录同 dsh-telegram-temp（~/.dsh/dsh-channels），会话绑定与访问策略沿用。
-      sub.plugin({ name: 'channel-core', apply: applyChannelCore })
+      scoped.plugin({ name: 'channel-core', apply: applyChannelCore })
       // ② Harness 桥：入站 → agent.followup；session/event → 回复管线（含工具结果图片转发补丁）。
-      sub.plugin({ name: 'channel-harness', inject: harness.inject, apply: (c) => harness.apply(c, hConfig) })
+      scoped.plugin({ name: 'channel-harness', inject: harness.inject, apply: (c) => harness.apply(c, hConfig) })
       // ③ Telegram 适配器：等 channels 与宿主服务都就绪后再开始长轮询，避免 harness 未就绪时吞掉消息。
-      sub.plugin({
+      scoped.plugin({
         name: 'channel-telegram',
         // 'tools'：授权用户闸门必须先于长轮询就位；宿主没有 tools 服务时不开始接收（失败即关闭）。
         inject: ['channels', 'tools', ...HOST_SERVICES],

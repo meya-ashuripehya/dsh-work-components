@@ -76,7 +76,7 @@
 | 多 NPC 存档 | `AgentTable` / `AgentRecord`：五成员幂等 `provision`；旧单 NPC `legacy_unbound` + `adopt`；重载不重复实体 |
 | 动作隔离 | `ServerActionDispatcher` + `ActionLedger`：按 agent 挂起/限流/长动作互斥；同 `request_id` 跨 agent 独立；伪造 cancel/agent 拒绝 |
 | Python 会话 | `minecraft-<member_id>`、`members.py` REST、`MinaretBackend` v2 hello（`provision`）、代际围栏 |
-| 工作台集成 | `members.mjs` / `members-tools.mjs`：`caller.memberId` → `mc_*`；`tool-gate` 拒绝 `mcp__gamebot-*`；`MC_AGENTS` ∩ 席位；可选 `MC_AUTO_CONNECT` |
+| 工作台集成 | `members.mjs` / `members-tools.mjs`：`caller.memberId` → `mc_*`；`tool-gate` 拒绝 `mcp__gamebot-*`；`MC_AGENTS` ∩ 席位；进世界自动连接固定为开 |
 | 测试 | Java：`AgentConnectionsTest`、`AgentTableTest`、`ActionLedgerTest`；Python：`test_member_backend.py`、`test_members_api.py`；JS：`members.test.mjs` |
 
 **仍属后置（本里程碑不做）**：`authorization_id`、聊天镜像、协作蓝图/认领租约施工、新增 `place_block`/`break_block` 协作原语（模组侧已有基础动作路径）。2.1–2.3 表格为开工前单 NPC 快照，行号未逐条复核。

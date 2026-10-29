@@ -4,7 +4,7 @@
  * 1. 未绑定或所绑定房间已不存在 → 新建房间「Minecraft」，并把房间 id 写回设置。
  * 2. 聊天室成员 → MC AI：按编码 = 成员 id 自动建行（见 agents.planRoomSync）；不修改成员。
  * 3. 已启用的 MC AI 不在成员中 → 加入成员（经宿主的设置写入，与 PUT /chatroom/seats 相同的 normalizeSeats）。
- * 聊天室成员对所有房间通用，因此第 3 步加入的成员在所有房间都可见。这里不写游戏内发言（以后再做）。
+ * 聊天室成员对所有房间通用，因此第 3 步加入的成员在所有房间都可见。游戏内发言镜像不在这次同步里，见 mc-mirror.mjs。
  * 不向聊天室注册任何 GameBot / MC 工具。
  */
 import { AGENTS_KEY, planRoomSync, resolveAgents, serializeAgents } from './agents.mjs'

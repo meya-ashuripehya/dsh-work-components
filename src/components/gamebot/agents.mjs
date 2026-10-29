@@ -1,6 +1,7 @@
 /**
  * Minecraft AI 表（设置键 gb_minecraft_MC_AGENTS，JSON 字符串）。
- * 每行 = 一个 MC AI：{ code, name, enabled, removed, provider, model, preset, reasoningEffort, persona }。
+ * 每行 = 一个 MC AI：{ code, name, enabled, removed, provider, model, preset, reasoningEffort, persona, profileId }。
+ * profileId 指向档案库里的个人档案。有档案时不保存人设正文。
  * - code：小写字母、数字、连字符，最长 32；须与聊天室成员 id 相同才能对应到该成员。保存后不可修改。
  * - name：显示名，也是游戏内 NPC 名（取代旧的 MC_USERNAME）。
  * - removed：软删除（标记为已移除并下线，信息保留，可恢复）。
@@ -12,6 +13,7 @@ export const AGENTS_KEY = 'gb_minecraft_MC_AGENTS'
 const LEGACY_IDS_KEY = 'gb_minecraft_MC_MEMBER_IDS'
 const LEGACY_NAME_KEY = 'gb_minecraft_MC_USERNAME'
 const NAME_WIDTH_MAX = 12
+const PROFILE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
 /** 游戏内名称的显示宽度：ASCII 记 1，其余记 2。上限 12。 */
 export function nameWidth(name) {
@@ -48,11 +50,17 @@ function named(agent, name) {
   return agent
 }
 
+export function profileIdOf(value) {
+  const id = str(value).trim()
+  return PROFILE_ID.test(id) ? id : ''
+}
+
 /** 规范化一行；编码不合法返回 null。超宽名称保留原文并标出，不截断、不改名。 */
 export function normalizeAgent(raw) {
   if (!raw || typeof raw !== 'object') return null
   const code = str(raw.code ?? raw.agent_id).trim()
   if (codeError(code)) return null
+  const profileId = profileIdOf(raw.profileId)
   return named({
     code,
     enabled: raw.enabled !== false,
@@ -61,7 +69,9 @@ export function normalizeAgent(raw) {
     model: str(raw.model),
     preset: str(raw.preset),
     reasoningEffort: str(raw.reasoningEffort),
-    persona: str(raw.persona),
+    // 选了档案就不再把人设正文留在 MC 设置里。
+    persona: profileId ? '' : str(raw.persona),
+    profileId,
   }, str(raw.name).trim() || code)
 }
 
@@ -94,7 +104,8 @@ export function agentFromSeat(seat) {
     model: seat?.model,
     preset: seat?.preset,
     reasoningEffort: seat?.reasoningEffort,
-    persona: seat?.persona,
+    persona: '',
+    profileId: profileIdOf(seat?.profileId),
   })
 }
 

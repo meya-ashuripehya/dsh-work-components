@@ -1,0 +1,46 @@
+{
+  "name": "@wsz987/channel-qq",
+  "version": "0.5.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wsz987/dsh-channels.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "QQ channel adapter for DeepSeek Harness (Tencent official SDK, native C2C streaming + buffered group)",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-credentials": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.5-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@tencent-connect/qqbot-nodejs": "1.0.4",
+    "zod": "^4.4.3",
+    "@wsz987/channel-control": "0.5.1",
+    "@wsz987/channel-core": "0.5.1"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.0",
+    "@wsz987/channel-testkit": "0.2.0"
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rimraf lib"
+  }
+}

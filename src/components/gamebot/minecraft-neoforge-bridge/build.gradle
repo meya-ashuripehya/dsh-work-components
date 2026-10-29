@@ -25,6 +25,15 @@ neoForge {
         enable()
         testedMod = mods.minaret
     }
+    runs {
+        client {
+            client()
+            gameDirectory = project.file('run')
+            systemProperty 'minaret.diagnostics', 'true'
+            // Offline ModDev default is Dev; set human player name for chat/mirrors.
+            programArguments.addAll('--username', 'Shiro')
+        }
+    }
 }
 
 sourceSets.main.resources {
@@ -39,6 +48,8 @@ dependencies {
             prefer '1.5.7'
         }
     }
+    // Ordinary Java libraries require explicit inclusion in ModDev development runs.
+    additionalRuntimeClasspath 'org.java-websocket:Java-WebSocket:1.5.7'
     testImplementation('com.google.code.gson:gson:2.10.1')
     testImplementation('org.mockito:mockito-core:5.14.2') {
         exclude group: 'org.objenesis', module: 'objenesis'
@@ -53,6 +64,12 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+tasks.named('processTestResources', ProcessResources).configure {
+    from('../protocol/minaret/fixtures') {
+        include 'activity-input.json'
+        into 'protocol/minaret/fixtures'
+    }
+}
 tasks.named('test', Test).configure {
     useJUnitPlatform()
 }

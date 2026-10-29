@@ -49,9 +49,10 @@ function cleanParams(params, memberId) {
   return next
 }
 
-export function createMembersTools({ getConfig, fetchImpl } = {}) {
+export function createMembersTools({ getConfig, fetchImpl, control } = {}) {
   const cfgOf = () => getConfig?.() || {}
   const request = (cfg, path, options) => memberRequest(cfg, path, { ...options, fetchImpl })
+  const held = (memberId) => control?.blocksMember?.(memberId) === true
 
   const connectTool = defineTool({
     name: 'mc_connect',
@@ -63,7 +64,11 @@ export function createMembersTools({ getConfig, fetchImpl } = {}) {
       const memberId = requireMember(exec, cfg)
       rejectForeign(args?.agent_id, memberId, 'agent_id')
       rejectForeign(args?.member_id, memberId, 'member_id')
-      return request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/connect`, { method: 'POST', timeoutMs: 20000 })
+      const result = await request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/connect`, { method: 'POST', timeoutMs: 20000 })
+      if (result && result.ok !== false && result.connected !== false) {
+        try { await control?.onConnected?.(memberId) } catch { /* 控制会话没挂上时，NPC 连接仍然有效 */ }
+      }
+      return result
     },
   })
 
@@ -83,7 +88,7 @@ export function createMembersTools({ getConfig, fetchImpl } = {}) {
 
   const actTool = defineTool({
     name: 'mc_act',
-    description: `Act as your own Minecraft NPC. Allowed actions: ${MC_ACTIONS.join(', ')}. run_command is not available. Do not pass agent_id or member_id.`,
+    description: `Act as your own Minecraft NPC. Allowed actions: ${MC_ACTIONS.join(', ')}. say takes text, optional audience (public or private), target (required when private), and emote (chat text only, not a world action). The result is the server delivery receipt, not merely a queued send. run_command is not available. Do not pass agent_id or member_id. While the Minecraft control session holds this NPC, call mc_takeover before acting and mc_resume when done.`,
     parameters: {
       action: { type: 'string', required: true, description: 'One of the allowed actions.' },
       params: { type: 'object', additionalProperties: true, description: 'Action parameters. agent_id and member_id are rejected.' },
@@ -96,11 +101,16 @@ export function createMembersTools({ getConfig, fetchImpl } = {}) {
       rejectForeign(args?.member_id, memberId, 'member_id')
       const action = String(args?.action || '').trim()
       if (!MC_ACTIONS.includes(action)) throw new Error(`不允许的动作：${action || '(empty)'}`)
-      return request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/actions`, {
+      if (held(memberId)) throw new Error('这个 NPC 正由 Minecraft 控制会话驱动。要临时自己操作，先调用 mc_takeover；做完后调用 mc_resume。')
+      const result = await request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/actions`, {
         method: 'POST',
         body: { action, params: cleanParams(args?.params, memberId) },
         timeoutMs: 30000,
       })
+      if (action === 'say') {
+        try { await control?.onSay?.(memberId, result) } catch { /* 镜像失败不影响游戏内回执 */ }
+      }
+      return result
     },
   })
 
@@ -148,17 +158,64 @@ export function createMembersTools({ getConfig, fetchImpl } = {}) {
       const memberId = requireMember(exec, cfg)
       rejectForeign(args?.agent_id, memberId, 'agent_id')
       rejectForeign(args?.member_id, memberId, 'member_id')
-      return request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/disconnect`, { method: 'POST', timeoutMs: 10000 })
+      const result = await request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/disconnect`, { method: 'POST', timeoutMs: 10000 })
+      try { control?.onDisconnected?.(memberId) } catch { /* 控制会话已停时仍返回断开结果 */ }
+      return result
     },
   })
 
-  return [connectTool, observeTool, actTool, cancelTool, statusTool, disconnectTool]
+  const takeoverTool = defineTool({
+    name: 'mc_takeover',
+    description: 'Pause the Minecraft control session and drive this NPC yourself. Call mc_resume to hand it back.',
+    parameters: {},
+    output: OUTPUT,
+    async execute(args, exec) {
+      const cfg = cfgOf()
+      const memberId = requireMember(exec, cfg)
+      rejectForeign(args?.agent_id, memberId, 'agent_id')
+      rejectForeign(args?.member_id, memberId, 'member_id')
+      if (typeof control?.takeover !== 'function') return { ok: false, error: '控制会话还没挂上' }
+      return control.takeover(memberId)
+    },
+  })
+
+  const resumeTool = defineTool({
+    name: 'mc_resume',
+    description: 'Hand this NPC back to its Minecraft control session. The idle timer starts again.',
+    parameters: {},
+    output: OUTPUT,
+    async execute(args, exec) {
+      const cfg = cfgOf()
+      const memberId = requireMember(exec, cfg)
+      rejectForeign(args?.agent_id, memberId, 'agent_id')
+      rejectForeign(args?.member_id, memberId, 'member_id')
+      if (typeof control?.resume !== 'function') return { ok: false, error: '控制会话还没挂上' }
+      return control.resume(memberId)
+    },
+  })
+
+  return [connectTool, observeTool, actTool, cancelTool, statusTool, disconnectTool, takeoverTool, resumeTool]
 }
 
 /** Minecraft 卡片启用时挂上 mc_*；关闭时卸下。 */
 export function createGamebotMembersFeature(ctx, getConfig) {
   const log = ctx.logger ?? console
   const state = { status: 'off', detail: '未启用', fork: null, gen: 0 }
+  let bound = null
+  const gate = {
+    blocksMember: (id) => bound?.blocksMember?.(id),
+    onConnected: (id) => bound?.onConnected?.(id),
+    onDisconnected: (id) => bound?.onDisconnected?.(id),
+    takeover(id) {
+      if (typeof bound?.takeover !== 'function') return { ok: false, error: '控制会话还没挂上' }
+      return bound.takeover(id)
+    },
+    resume(id) {
+      if (typeof bound?.resume !== 'function') return { ok: false, error: '控制会话还没挂上' }
+      return bound.resume(id)
+    },
+    onSay: (id, result) => bound?.onSay?.(id, result),
+  }
   let disposed = false
   let snapshot = ''
   let work = null
@@ -204,7 +261,7 @@ export function createGamebotMembersFeature(ctx, getConfig) {
         apply(sub) {
           sub.inject(['tools'], (toolCtx) => {
             work = createWorkRuntime()
-            for (const tool of createMembersTools({ getConfig })) toolCtx.tools.register(tool)
+            for (const tool of createMembersTools({ getConfig, control: gate })) toolCtx.tools.register(tool)
             for (const tool of createWorkTools({ getConfig, runtime: work })) toolCtx.tools.register(tool)
           })
         },
@@ -226,6 +283,7 @@ export function createGamebotMembersFeature(ctx, getConfig) {
 
   return {
     sync,
+    bindControl(next) { bound = next || null },
     async dispose() {
       disposed = true
       state.gen++

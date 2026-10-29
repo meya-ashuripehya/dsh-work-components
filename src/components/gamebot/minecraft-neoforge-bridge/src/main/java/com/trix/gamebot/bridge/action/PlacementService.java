@@ -12,7 +12,9 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.BlockHitResult;
@@ -47,6 +49,9 @@ public final class PlacementService {
         public JsonObject requestedState = new JsonObject();
         public double maxDistance;
         public boolean autoMove = true;
+        public String agentId;
+        public long generation;
+        public String requestId;
     }
 
     private PlacementService() {
@@ -143,6 +148,7 @@ public final class PlacementService {
         run.evidence.addProperty("stage", "approach");
         chosen.writeEvidence(run.evidence);
         run.movement = MovementService.begin(agent, chosen, MovementService.PLACEMENT_TOLERANCE, exclusions, deadlineMs);
+        run.movement.correlate(run.agentId, run.generation, run.requestId);
         run.phase = Phase.APPROACH;
         return null;
     }
@@ -250,6 +256,9 @@ public final class PlacementService {
         }
         boolean matches = stateMatches(placed, run.requestedState);
         boolean multiOk = MultiBlockVerify.verify(level, run.target, block, run.requestedState, run.evidence);
+        if (block instanceof DoorBlock || block instanceof BedBlock) {
+            MinaretDiagnostics.footprint(run.agentId, run.generation, run.requestId, matches, multiOk, run.evidence);
+        }
         if (!matches || !multiOk) {
             run.evidence.addProperty("summary", "放置后读回与请求不完全一致");
             return ActionOutcome.done(true, "unverified", null, null, "placed block state did not match", run.evidence);

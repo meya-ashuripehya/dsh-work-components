@@ -1,0 +1,40 @@
+{
+  "provenance": {
+    "status": "freshly extracted",
+    "experiment": "litematica-decode-exp-20261023-052026",
+    "source_file": "render_blocks-payload.json",
+    "note": "Floor [4,2,3] and stair [4,3,3] plus their face-adjacent blocks that exist in the 220-block crop. Banners, potted plants and end rods occur elsewhere in that crop but are not face-adjacent to these two cells, so they are not listed. This fixture does not read the temp experiment at runtime. The 220-block crop is not a build order."
+  },
+  "normalization_origin": [3, 2, 3],
+  "blocks": [
+    {
+      "task_id": "two_block_floor",
+      "position": [4, 2, 3],
+      "block_id": "minecraft:polished_diorite",
+      "properties": {},
+      "depends_on": []
+    },
+    {
+      "task_id": "two_block_stair",
+      "position": [4, 3, 3],
+      "block_id": "minecraft:polished_diorite_stairs",
+      "properties": {
+        "half": "bottom",
+        "waterlogged": "false",
+        "shape": "straight",
+        "facing": "south"
+      },
+      "depends_on": ["two_block_floor"]
+    }
+  ],
+  "excludes": [
+    { "id": "exclude_east_of_floor", "position": [5, 2, 3], "block_id": "minecraft:polished_diorite" },
+    { "id": "exclude_west_of_floor", "position": [3, 2, 3], "block_id": "minecraft:polished_diorite_stairs" },
+    { "id": "exclude_below_floor", "position": [4, 1, 3], "block_id": "minecraft:polished_diorite" },
+    { "id": "exclude_south_of_floor", "position": [4, 2, 4], "block_id": "minecraft:polished_diorite" },
+    { "id": "exclude_north_of_floor", "position": [4, 2, 2], "block_id": "minecraft:polished_diorite_stairs" },
+    { "id": "exclude_upper_stair", "position": [4, 4, 3], "block_id": "minecraft:polished_diorite_stairs" },
+    { "id": "exclude_east_of_stair", "position": [5, 3, 3], "block_id": "minecraft:polished_diorite" },
+    { "id": "exclude_south_of_stair", "position": [4, 3, 4], "block_id": "minecraft:polished_diorite" }
+  ]
+}

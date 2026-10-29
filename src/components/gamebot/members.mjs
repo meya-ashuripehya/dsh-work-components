@@ -99,3 +99,106 @@ export async function memberStatusSummary(cfg, { fetchImpl = fetch } = {}) {
   if (unconfigured) return `成员 NPC：body 没有成员令牌（${ids.length} 个席位）。请从工作台重启 GameBot。`
   return `成员 NPC：${connected}/${ids.length} 已连接`
 }
+
+
+/**
+ * One seat's Minecraft presence for chatroom prompts.
+ * Soft-fails: never throws; returns null when Minecraft is off.
+ * @returns {Promise<null|{ eligible:boolean, connected:boolean|null, connecting:boolean|null, exists:boolean|null, last_error:string|null, username:string|null, agent_id:string|null, detail:string, lines:string[] }>}
+ */
+export async function seatMcPresence(cfg, memberId, { fetchImpl = fetch } = {}) {
+  if (cfg?.['gamebot-minecraftEnabled'] !== true) return null
+  const id = String(memberId || '').trim()
+  if (!id) return null
+  const eligible = memberIdsFor(cfg).includes(id)
+  const base = {
+    eligible,
+    connected: null,
+    connecting: null,
+    exists: null,
+    last_error: null,
+    username: null,
+    agent_id: null,
+  }
+  if (!eligible) {
+    const detail = 'Minecraft is on, but this seat is not on the Minecraft AI roster'
+    return {
+      ...base,
+      detail,
+      lines: [
+        `- Minecraft: enabled, but your seat (${id}) is not on the Minecraft AI roster — you have no NPC. Chatroom turns stay separate from in-game control.`,
+      ],
+    }
+  }
+  if (!memberToken()) {
+    const detail = 'Minecraft seat eligible; member token not ready'
+    return {
+      ...base,
+      detail,
+      lines: [
+        `- Minecraft seat: you have NPC code "${id}". Status: body token not ready (restart GameBot from the workbench). Tools when ready: mc_status, mc_connect, mc_observe, mc_act, mc_cancel, mc_disconnect. Chatroom rounds do not drive the world — call mc_* when you want to act in-game.`,
+      ],
+    }
+  }
+  try {
+    const data = await memberRequest(cfg, `/v1/minecraft/members/${encodeURIComponent(id)}/status`, { fetchImpl, timeoutMs: 4000 })
+    const connected = !!data?.connected
+    const connecting = !!data?.connecting
+    const exists = data?.exists !== false
+    const last_error = data?.last_error == null || data?.last_error === '' ? null : String(data.last_error).slice(0, 200)
+    const username = data?.username == null || data?.username === '' ? null : String(data.username).slice(0, 64)
+    const agent_id = data?.agent_id == null || data?.agent_id === '' ? null : String(data.agent_id).slice(0, 64)
+    let status = 'not connected'
+    if (connected) status = 'connected'
+    else if (connecting) status = 'connecting'
+    else if (exists === false) status = 'no session yet'
+    const who = username || agent_id || id
+    const err = last_error ? ` last_error: ${last_error}.` : ' last_error: none.'
+    const detail = `Minecraft seat ${id}: ${status}`
+    return {
+      eligible: true,
+      connected,
+      connecting,
+      exists,
+      last_error,
+      username,
+      agent_id,
+      detail,
+      lines: [
+        `- Minecraft seat: you have NPC code "${id}"${who !== id ? ` (in-world: ${who})` : ''}. Status: ${status}.${err} Tools: mc_status, mc_connect, mc_observe, mc_act, mc_cancel, mc_disconnect. Chatroom rounds do not drive the world — call mc_* when you want to act in-game.`,
+      ],
+    }
+  } catch (error) {
+    const msg = String(error?.message || error || 'status failed').slice(0, 160)
+    const detail = `Minecraft seat ${id}: status unavailable (${msg})`
+    return {
+      ...base,
+      eligible: true,
+      last_error: msg,
+      detail,
+      lines: [
+        `- Minecraft seat: you have NPC code "${id}". Status: could not reach GameBot (${msg}). Try mc_status later. Chatroom rounds do not drive the world.`,
+      ],
+    }
+  }
+}
+
+/**
+ * Cached resolver for createModerator({ resolveMcInfo }).
+ * Returns null when Minecraft is off; otherwise seatMcPresence for seat.id.
+ */
+export function createMcPresenceResolver({ getConfig, fetchImpl = fetch, ttlMs = 3000 } = {}) {
+  const cache = new Map() // id → { at, value }
+  return async function resolveMcInfo(seat) {
+    const cfg = typeof getConfig === 'function' ? getConfig() : getConfig
+    if (cfg?.['gamebot-minecraftEnabled'] !== true) return null
+    const id = String(seat?.id || '').trim()
+    if (!id) return null
+    const now = Date.now()
+    const hit = cache.get(id)
+    if (hit && now - hit.at < ttlMs) return hit.value
+    const value = await seatMcPresence(cfg, id, { fetchImpl })
+    cache.set(id, { at: now, value })
+    return value
+  }
+}

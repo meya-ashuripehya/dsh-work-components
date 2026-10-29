@@ -47,7 +47,7 @@ test('import from chatroom copies config, never mutates seats, asks before overw
   assert.deepEqual(r.conflicts, ['grok'])
   assert.deepEqual(r.invalid, ['Bad_Id', 'missing'])
   const c = r.agents.find((a) => a.code === 'claude')
-  assert.deepEqual(c, { code: 'claude', name: 'Claude', enabled: true, removed: false, provider: 'anthropic', model: 'claude-x', preset: 'p1', reasoningEffort: 'high', persona: '简洁' })
+  assert.deepEqual(c, { code: 'claude', name: 'Claude', enabled: true, removed: false, provider: 'anthropic', model: 'claude-x', preset: 'p1', reasoningEffort: 'high', persona: '', profileId: '' })
   assert.equal(r.agents.find((a) => a.code === 'grok').name, '老 Grok')
   assert.equal(base[0].name, '老 Grok')
   const o = importFromSeats(base, seats, ['grok'], { overwrite: true })
