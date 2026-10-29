@@ -1,7 +1,8 @@
 /**
- * 聊天室成员 → Minecraft NPC。席位来自设置里的 chatroomSeats，不接受模型自报的成员 id。
- * 名单 = 「Minecraft AI」表（gb_minecraft_MC_AGENTS，见 agents.mjs）中已启用、未移除的编码 ∩ 已启用席位。
- * 表从未保存过时按旧 MC_MEMBER_IDS 迁移（留空 = 全部已启用席位）。id 必须符合模组的 agent id 规则。
+ * 聊天室成员 → Minecraft NPC。席位来自席位池（chatroomSeats），不接受模型自报的成员 id。
+ * 优先：绑定聊天室的成员 id 列表（cfg.mcRoomSeatIds，或 setBoundRoomSeatIds 写入的缓存）中已启用且合法的席位。
+ * 回退：旧「Minecraft AI」表（gb_minecraft_MC_AGENTS）中已启用、未移除的编码 ∩ 已启用席位。
+ * 表从未保存过时按旧 MC_MEMBER_IDS 迁移。id 必须符合模组的 agent id 规则。
  */
 import { memberToken } from './process.mjs'
 import { activeAgents } from './agents.mjs'
@@ -9,21 +10,58 @@ import { activeAgents } from './agents.mjs'
 export const AGENT_ID = /^[a-z0-9][a-z0-9-]{0,31}$/
 const TOKEN_HEADER = 'x-gamebot-member-token'
 
-export function memberIdsFor(cfg) {
-  const seats = Array.isArray(cfg?.chatroomSeats) ? cfg.chatroomSeats : []
+/** undefined = 未注入房间名册（走旧 MC_AGENTS 交集）；数组 = 绑定房间的席位 id（可为空）。 */
+let boundRoomSeatIds = undefined
+
+/** 宿主在绑定房间成员变化时写入，供 launch / 工具同步读取。传 undefined 清除。 */
+export function setBoundRoomSeatIds(ids) {
+  boundRoomSeatIds = Array.isArray(ids) ? ids.map((x) => String(x || '').trim()).filter(Boolean) : undefined
+}
+
+function roomSeatIdsOf(cfg) {
+  if (Array.isArray(cfg?.mcRoomSeatIds)) return cfg.mcRoomSeatIds
+  if (Array.isArray(boundRoomSeatIds)) return boundRoomSeatIds
+  return null
+}
+
+function enabledPoolIds(cfg, source) {
   const enabled = []
-  for (const seat of seats) {
+  for (const seat of source) {
     const id = String(seat?.id || '').trim()
     if (!seat || seat.enabled === false || !AGENT_ID.test(id) || enabled.includes(id)) continue
     enabled.push(id)
   }
+  return enabled
+}
+
+export function memberIdsFor(cfg) {
+  const pool = Array.isArray(cfg?.chatroomSeats) ? cfg.chatroomSeats : []
+  const byId = new Map(pool.filter((s) => s && s.id).map((s) => [String(s.id).trim(), s]))
+  const roomIds = roomSeatIdsOf(cfg)
+  if (roomIds) {
+    const source = []
+    for (const raw of roomIds) {
+      const seat = byId.get(String(raw || '').trim())
+      if (seat) source.push(seat)
+    }
+    return enabledPoolIds(cfg, source)
+  }
+  const enabled = enabledPoolIds(cfg, pool)
   const allow = new Set(activeAgents(cfg).map((a) => a.code))
   return enabled.filter((id) => allow.has(id))
 }
 
-/** 成员 id → NPC 名称（表中的名称）。 */
+/** 成员 id → NPC 名称（席位显示名；旧表回退）。 */
 export function memberNamesFor(cfg) {
   const names = {}
+  const pool = Array.isArray(cfg?.chatroomSeats) ? cfg.chatroomSeats : []
+  const ids = memberIdsFor(cfg)
+  const byId = new Map(pool.filter((s) => s && s.id).map((s) => [String(s.id).trim(), s]))
+  for (const id of ids) {
+    const seat = byId.get(id)
+    if (seat) names[id] = String(seat.name || id)
+  }
+  if (Object.keys(names).length) return names
   for (const a of activeAgents(cfg)) names[a.code] = a.name
   return names
 }
@@ -126,7 +164,7 @@ export async function seatMcPresence(cfg, memberId, { fetchImpl = fetch } = {}) 
       ...base,
       detail,
       lines: [
-        `- Minecraft: enabled, but your seat (${id}) is not on the Minecraft AI roster — you have no NPC. Chatroom turns stay separate from in-game control.`,
+        `- Minecraft: enabled, but your seat (${id}) is not in the bound chatroom roster — you have no NPC. Chatroom turns stay separate from in-game control.`,
       ],
     }
   }

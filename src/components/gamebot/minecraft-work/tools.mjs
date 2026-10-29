@@ -42,7 +42,7 @@ function requireMember(exec, cfg) {
   const seats = Array.isArray(cfg?.chatroomSeats) ? cfg.chatroomSeats : []
   const seat = seats.find((item) => item && item.id === memberId)
   if (!seat || seat.enabled === false) throw new Error('这个席位没有启用')
-  if (!memberIdsFor(cfg).includes(memberId)) throw new Error('该成员没有已启用的 Minecraft AI（请在 GameBot · Minecraft 设置的「Minecraft AI」中添加或启用）')
+  if (!memberIdsFor(cfg).includes(memberId)) throw new Error('该席位不在绑定聊天室的成员名单中（请在「聊天室」中把该席位加入绑定房间，或在「席位管理」中启用）')
   return memberId
 }
 

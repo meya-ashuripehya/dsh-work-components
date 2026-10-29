@@ -1,6 +1,6 @@
 /**
  * 聊天室存储：<dir>/rooms/<roomId>/meta.json + messages.jsonl（只追加）。
- * meta：{ id, title, createdAt, updatedAt, messages, sessionId? }（sessionId：对应的 DSH 房间会话）。
+ * meta：{ id, title, createdAt, updatedAt, messages, sessionId?, memberSeatIds? }（sessionId：对应的 DSH 房间会话；memberSeatIds：本房间成员 = 席位池中的有序 id）。
  * meta 另有 telegramChatIds（绑定的群）、briefs（Cursor 任务书状态）、task（当前任务的调度状态）。
  * 消息：{ id, seq, ts, kind: 'user'|'seat'|'system'|'tool'|'brief', speaker: { id, name }, model?, text, status, usage?, error? }
  *   status：ok | pass（席位选择不发言）| error | stopped（被用户中止，保留已生成部分）

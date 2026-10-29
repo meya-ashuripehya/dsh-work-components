@@ -23,13 +23,12 @@ test('planRoomSync imports unknown members, warns on invalid ids, adds enabled M
   assert.deepEqual(plan.invalid, [{ id: 'Bad_Id', name: 'Bad' }])
   assert.deepEqual(plan.addSeats, [{ id: 'steve', name: 'Steve', provider: 'xai', model: 'grok-x', preset: 'p2', reasoningEffort: '', persona: '友好', enabled: true }])
   assert.equal(JSON.stringify(seats), before)
-  // 已移除的行（gone）不会被加入；成员 claude 已有行，不重复导入
   const again = planRoomSync([...agents, ...plan.importRows], [...seats, ...plan.addSeats])
   assert.deepEqual([again.importRows.length, again.addSeats.length], [0, 0])
 })
 
 function harness(cfg, rooms = []) {
-  const state = { cfg, rooms: [...rooms], patches: [], sessions: [] }
+  const state = { cfg, rooms: [...rooms], patches: [], sessions: [], members: {} }
   const binding = createMinecraftRoomBinding({
     getConfig: () => state.cfg,
     store: {
@@ -39,12 +38,23 @@ function harness(cfg, rooms = []) {
     ensureSession: async (id) => { state.sessions.push(id) },
     applyPatch: async (patch) => { state.patches.push(patch); state.cfg = { ...state.cfg, ...patch } },
     normalizeSeats: (list) => list.map((s) => ({ ...s, id: String(s.id).toLowerCase() })),
+    ensureRoomMembers: async (id, opts = {}) => {
+      let ids = state.members[id]
+      if (!ids) ids = (state.cfg.chatroomSeats || []).map((s) => s.id)
+      if (Array.isArray(opts.addIds)) {
+        for (const x of opts.addIds) if (!ids.includes(x)) ids = [...ids, x]
+      }
+      state.members[id] = ids
+      const room = state.rooms.find((r) => r.id === id)
+      if (room) room.memberSeatIds = ids
+      return ids
+    },
     now: () => 1,
   })
   return { state, binding }
 }
 
-test('no bound room: creates 「Minecraft」 with all enabled MC AIs and saves its id; second run is a no-op', async () => {
+test('no bound room: creates 「Minecraft」, migrates MC-only rows into the seat pool, snapshots room members', async () => {
   const { state, binding } = harness({ chatroomSeats: [], gb_minecraft_MC_AGENTS: serializeAgents([{ code: 'steve', name: 'Steve' }, { code: 'gone', removed: true }]) })
   const r = await binding.sync('save')
   assert.equal(r.ok, true)
@@ -53,6 +63,7 @@ test('no bound room: creates 「Minecraft」 with all enabled MC AIs and saves i
   assert.equal(state.cfg[ROOM_KEY], 'room-1')
   assert.deepEqual(state.cfg.chatroomSeats.map((s) => s.id), ['steve'])
   assert.deepEqual(r.added, ['steve'])
+  assert.deepEqual(state.members['room-1'], ['steve'])
   assert.deepEqual(state.sessions, ['room-1'])
   const n = state.patches.length
   const r2 = await binding.sync('launch')
@@ -62,15 +73,15 @@ test('no bound room: creates 「Minecraft」 with all enabled MC AIs and saves i
   assert.equal(state.rooms.length, 1)
 })
 
-test('bound room: imports members into MC rows; a deleted bound room is replaced', async () => {
+test('bound room lost: creates a replacement and does not rewrite MC_AGENTS; existing seats stay in the pool', async () => {
   const { state, binding } = harness({ chatroomSeats: SEATS, gb_minecraft_MC_AGENTS: '[]', [ROOM_KEY]: 'r-old' }, [{ id: 'r-main', title: '主房间' }])
   const r = await binding.sync('save')
   assert.equal(r.lost, true)
   assert.equal(r.created, true)
-  assert.deepEqual(r.imported, ['claude', 'gpt'])
-  assert.deepEqual(r.invalid.map((x) => x.id), ['Bad_Id'])
-  assert.deepEqual(JSON.parse(state.cfg.gb_minecraft_MC_AGENTS).map((a) => a.code), ['claude', 'gpt'])
+  assert.deepEqual(r.imported, [])
+  assert.equal(state.cfg.gb_minecraft_MC_AGENTS, '[]')
   assert.equal(state.cfg.chatroomSeats, SEATS)
+  assert.ok(state.members[r.roomId]?.includes('claude'))
   state.cfg = { ...state.cfg, [ROOM_KEY]: 'r-main' }
   const r2 = await binding.sync('save')
   assert.equal(r2.created, false)

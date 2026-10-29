@@ -125,7 +125,7 @@ test('API: first seat added sets 主答; deleting that seat clears 主答; confi
     assert.match(emptyCfg.json.error, /请选择主答成员/)
     const bad = await call('PUT', '/chatroom/config', { defaultMain: 'nobody' })
     assert.equal(bad.status, 400)
-    assert.match(bad.json.error, /成员/)
+    assert.match(bad.json.error, /席位/)
     const ok = await call('PUT', '/chatroom/config', { defaultMain: 'Claude' })
     assert.equal(ok.status, 200)
     assert.equal(cfg.chatroomDefaultMain, 'cl')

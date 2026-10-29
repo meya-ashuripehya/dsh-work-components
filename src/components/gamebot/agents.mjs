@@ -164,11 +164,11 @@ export function importFromSeats(list, seats, ids, { overwrite = false } = {}) {
 }
 
 /**
- * 绑定聊天室的成员对齐（纯函数）。聊天室成员（chatroomSeats）对所有房间通用，所以「房间成员」即全部席位。
- * - importRows：编码合法、尚无对应 MC 行的成员 → 新建 MC 行（复制配置，启用状态沿用成员；不修改成员）。
- * - invalid：id 不符合编码规则的成员（只提示，不导入）。
- * - addSeats：已启用、未移除、但不在成员中的 MC AI → 作为新成员加入（沿用名称 / 服务商 / 模型 / 预设 / 推理强度 / 附加人设）。
- * 已移除（软删除）的 MC 行既不会被重新加入，也不会从房间中移除；同名编码的行已存在时不导入（幂等）。
+ * 旧 Minecraft AI 表与席位池的对齐（纯函数，仅隐藏的 MC_AGENTS 表 / 测试仍用）。
+ * 现行绑定走 room-bind：MC 独有行迁入席位池，房间名册是 memberSeatIds。
+ * - importRows：编码合法、尚无对应 MC 行的席位 → 新建 MC 行。
+ * - invalid：id 不符合编码规则的席位（只提示，不导入）。
+ * - addSeats：已启用、未移除、但不在席位池中的 MC AI → 可并入池的对象。
  */
 export function planRoomSync(agents, seats) {
   const list = (Array.isArray(seats) ? seats : []).filter((s) => s && typeof s === 'object')

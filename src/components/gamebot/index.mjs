@@ -299,7 +299,7 @@ export function createGameModule(game) {
       await releaseBody(id)
     },
     note(cfg) {
-      const roster = game === 'minecraft' ? ` Minecraft AI：当前 ${memberIdsFor(cfg).length} 个已启用且对应已启用聊天室成员。` : ''
+      const roster = game === 'minecraft' ? ` Minecraft：当前 ${memberIdsFor(cfg).length} 个绑定聊天室成员（已启用席位）。` : ''
       return [
         `打开「启用」会自动启动共享 GameBot REST body（${gameUrl(cfg)}），并挂载只含 ${info.title} 的 MCP（工具前缀 mcp__${serverName}__）。`,
         '所有游戏共用一个 body：任一游戏启用即启动，全部关闭才停止。每次应用/会话启动默认关闭；REST 地址与目录会记住。',

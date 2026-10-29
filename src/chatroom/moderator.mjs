@@ -561,7 +561,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
   }
   /** 用户在界面里收进 / 移出回收站（立即生效，一条只给界面看的系统提示「您把 N 张卡片…」）。op = 'sweep' | 'restore'。 */
   async function userBin(roomId, op, ids) {
-    const cfg = await getRoomConfig()
+    const cfg = await getRoomConfig(roomId)
     const n = await applyBin(roomId, { op: op === 'sweep' ? 'sweep' : 'restore', ids: (Array.isArray(ids) ? ids : []).map(String), byName: cfg.userName || '用户', byUser: true })
     let meta = {}
     try { meta = await store.getRoom(roomId) } catch {}
@@ -603,7 +603,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
     if (call.name === SET_MAIN_NAME || call.name === SET_LEADER_NAME) {
       const kind = call.name === SET_MAIN_NAME ? 'main' : 'leader'
       if (typeof saveRoomControl !== 'function') return { isError: true, text: 'Room settings cannot be saved in this environment.' }
-      const cfg = await getRoomConfig()
+      const cfg = await getRoomConfig(roomId)
       const r = resolveMember(cfg.seats, args.member)
       if (r.error) return { isError: true, text: r.error }
       const current = kind === 'main' ? task.main : (cfg.seats.find((s) => s.leader)?.id || '')
@@ -636,7 +636,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
     const st = controlState(task)
     try {
       {
-        const cfg = await getRoomConfig()
+        const cfg = await getRoomConfig(roomId)
         const target = cfg.seats.find((s) => s.id === ef.target.id && s.enabled !== false)
         if (!target) throw new Error(`成员 ${ef.target.name} 已不可用`)
         if (ef.kind === 'main') {
@@ -1062,7 +1062,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
         await store.getRoom(roomId)
         for (;;) {
           if (controller.signal.aborted) { reason = 'stopped'; break }
-          const cfg = await getRoomConfig()
+          const cfg = await getRoomConfig(roomId)
           const snap = games ? games.snapshot(roomId) : null
           const gameAi = !!(snap?.active && !snap.paused && !snap.waiting && snap.actor?.kind === 'ai' && snap.actor.memberId)
           if (gameAi && run.pendingUser) run.pendingUser = null
@@ -1142,7 +1142,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
     const atts = Array.isArray(attachments) ? attachments.filter((a) => a && a.id) : []
     const links = Array.isArray(videoLinks) ? videoLinks.filter((a) => a && a.id) : []
     if (!t && !atts.length) throw Object.assign(new Error('消息不能为空'), { status: 400 })
-    const cfg = await getRoomConfig()
+    const cfg = await getRoomConfig(roomId)
     // 「批准 +N」/「批准」：所有者的控制消息，由程序处理，不写入房间记录（AI 看不到）；其他人的「批准」按普通消息处理
     const early = !atts.length && owner ? parseOwnerCommand(t) : null
     if (early?.kind === 'approve') return approve(roomId, early.n, { run, by: userName || cfg.userName })
@@ -1376,7 +1376,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
     if (!b || b.status !== 'awaiting_owner') { await system(roomId, id ? `任务书 #${id} 不在待执行状态。` : '没有待执行的任务书。'); return false }
     await store.patchMeta(roomId, (m) => { if (m.briefs?.[id]) m.briefs[id].status = 'cancelled'; if (m.pendingBrief === id) m.pendingBrief = undefined })
     await setBriefMsgStatus(roomId, id, 'cancelled', b.msgId)
-    const cfg = await getRoomConfig()
+    const cfg = await getRoomConfig(roomId)
     const seat = cfg.seats.find((s) => s.id === b.by)
     const why = CURSOR_BLANK.cancelled
     await appendAndEmit(roomId, { kind: 'tool', tool: CURSOR_TOOL_NAME, speaker: seat ? { id: seat.id, name: seat.name } : { id: 'cursor', name: 'Cursor' }, text: why.user, data: jsonSafe({ ok: false, blank: true, status: 'cancelled', briefId: id, briefTitle: b.title, title: cursorCardTitle(id, b.repo, why.label), repo: b.repo, action: b.action, cursorTask: { briefId: id, status: 'cancelled', repo: b.repo, reason: why.user, aiReason: why.ai, endedAt: new Date(now()).toISOString() } }), status: 'ok' }, { relay: false })
@@ -1391,7 +1391,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
     cursorRuns.set(roomId, run) // 同步占位：两次「执行」不会同时启动
     let cfg, b, id
     try {
-      cfg = await getRoomConfig()
+      cfg = await getRoomConfig(roomId)
       const meta = await store.getRoom(roomId)
       id = briefId || meta.pendingBrief
       b = id ? meta.briefs?.[id] : null
@@ -1490,7 +1490,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
       emit(roomId, { type: 'cursor', running: false, briefId: id, status: data0.status })
       if (!card) return null
       void Promise.resolve(tg.relay(seat0, roomId, toolSummaryLine(card), { prefixName: seat0?.name || 'Cursor' })).catch(() => {})
-      const cfg = await getRoomConfig()
+      const cfg = await getRoomConfig(roomId)
       const target = wakeTarget(cfg, b.by)
       const ref = card.data?.resultId ? `card #${card.data.resultId}` : 'its card'
       const note = await system(roomId, `Cursor 任务 #${id} 交卷了`, {
@@ -1562,7 +1562,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
       return
     }
     if (event.type === 'play') {
-      const cfg = await getRoomConfig()
+      const cfg = await getRoomConfig(roomId)
       const who = event.who === 'ai' ? 'ai' : 'human'
       const noted = games.noteMove(roomId, who, cfg.gameAiStreak)
       const snap = games.snapshot(roomId)
@@ -1601,7 +1601,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
         return
       }
       if (event.type === 'move') {
-        const cfg = await getRoomConfig()
+        const cfg = await getRoomConfig(roomId)
         const who = event.who === 'ai' ? 'ai' : 'human'
         const noted = games.noteMove(roomId, who, cfg.gameAiStreak)
         const view = event.view

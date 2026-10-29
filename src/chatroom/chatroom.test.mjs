@@ -7,7 +7,7 @@ import { createStore } from './store.mjs'
 import { buildPrompt, isPass } from './transcript.mjs'
 import { callSeat, toLlmMessages } from './providers.mjs'
 import { createModerator } from './moderator.mjs'
-import { resolveSeats, normalizeSeats, migrateLegacyChatroom, chatroomSchemaShape, CHATROOM_KEYS, LEGACY_CHATROOM_KEYS, outputTokenLimit } from './seats.mjs'
+import { resolveSeats, normalizeSeats, migrateLegacyChatroom, chatroomSchemaShape, CHATROOM_KEYS, LEGACY_CHATROOM_KEYS, outputTokenLimit, normalizeMemberSeatIds, defaultMemberSeatIds, seatsForIds, takeEmbeddedRoomMembers } from './seats.mjs'
 import { createChatroomFeature } from './index.mjs'
 import { createDshCatalog, personaFromComposition } from '../dsh-catalog.mjs'
 import z from 'schemastery'
@@ -80,6 +80,26 @@ test('seats: normalize ids/defaults/cap, schema has no secret fields', () => {
   assert.ok(!Object.keys(shape).some((k) => /ApiKey|BaseUrl|Proxy/.test(k) && k !== 'chatroomTelegramProxy'))
   assert.deepEqual(resolveSeats({ chatroomSeats: SEATS }).map((s) => s.id), ['gpt', 'deepseek', 'claude', 'grok'])
   assert.ok(!CHATROOM_KEYS.includes('chatroomSeats'))
+  const withFlag = normalizeSeats([{ id: 'ds', name: '小深', provider: 'deepseek', model: 'm', crossSessionMemoryEnabled: true, profileId: 'profile_mc_1' }])
+  assert.equal(withFlag[0].crossSessionMemoryEnabled, true)
+  assert.equal(withFlag[0].profileId, 'profile_mc_1')
+  assert.equal(normalizeSeats([{ id: 'ds' }])[0].crossSessionMemoryEnabled, false)
+})
+
+test('seats: room member ids resolve from the pool and migrate embedded members', () => {
+  const pool = resolveSeats({ chatroomSeats: SEATS })
+  assert.deepEqual(defaultMemberSeatIds(pool), ['gpt', 'deepseek', 'claude', 'grok'])
+  assert.deepEqual(normalizeMemberSeatIds(['claude', 'missing', 'claude', 'gpt'], pool), ['claude', 'gpt'])
+  assert.deepEqual(seatsForIds(pool, ['grok', 'gpt']).map((s) => s.id), ['grok', 'gpt'])
+  const embedded = takeEmbeddedRoomMembers({
+    members: [
+      { id: 'ds', name: '小深', provider: 'deepseek', model: 'deepseek-flash' },
+      'claude',
+      { id: 'gpt' },
+    ],
+  })
+  assert.deepEqual(embedded.ids, ['ds', 'claude', 'gpt'])
+  assert.equal(embedded.seats[0].name, '小深')
 })
 
 test('seats: legacy fixed seats migrate to array; keys and base URLs are dropped', () => {
@@ -178,6 +198,77 @@ test('store: append-only jsonl, seq, meta, reload, truncated line tolerated', as
     assert.equal((await s2.listRooms()).length, 1)
     await assert.rejects(s2.getRoom('../x'), /无效/)
   } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('feature: room members are ordered seat ids from the pool; old rooms snapshot the pool', async () => {
+  const dir = await tmp()
+  let cfg = { ...z.object(chatroomSchemaShape(z))({}), chatroomEnabled: true, chatroomSeats: SEATS }
+  const feat = createChatroomFeature(null, () => cfg, {
+    dir,
+    llm: mockLlm(),
+    presets: mockPresets(),
+    saveSeats: async (seats) => { cfg = { ...cfg, chatroomSeats: seats } },
+    savePatch: async (patch) => { cfg = { ...cfg, ...patch } },
+  })
+  const call = async (method, sub, body) => {
+    let status, json
+    const res = { writeHead() {}, write() {}, end() {}, on() {} }
+    await feat.handleApi({ method, headers: {}, on() {} }, res, sub, { sendJson: (_, s, j) => { status = s; json = j }, readBody: async () => JSON.stringify(body || {}) })
+    return { status, json }
+  }
+  try {
+    const room = (await call('POST', '/chatroom/rooms', { title: '甲' })).json.room
+    assert.deepEqual(room.memberSeatIds, ['gpt', 'deepseek', 'claude', 'grok'])
+    const ov = (await call('GET', '/chatroom')).json
+    assert.deepEqual(ov.rooms.find((r) => r.id === room.id).memberSeatIds, room.memberSeatIds)
+    const put = await call('PUT', `/chatroom/rooms/${room.id}/members`, { seatIds: ['claude', 'missing', 'gpt'] })
+    assert.equal(put.status, 200)
+    assert.deepEqual(put.json.seatIds, ['claude', 'gpt'])
+    assert.deepEqual(put.json.seats.map((s) => s.id), ['claude', 'gpt'])
+    const got = (await call('GET', `/chatroom/rooms/${room.id}/members`)).json
+    assert.deepEqual(got.seatIds, ['claude', 'gpt'])
+    const empty = await call('PUT', `/chatroom/rooms/${room.id}/members`, { seatIds: [] })
+    assert.deepEqual(empty.json.seatIds, [])
+    const stale = await call('PUT', '/chatroom/seats', { seats: [{ id: 'claude', name: 'Claude', provider: 'anthropic', model: 'claude-x', enabled: true }] })
+    assert.equal(stale.status, 200)
+    const afterDel = (await call('GET', `/chatroom/rooms/${room.id}/members`)).json
+    assert.deepEqual(afterDel.seatIds, [])
+    const b = await call('PUT', `/chatroom/rooms/${room.id}/members`, { seatIds: ['claude'] })
+    assert.deepEqual(b.json.seatIds, ['claude'])
+
+    const other = (await call('POST', '/chatroom/rooms', { title: '乙' })).json.room
+    assert.deepEqual(other.memberSeatIds, ['claude'])
+    const split = await call('PUT', `/chatroom/rooms/${other.id}/members`, { seatIds: ['claude'] })
+    assert.equal(split.status, 200)
+    await call('PUT', `/chatroom/rooms/${room.id}/members`, { seatIds: [] })
+    const again = (await call('GET', '/chatroom')).json
+    assert.deepEqual(again.rooms.find((r) => r.id === room.id).memberSeatIds, [])
+    assert.deepEqual(again.rooms.find((r) => r.id === other.id).memberSeatIds, ['claude'])
+  } finally { await feat.dispose(); await rm(dir, { recursive: true, force: true }) }
+})
+
+test('feature: embedded meta.members migrate into the seat pool and become that room\'s roster', async () => {
+  const dir = await tmp()
+  let cfg = { ...z.object(chatroomSchemaShape(z))({}), chatroomEnabled: true, chatroomSeats: SEATS }
+  const feat = createChatroomFeature(null, () => cfg, {
+    dir,
+    llm: mockLlm(),
+    presets: mockPresets(),
+    saveSeats: async (seats) => { cfg = { ...cfg, chatroomSeats: seats } },
+    savePatch: async (patch) => { cfg = { ...cfg, ...patch } },
+  })
+  try {
+    const room = await feat.store.createRoom({ title: '旧房间' })
+    await feat.store.patchMeta(room.id, (m) => {
+      m.members = [{ id: 'extra', name: '额外', provider: 'openai', model: 'gpt-x', enabled: true }, 'claude']
+    })
+    const ids = await feat.ensureRoomMembers(room.id)
+    assert.deepEqual(ids, ['extra', 'claude'])
+    assert.ok(cfg.chatroomSeats.some((s) => s.id === 'extra' && s.name === '额外'))
+    const meta = await feat.store.getRoom(room.id)
+    assert.equal(meta.members, undefined)
+    assert.deepEqual(meta.memberSeatIds, ['extra', 'claude'])
+  } finally { await feat.dispose(); await rm(dir, { recursive: true, force: true }) }
 })
 
 function scriptedCall(script, seen = []) {

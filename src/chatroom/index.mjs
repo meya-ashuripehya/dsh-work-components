@@ -3,7 +3,8 @@
  * 席位的服务商 / 模型 / 预设全部来自 DSH（../dsh-catalog.mjs），调用经 ctx.llm.stream；本插件不保存密钥。
  *   GET  /chatroom                         席位概况（含是否可用与原因）+ 房间列表
  *   GET  /chatroom/catalog                 DSH 服务商（含模型）、未启用的可配置服务商、智能体预设
- *   PUT  /chatroom/seats {seats}           保存席位列表（增删、排序、启用）
+ *   PUT  /chatroom/seats {seats}           保存席位池（增删、排序、启用；由「席位管理」编辑）
+ *   PUT  /chatroom/rooms/:id/members {seatIds}  本房间成员 = 席位池中的有序 id 列表
  *   POST /chatroom/rooms {title}           新建房间；PUT /chatroom/rooms/:id {title} 改名
  *   GET  /chatroom/rooms/:id               房间元数据 + 全部消息 + 是否在发言
  *        ?limit=N[&before=<seq>]           只返回最近一页消息（面板首屏用），另附 history: { total, older, limit }；不带参数时仍返回全部（向后兼容）
@@ -51,7 +52,7 @@ import { tmpdir } from 'node:os'
 import { basename as baseName } from 'node:path'
 import { TOOL_DEFAULTS } from './tool-results.mjs'
 import { createCallLog } from './call-log.mjs'
-import { resolveSeats, normalizeSeats, seatsRevision, VISION_MODES, CHATROOM_SEATS_KEY, DEFAULT_OWNER_TELEGRAM_ID, DEFAULT_CURSOR_AGENT, outputTokenLimit, matchSeat, syncDefaultMain } from './seats.mjs'
+import { resolveSeats, normalizeSeats, seatsRevision, VISION_MODES, CHATROOM_SEATS_KEY, DEFAULT_OWNER_TELEGRAM_ID, DEFAULT_CURSOR_AGENT, outputTokenLimit, matchSeat, syncDefaultMain, normalizeMemberSeatIds, defaultMemberSeatIds, seatsForIds, takeEmbeddedRoomMembers } from './seats.mjs'
 import { channelTokenRefs, collectTokenValues, pollingRestartKey } from '../channels/telegram/accounts.mjs'
 import { channelOwnsToken } from '../telegram/polling-owners.mjs'
 import { setDiscoverHandler } from '../telegram/raw-hub.mjs'
@@ -67,7 +68,7 @@ import { onSessionChange as onCardChange, holeNotes, roomOfCardUser } from '../c
 import { cardDmOf } from '../cards/dm.mjs'
 
 export { CHATROOM_PANEL_KEYS, CHATROOM_TOOL_KEYS, CHATROOM_ATTACH_KEYS, botTokenRef } from './seats.mjs'
-export { chatroomSchemaShape, CHATROOM_KEYS, CHATROOM_SEATS_KEY, LEGACY_CHATROOM_KEYS, migrateLegacyChatroom, normalizeSeats, resolveSeats } from './seats.mjs'
+export { chatroomSchemaShape, CHATROOM_KEYS, CHATROOM_SEATS_KEY, LEGACY_CHATROOM_KEYS, migrateLegacyChatroom, normalizeSeats, resolveSeats, normalizeMemberSeatIds, defaultMemberSeatIds, seatsForIds, takeEmbeddedRoomMembers, mergeAgentProfilesIntoSeats, seatsFromMcAgents, profileIdOf } from './seats.mjs'
 
 export function chatroomDir() {
   return join(dataDir(), 'chatroom')
@@ -76,7 +77,7 @@ export function chatroomDir() {
 /**
  * @param ctx Cordis ctx（llm / agentPresets 按需 ctx.get）
  * @param getConfig 当前插件设置
- * @param {{ dir?: string, llm?: any, presets?: any, catalog?: any, saveSeats?: (seats) => Promise<void>, resolveMcInfo?: (seat) => Promise<any> }} [options]
+ * @param {{ dir?: string, llm?: any, presets?: any, catalog?: any, saveSeats?: (seats) => Promise<void>, resolveMcInfo?: (seat) => Promise<any>, onMembersChanged?: (roomId?: string, seatIds?: string[]) => any }} [options]
  *   saveSeats 由宿主半边提供（走插件设置的持久化）；llm / presets 测试注入
  */
 export function createChatroomFeature(ctx, getConfig, options = {}) {
@@ -107,6 +108,96 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
       tools: toolSettings(cfg),
       attachments: attachSettings(cfg),
     }
+  }
+
+  /**
+   * 某房间的配置：seats 为本房间成员（从席位池按 memberSeatIds 解析）。
+   * 未传 roomId 时返回席位池（兼容测试与全局用途）。
+   */
+  async function roomConfigFor(roomId) {
+    const base = roomConfig()
+    if (!roomId) return base
+    const ids = await ensureRoomMembers(roomId)
+    return { ...base, seats: seatsForIds(base.seats, ids), memberSeatIds: ids }
+  }
+
+  function notifyMembersChanged(roomId, seatIds) {
+    if (typeof options.onMembersChanged !== 'function') return Promise.resolve()
+    try { return Promise.resolve(options.onMembersChanged(roomId, seatIds)).catch(() => {}) } catch { return Promise.resolve() }
+  }
+
+  /**
+   * 保证房间有 memberSeatIds：缺省时快照当前席位池；旧 meta.members 对象并入池后再取 id。
+   * 空数组是显式空名册，不会再快照。preferIds 仅在尚未写入 memberSeatIds 时作为种子。
+   */
+  async function ensureRoomMembers(roomId, { preferIds, addIds } = {}) {
+    const room = await store.getRoom(roomId)
+    let pool = resolveSeats(getConfig() || {})
+    const embedded = takeEmbeddedRoomMembers(room)
+    if (embedded.seats.length) {
+      const have = new Set(pool.map((s) => s.id))
+      const extra = embedded.seats.filter((s) => !have.has(s.id))
+      if (extra.length) {
+        pool = normalizeSeats([...pool, ...extra])
+        if (typeof options.savePatch === 'function') await options.savePatch({ [CHATROOM_SEATS_KEY]: pool })
+        else if (typeof options.saveSeats === 'function') await options.saveSeats(pool)
+      }
+    }
+    const assigned = Object.prototype.hasOwnProperty.call(room, 'memberSeatIds')
+    let ids
+    if (assigned && Array.isArray(room.memberSeatIds)) {
+      ids = normalizeMemberSeatIds(room.memberSeatIds, pool)
+    } else {
+      const seed = Array.isArray(preferIds) ? preferIds : (embedded.ids.length ? embedded.ids : defaultMemberSeatIds(pool))
+      ids = normalizeMemberSeatIds(seed, pool)
+    }
+    if (Array.isArray(addIds) && addIds.length) {
+      ids = normalizeMemberSeatIds([...ids, ...addIds], pool)
+    }
+    const same = assigned && Array.isArray(room.memberSeatIds)
+      && ids.length === room.memberSeatIds.length
+      && ids.every((id, i) => id === room.memberSeatIds[i])
+      && !room.members
+    if (!same) {
+      await store.patchMeta(roomId, (m) => {
+        m.memberSeatIds = ids
+        if (m.members) delete m.members
+      })
+    }
+    return ids
+  }
+
+  async function setRoomMembers(roomId, seatIds) {
+    await store.getRoom(roomId)
+    const pool = resolveSeats(getConfig() || {})
+    const ids = normalizeMemberSeatIds(seatIds, pool)
+    const meta = await store.patchMeta(roomId, (m) => {
+      m.memberSeatIds = ids
+      if (m.members) delete m.members
+    })
+    await notifyMembersChanged(roomId, ids)
+    return { room: meta, seatIds: ids, seats: seatsForIds(pool, ids) }
+  }
+
+  async function pruneRoomMembers(pool) {
+    const known = new Set((pool || []).map((s) => s.id))
+    for (const r of await store.listRooms()) {
+      if (!Array.isArray(r.memberSeatIds)) continue
+      const next = r.memberSeatIds.filter((id) => known.has(id))
+      if (next.length !== r.memberSeatIds.length) {
+        await store.patchMeta(r.id, (m) => { m.memberSeatIds = next })
+        await notifyMembersChanged(r.id, next)
+      }
+    }
+  }
+
+  async function roomsWithMembers() {
+    const out = []
+    for (const r of await store.listRooms()) {
+      const ids = await ensureRoomMembers(r.id)
+      out.push({ ...r, memberSeatIds: ids })
+    }
+    return out
   }
 
   function attachSettings(cfg) {
@@ -653,7 +744,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
     try {
       const st = attachSettings(getConfig() || {})
       if (!st.describe || meta.kind !== 'image' || meta.description) return
-      const seats = roomConfig().seats.filter((x) => x.enabled !== false)
+      const seats = (await roomConfigFor(roomId)).seats.filter((x) => x.enabled !== false)
       let need = false
       // 看不到图的成员，或经 Vision Router「-vision」转接的成员（真图可能被换成文字标记）都需要描述
       for (const s of seats) if (/-vision$/i.test(String(s.provider || '')) || !(await isVision(s))) { need = true; break }
@@ -964,7 +1055,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
     isVision,
     onVisionRejected: (seat, e, opts) => markRejected(seat, opts),
     saveRoomControl: options.savePatch || options.saveSeats ? saveRoomControl : null,
-    getRoomConfig: roomConfig,
+    getRoomConfig: roomConfigFor,
     resolvePersona: (seat) => catalog.presetPersona(seat.preset),
     resolveMcInfo: options.resolveMcInfo || null,
     emit,
@@ -1075,7 +1166,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
       s.videoCapable = isNativeGeminiSeat(s)
       s.video = s.video === true && s.videoCapable
     }
-    return { enabled: enabled(), seatsRev: seatsRevision(resolveSeats(getConfig() || {})), userName: cfg.userName, defaultMain: cfg.defaultMain, budget: cfg.budget, ownerId: cfg.ownerId, rules: cfg.rules, cursorRepo: cfg.cursorRepo, cursorAgent: resolveCursorAgent(cfg.cursorAgent), maxHistory: cfg.maxHistory, contextTokenThreshold: cfg.contextTokenThreshold, summarizerProvider: cfg.summarizerProvider, summarizerModel: cfg.summarizerModel, summarizerReady: summarizerConfigured({ provider: cfg.summarizerProvider, model: cfg.summarizerModel }), seats, rooms: await store.listRooms(), telegram: bots.status(), tools: await toolsOverview(false), attach: await attachOverview() }
+    return { enabled: enabled(), seatsRev: seatsRevision(resolveSeats(getConfig() || {})), userName: cfg.userName, defaultMain: cfg.defaultMain, budget: cfg.budget, ownerId: cfg.ownerId, rules: cfg.rules, cursorRepo: cfg.cursorRepo, cursorAgent: resolveCursorAgent(cfg.cursorAgent), maxHistory: cfg.maxHistory, contextTokenThreshold: cfg.contextTokenThreshold, summarizerProvider: cfg.summarizerProvider, summarizerModel: cfg.summarizerModel, summarizerReady: summarizerConfigured({ provider: cfg.summarizerProvider, model: cfg.summarizerModel }), seats, rooms: await roomsWithMembers(), telegram: bots.status(), tools: await toolsOverview(false), attach: await attachOverview() }
   }
 
   /** 「附件与语音」分组：设置 + 转写密钥来源（只给引用名，不给值）+ Vision Router 是否可用。 */
@@ -1199,7 +1290,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
         const b = await body()
         if (!Array.isArray(b.seats)) throw new ChatroomError('seats 必须是数组', 400)
         // 设置页带上读取时的版本号：期间成员列表已在其他位置更新时拒绝，避免旧快照覆盖新设置
-        if (b.baseRev !== undefined && String(b.baseRev) !== seatsRevision(resolveSeats(getConfig() || {}))) throw new ChatroomError('成员列表已在其他位置更新，请刷新后重试。', 409)
+        if (b.baseRev !== undefined && String(b.baseRev) !== seatsRevision(resolveSeats(getConfig() || {}))) throw new ChatroomError('席位列表已在其他位置更新，请刷新后重试。', 409)
         const seats = normalizeSeats(b.seats)
         const cfg0 = getConfig() || {}
         const prevMain = String(cfg0.chatroomDefaultMain || '')
@@ -1212,6 +1303,8 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
         } else {
           await options.saveSeats(seats)
         }
+        await pruneRoomMembers(seats)
+        await notifyMembersChanged()
         await syncTelegram(true)
         sendJson(res, 200, { ok: true, ...await overview() }); return true
       }
@@ -1225,7 +1318,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
           const v = b.defaultMain.trim().slice(0, 40)
           if (!v) throw new ChatroomError('请选择主答成员', 400)
           const hit = matchSeat(resolveSeats(getConfig() || {}), v)
-          if (!hit) throw new ChatroomError('主答须为房间中的成员', 400)
+          if (!hit) throw new ChatroomError('主答须为席位池中的席位', 400)
           patch.chatroomDefaultMain = hit.id
         }
         if (b.budget !== undefined) { const n = Math.round(Number(b.budget)); if (!(n >= 1 && n <= 100)) throw new ChatroomError('回合上限须为 1–100', 400); patch.chatroomTurnBudget = n }
@@ -1382,8 +1475,9 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
       if (sub === '/chatroom/rooms' && req.method === 'POST') {
         needOn()
         const room = await store.createRoom(await body())
+        const ids = await ensureRoomMembers(room.id)
         const s = await ensureRoomSession(room.id)
-        sendJson(res, 200, { ok: true, room: await store.getRoom(room.id), ...s }); return true
+        sendJson(res, 200, { ok: true, room: { ...(await store.getRoom(room.id)), memberSeatIds: ids }, ...s }); return true
       }
       if (sub === '/chatroom/heartbeat' && req.method === 'GET') {
         assertLocal(req)
@@ -1404,7 +1498,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
         assertLocal(req)
         const roomId = sub.split('/')[3]
         const room = await store.getRoom(roomId)
-        const cfg = roomConfig()
+        const cfg = await roomConfigFor(roomId)
         sendJson(res, 200, { ok: true, roomId, ...listRoomBriefs(room, { seats: cfg.seats || [] }) }); return true
       }
       const bm = /^\/chatroom\/rooms\/([a-z0-9-]+)\/briefs\/([a-z0-9]+)\/(execute|cancel|deeplink)$/.exec(sub)
@@ -1423,6 +1517,18 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
       if (!m) { sendJson(res, 404, { ok: false, error: 'not found' }); return true }
       const id = m[1]
       const verb = m[2] || ''
+      if (verb === '/members' && req.method === 'GET') {
+        const ids = await ensureRoomMembers(id)
+        sendJson(res, 200, { ok: true, seatIds: ids, seats: seatsForIds(resolveSeats(getConfig() || {}), ids) }); return true
+      }
+      if (verb === '/members' && req.method === 'PUT') {
+        const b = await body()
+        if (!Array.isArray(b.seatIds) && !Array.isArray(b.members) && !Array.isArray(b.seats)) throw new ChatroomError('seatIds 必须是数组', 400)
+        const raw = Array.isArray(b.seatIds) ? b.seatIds : (Array.isArray(b.members) ? b.members : b.seats)
+        const ids = raw.map((x) => (typeof x === 'string' ? x : String(x?.id || ''))).filter(Boolean)
+        const out = await setRoomMembers(id, ids)
+        sendJson(res, 200, { ok: true, ...out }); return true
+      }
       if (verb === '' && req.method === 'GET') {
         const room = await store.getRoom(id)
         const all = await store.readMessages(id)
@@ -1523,5 +1629,5 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
 
   /** 「多模态 › 视频理解」会话工具共用的 Gemini 路由：密钥只用本组件设置 videoGeminiKey，代理同转写。 */
   const gemini = { resolveKey: async () => resolveVideoKey(getConfig() || {}), fetch: () => geminiFetch() }
-  return { gemini, attachments, attachOverview, ingestFiles, telegramInbound, localPost, watchVideo, isVision, toolkit, toolsOverview, discovered, groupCommand, bindChat, boundChatIds, roomConflictsFor, bots, sync, syncTelegram, dispose, handleApi, store, moderator, compressor, overview, catalog, roomSessions, heartbeat }
+  return { gemini, attachments, attachOverview, ingestFiles, telegramInbound, localPost, watchVideo, isVision, toolkit, toolsOverview, discovered, groupCommand, bindChat, boundChatIds, roomConflictsFor, bots, sync, syncTelegram, dispose, handleApi, store, moderator, compressor, overview, catalog, roomSessions, heartbeat, ensureRoomMembers, setRoomMembers, memberSeatIdsOf: (roomId) => ensureRoomMembers(roomId), roomConfigFor }
 }
