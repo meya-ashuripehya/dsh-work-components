@@ -293,11 +293,12 @@ console.log('settings secrets masked: GET hides, mask round-trip keeps, empty cl
     await new Promise((r) => setTimeout(r, 25))
   }
   const line = got.messages.map((m) => `${m.speaker.id}:${m.status}:${m.text}`).join(' | ')
-  // 默认主答 DeepSeek（凌雪）先答（PASS 静默），之后 Grok 补充；有人补充 → 再问一圈（不让刚发言的 Grok 连续发言）
-  if (line !== 'user:ok:大家好 | ds:pass:[PASS] | grok:ok:Grok 收到 | ds:pass:[PASS]') throw new Error('chatroom transcript unexpected: ' + line)
-  if (llmCalls.map((c) => `${c.provider}/${c.model}`).join(',') !== 'deepseek/deepseek-flash,xai/grok-4.7,deepseek/deepseek-flash' || !llmCalls[0].system.includes('你是凌雪。') || !llmCalls[0].system.includes('NOT the implementer') || llmCalls[0].roles !== 'user') throw new Error('chatroom llm calls unexpected: ' + JSON.stringify(llmCalls))
+  // 未指定主答时按席位顺序：第一位已启用成员（Grok）主答，再轮询凌雪。凌雪 PASS，本圈无人补充 → 结束，不再开下一圈。
+  if (line !== 'user:ok:大家好 | grok:ok:Grok 收到 | ds:pass:[PASS]') throw new Error('chatroom transcript unexpected: ' + line)
+  const dsCall = llmCalls.find((c) => c.provider === 'deepseek')
+  if (llmCalls.map((c) => `${c.provider}/${c.model}`).join(',') !== 'xai/grok-4.7,deepseek/deepseek-flash' || !dsCall?.system.includes('你是凌雪。') || llmCalls[0].roles !== 'user') throw new Error('chatroom llm calls unexpected: ' + JSON.stringify(llmCalls))
   const file = join(process.env.DSH_WORKBENCH_DATA_DIR, 'chatroom', 'rooms', room.id, 'messages.jsonl')
-  if (readFileSync(file, 'utf8').trim().split('\n').length !== 4) throw new Error('chatroom log not persisted as 4 jsonl lines')
+  if (readFileSync(file, 'utf8').trim().split('\n').length !== 3) throw new Error('chatroom log not persisted as 3 jsonl lines')
   await call('POST', { chatroomEnabled: false })
   if ((await call('POST', { text: 'x' }, `/chatroom/rooms/${room.id}/messages`)).status !== 409) throw new Error('chatroom disabled gate missing')
   console.log('chatroom ok: legacy seats migrated + old keys purged, catalog/presets via DSH services, seats CRUD, calls via ctx.llm.stream with preset persona, jsonl persisted, disabled gate [keys not printed]')
@@ -381,7 +382,8 @@ console.log('settings secrets masked: GET hides, mask round-trip keeps, empty cl
     channelRoutes: 'telegram:guest, qq:guest, weixin:guest', conversationRoutes: 'B4C6E62A8A0919E62678494F20F30530:lingsnow, 123456789:lingsnow',
   })
   if (!hc.includeMetadataPrefix || hc.agent?.default?.preset !== 'lingsnow' || hc.routing?.mode !== 'conversation') throw new Error('harnessConfig migration mismatch')
-  if (hc.routing.overrides.channel.telegram.preset !== 'guest' || hc.routing.overrides.conversation['123456789'].preset !== 'lingsnow') throw new Error('harnessConfig routes mismatch')
+  // 会话级覆盖固定为空（不按 Telegram 用户压过各机器人自己的预设）
+  if (hc.routing.overrides.channel.telegram.preset !== 'guest' || Object.keys(hc.routing.overrides.conversation || {}).length) throw new Error('harnessConfig routes mismatch')
   const tc = rt.telegramAdapterConfig({ format: 'html' })
   if (tc.formatting?.mode !== 'html') throw new Error('telegramAdapterConfig format mismatch')
   for (const [name, ok] of Object.entries(rt.PATCH_MARKERS)) if (!ok) throw new Error('telegram patch marker missing: ' + name)
