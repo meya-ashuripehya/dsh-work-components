@@ -296,7 +296,7 @@ test('no command-based authorize path: channel commands and chatroom group comma
     }
   }
   await walk(srcRoot)
-  assert.deepEqual(writers.sort(), ['channels/telegram/dm-pending.mjs', 'channels/telegram/index.mjs', 'index.mjs'])
+  assert.deepEqual(writers.sort(), ['channels/qq/index.mjs', 'channels/qq/pending.mjs', 'channels/telegram/dm-pending.mjs', 'channels/telegram/index.mjs', 'index.mjs'])
   const idx = await readFile(join(srcRoot, 'index.mjs'), 'utf8')
   assert.equal((idx.match(/telegramAllowFrom\s*:/g) || []).length, 1) // telegramSave.allowFrom（仅供设置页接口）
 })
