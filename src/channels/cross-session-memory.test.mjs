@@ -196,7 +196,7 @@ test('searchPeers finds across channels with labels; strips tokens; skips reason
     })
     assert.equal(out.error, false)
     assert.match(out.text, /Peers searched/)
-    assert.match(out.text, /telegram person peer=6153059771/)
+    assert.match(out.text, /telegram person(?: name=\S+)? peer=6153059771/)
     assert.match(out.text, /telegram group peer=-1003435238151/)
     assert.match(out.text, /上海/)
     assert.match(out.text, /改期/)

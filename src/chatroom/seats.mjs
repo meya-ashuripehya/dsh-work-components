@@ -1,11 +1,15 @@
 import { normalizeSeatWait } from './providers.mjs'
 import { createHash } from 'node:crypto'
 /**
- * 聊天室席位：设置里的 chatroomSeats 是一个有序数组，每个席位 =
- *   { id, name, provider, model, preset, persona, enabled }
+ * 席位池（席位管理）：设置里的 chatroomSeats 是有序数组，每个席位 =
+ *   { id, name, provider, model, preset, persona, enabled, profileId, crossSessionMemoryEnabled, … }
  *   provider / model —— DSH 服务商路由与模型 id（来自宿主 ctx.llm 注册表，见 ../dsh-catalog.mjs），
  *   preset           —— 可选的 DSH 智能体预设 id（ctx.agentPresets），只取其人设（dsh-persona prefix）作系统提示，
- *   persona          —— 可选的附加人设 / 要求。
+ *   name             —— 显示名（可覆盖预设名），多 AI 房间里的称呼，
+ *   persona          —— 可选的附加人设 / 要求，
+ *   profileId        —— 可选的个人档案 id（Minecraft 控制会话用；人设与密钥留在档案库），
+ *   crossSessionMemoryEnabled —— 该席位是否启用即将接入的跨会话记忆（只存开关，本版不写 JSONL / 不注入）。
+ * 聊天室房间与 Minecraft（经绑定的聊天室）只保存有序席位 id 列表，从本池解析完整席位。
  * 本插件不保存任何 API Key：调用全部经 DSH 的服务商层（ctx.llm.stream），密钥由 DSH 凭据服务持有。
  *
  * 旧版（0.3.4 开发中）是固定四个席位 + 每席位 API Key 的扁平键；migrateLegacyChatroom() 把它们折算成数组，
@@ -22,7 +26,7 @@ export function seatsRevision(seats) {
   return createHash('sha1').update(JSON.stringify(seats || [])).digest('hex').slice(0, 16)
 }
 
-/** 通用表单里仍显示的标量设置键（客户端 INPUT_FIELDS 核对用）。chatroomSeats 由聊天室面板单独编辑。 */
+/** 通用表单里仍显示的标量设置键（客户端 INPUT_FIELDS 核对用）。chatroomSeats 由「席位管理」单独编辑。 */
 export const CHATROOM_KEYS = ['chatroomEnabled', 'chatroomUserName', 'chatroomDefaultMain', 'chatroomTurnBudget', 'chatroomGameAiStreak', 'chatroomMaxHistory', 'chatroomContextTokenThreshold', 'chatroomSummarizerProvider', 'chatroomSummarizerModel', 'chatroomMaxOutputTokens', 'chatroomOwnerTelegramId', 'chatroomTelegramProxy', 'chatroomCursorAgentPath', 'chatroomCursorRepo', 'chatroomCursorTimeoutSec', 'chatroomHeartbeatEnabled', 'chatroomHeartbeatIntervalMin', 'chatroomHeartbeatSessionId']
 /** 由聊天室面板单独保存（PUT /chatroom/config），不经通用表单：长文本经整份设置回传时曾出现「Failed to fetch」。 */
 export const CHATROOM_PANEL_KEYS = ['chatroomRules']
@@ -93,11 +97,18 @@ export function chatroomSchemaShape(z) {
     chatroomHeartbeatEnabled: z.boolean().default(false).description('聊天室心跳：回合正常结束（done / ended）后，经 DSH 宿主日程向所选会话投递一次提醒。默认关闭。勿将「聊天室：…」房间会话设为目标（访客模式、不跑模型）。'),
     chatroomHeartbeatIntervalMin: z.natural().min(1).max(1440).default(30).description('心跳间隔（分钟）。回合结束后等待该时长再向目标会话投递；有新一轮发言时取消并在再次结束时重新计时。默认 30。'),
     chatroomHeartbeatSessionId: z.string().default('').description('心跳目标 DSH 会话编号（须为普通智能体会话）。设置页下拉列出本机会话元数据中的可读标题（GET /chatroom/heartbeat → sessions，含冷会话）；勿选标题为「聊天室：…」的房间会话。'),
-    chatroomSeats: z.array(z.any()).default([]).description('成员列表（有序）：{ id, name, provider, model, preset, reasoningEffort, vision（识图：auto / on / off）, imageWindow（发送图片：recent9 / latest）, video（视频输入：仅原生 Gemini 成员可开启）, timeoutSec（请求等待秒数：连接失败时在该时长内自动重试，0 为不重试）, talents, prefer, rarely, never, leader, persona, enabled, telegram: { tokenRef, ingest, username } }。机器人令牌保存在宿主凭据中，这里只有引用名。'),
+    chatroomSeats: z.array(z.any()).default([]).description('席位池（有序，由「席位管理」编辑）：{ id, name, provider, model, preset, reasoningEffort, vision（识图：auto / on / off）, imageWindow（发送图片：recent9 / latest）, video（视频输入：仅原生 Gemini 席位可开启）, timeoutSec（请求等待秒数：连接失败时在该时长内自动重试，0 为不重试）, talents, prefer, rarely, never, leader, persona, enabled, profileId, crossSessionMemoryEnabled, telegram: { tokenRef, ingest, username } }。聊天室房间只保存席位 id 列表。机器人令牌保存在宿主凭据中，这里只有引用名。'),
   }
 }
 
 const str = (v, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+const PROFILE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+/** 个人档案 id：合法返回原文，否则 ''。 */
+export function profileIdOf(value) {
+  const id = str(value, 64)
+  return PROFILE_ID.test(id) ? id : ''
+}
 
 /** 席位的 Telegram 机器人：令牌只存宿主凭据（tokenRef 为引用名），这里不收令牌本身。 */
 export function botTokenRef(seatId) {
@@ -174,6 +185,8 @@ export function normalizeSeats(input) {
       telegram: normalizeBot(raw.telegram, id),
       persona: typeof raw.persona === 'string' ? raw.persona.slice(0, 8000) : '',
       enabled: raw.enabled !== false,
+      profileId: profileIdOf(raw.profileId),
+      crossSessionMemoryEnabled: raw.crossSessionMemoryEnabled === true,
     })
   }
   // 只允许一个负责接收群消息的机器人（避免重复接收）
@@ -185,6 +198,90 @@ export function normalizeSeats(input) {
 /** 设置 → 有序席位（含未启用的）。 */
 export function resolveSeats(cfg = {}) {
   return normalizeSeats(cfg[CHATROOM_SEATS_KEY])
+}
+
+/** 房间成员 id 列表：只保留池中存在的、去重、保序，最多 MAX_SEATS。 */
+export function normalizeMemberSeatIds(ids, pool) {
+  const known = new Set((Array.isArray(pool) ? pool : []).map((s) => String(s?.id || '').trim()).filter(Boolean))
+  const out = []
+  const seen = new Set()
+  for (const raw of Array.isArray(ids) ? ids : []) {
+    const id = String(raw || '').trim()
+    if (!id || !known.has(id) || seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+    if (out.length >= MAX_SEATS) break
+  }
+  return out
+}
+
+/** 未指定房间成员时的默认：当前席位池的全部 id（兼容旧版「所有房间共用全部席位」）。 */
+export function defaultMemberSeatIds(pool) {
+  return (Array.isArray(pool) ? pool : []).map((s) => String(s?.id || '').trim()).filter(Boolean).slice(0, MAX_SEATS)
+}
+
+/** 按 id 顺序从席位池取出席位（跳过池中已不存在的 id）。 */
+export function seatsForIds(pool, ids) {
+  const byId = new Map((Array.isArray(pool) ? pool : []).filter((s) => s && s.id).map((s) => [String(s.id), s]))
+  const out = []
+  for (const raw of Array.isArray(ids) ? ids : []) {
+    const s = byId.get(String(raw || '').trim())
+    if (s) out.push(s)
+  }
+  return out
+}
+
+/**
+ * 旧房间把完整席位对象嵌在 meta.members 里时抽出。
+ * 返回 { seats: 可并入池的席位, ids: 成员 id（含纯字符串项） }。
+ */
+export function takeEmbeddedRoomMembers(room) {
+  const list = room && Array.isArray(room.members) ? room.members : []
+  const rawSeats = []
+  const ids = []
+  for (const raw of list) {
+    if (typeof raw === 'string' || typeof raw === 'number') {
+      const id = String(raw).trim()
+      if (id) ids.push(id)
+      continue
+    }
+    if (!raw || typeof raw !== 'object') continue
+    rawSeats.push(raw)
+    const id = str(raw.id, 40).toLowerCase().replace(/[^a-z0-9-]/g, '')
+    if (id) ids.push(id)
+  }
+  return { seats: normalizeSeats(rawSeats), ids }
+}
+
+/**
+ * 把 Minecraft AI 表里的 profileId 合并到同 id 席位上（席位已有 profileId 时不覆盖）。
+ */
+export function mergeAgentProfilesIntoSeats(seats, agents) {
+  const byCode = new Map((Array.isArray(agents) ? agents : []).filter((a) => a && a.code).map((a) => [String(a.code), a]))
+  let changed = false
+  const out = (Array.isArray(seats) ? seats : []).map((s) => {
+    const a = byCode.get(s.id)
+    if (!a || s.profileId || !a.profileId) return s
+    changed = true
+    return { ...s, profileId: profileIdOf(a.profileId) }
+  })
+  return { seats: out, changed }
+}
+
+/** 由 Minecraft AI 行生成可并入席位池的对象（跳过已移除的行）。 */
+export function seatsFromMcAgents(agents) {
+  const list = Array.isArray(agents) ? agents : []
+  return normalizeSeats(list.filter((a) => a && !a.removed).map((a) => ({
+    id: a.code,
+    name: a.name,
+    provider: a.provider,
+    model: a.model,
+    preset: a.preset,
+    reasoningEffort: a.reasoningEffort,
+    persona: a.persona,
+    profileId: a.profileId,
+    enabled: a.enabled !== false,
+  })))
 }
 
 /**

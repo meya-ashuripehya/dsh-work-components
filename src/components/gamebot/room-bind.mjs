@@ -2,12 +2,14 @@
  * Minecraft 设置卡片「绑定聊天室」（设置键 gb_minecraft_MC_CHATROOM = 房间 id）。
  * 同步（保存 Minecraft 卡片、启用 Minecraft 时运行，可重复执行）：
  * 1. 未绑定或所绑定房间已不存在 → 新建房间「Minecraft」，并把房间 id 写回设置。
- * 2. 聊天室成员 → MC AI：按编码 = 成员 id 自动建行（见 agents.planRoomSync）；不修改成员。
- * 3. 已启用的 MC AI 不在成员中 → 加入成员（经宿主的设置写入，与 PUT /chatroom/seats 相同的 normalizeSeats）。
- * 聊天室成员对所有房间通用，因此第 3 步加入的成员在所有房间都可见。游戏内发言镜像不在这次同步里，见 mc-mirror.mjs。
+ * 2. 旧 Minecraft AI 表中尚未出现在席位池的行 → 迁入席位池（不改已有席位）。
+ * 3. 把旧表里的 profileId 合并到同 id 席位上（席位已有则不覆盖）。
+ * 4. 保证该房间有 memberSeatIds（缺省则快照当前席位池）；房间名册与聊天室共用席位池。
+ * 游戏内发言镜像不在这次同步里，见 mc-mirror.mjs。
  * 不向聊天室注册任何 GameBot / MC 工具。
  */
-import { AGENTS_KEY, planRoomSync, resolveAgents, serializeAgents } from './agents.mjs'
+import { AGENTS_KEY, codeError, resolveAgents } from './agents.mjs'
+import { mergeAgentProfilesIntoSeats, seatsFromMcAgents } from '../../chatroom/seats.mjs'
 
 export const ROOM_KEY = 'gb_minecraft_MC_CHATROOM'
 export const ROOM_TITLE = 'Minecraft'
@@ -22,10 +24,12 @@ export function roomSyncWanted(patch, next) {
 
 /**
  * @param {{ getConfig: () => any, store: { listRooms: () => Promise<any[]>, createRoom: (o: { title: string }) => Promise<any> },
- *   ensureSession?: (roomId: string) => Promise<any>, applyPatch: (patch: any) => Promise<void>, normalizeSeats: (list: any[]) => any[],
+ *   ensureSession?: (roomId: string) => Promise<any>, applyPatch: (patch: any) => Promise<void>,
+ *   normalizeSeats: (list: any[]) => any[],
+ *   ensureRoomMembers?: (roomId: string, opts?: { preferIds?: string[], addIds?: string[] }) => Promise<string[]>,
  *   now?: () => number }} deps
  */
-export function createMinecraftRoomBinding({ getConfig, store, ensureSession, applyPatch, normalizeSeats, now = Date.now }) {
+export function createMinecraftRoomBinding({ getConfig, store, ensureSession, applyPatch, normalizeSeats, ensureRoomMembers, now = Date.now }) {
   let last = null
   let chain = Promise.resolve()
 
@@ -47,20 +51,22 @@ export function createMinecraftRoomBinding({ getConfig, store, ensureSession, ap
       created = true
       if (ensureSession) { try { await ensureSession(room.id) } catch {} }
     }
+    const seats = Array.isArray(cfg.chatroomSeats) ? cfg.chatroomSeats.filter((s) => s && typeof s === 'object') : []
     const agents = resolveAgents(cfg)
-    const seats = Array.isArray(cfg.chatroomSeats) ? cfg.chatroomSeats : []
-    const plan = planRoomSync(agents, seats)
+    const have = new Set(seats.map((s) => String(s?.id || '').trim()))
+    const extra = seatsFromMcAgents(agents).filter((s) => s && !have.has(s.id) && !codeError(s.id))
+    const merged = mergeAgentProfilesIntoSeats(seats, agents)
     const patch = {}
     if (room.id !== bound) patch[ROOM_KEY] = room.id
-    if (plan.importRows.length) patch[AGENTS_KEY] = serializeAgents([...agents, ...plan.importRows])
-    let added = []
-    if (plan.addSeats.length) {
-      const nextSeats = normalizeSeats([...seats, ...plan.addSeats])
-      const have = new Set(seats.map((s) => String(s?.id || '')))
-      added = nextSeats.filter((s) => !have.has(s.id)).map((s) => s.id)
-      patch.chatroomSeats = nextSeats
-    }
+    let nextSeats = merged.changed ? merged.seats : seats
+    if (extra.length) nextSeats = (typeof normalizeSeats === 'function' ? normalizeSeats([...nextSeats, ...extra]) : [...nextSeats, ...extra])
+    const added = extra.map((s) => s.id)
+    if (extra.length || merged.changed) patch.chatroomSeats = nextSeats
     if (Object.keys(patch).length) await applyPatch(patch)
+    let memberIds = []
+    if (typeof ensureRoomMembers === 'function') {
+      memberIds = await ensureRoomMembers(room.id, { addIds: added })
+    }
     last = {
       ok: true,
       at: now(),
@@ -69,10 +75,11 @@ export function createMinecraftRoomBinding({ getConfig, store, ensureSession, ap
       roomTitle: room.title,
       created,
       lost,
-      imported: plan.importRows.map((r) => r.code),
+      imported: added,
       added,
-      skipped: plan.addSeats.map((s) => s.id).filter((id) => !added.includes(id)),
-      invalid: plan.invalid,
+      skipped: [],
+      invalid: agents.filter((a) => a && !a.removed && codeError(a.code)).map((a) => ({ id: a.code, name: a.name })),
+      memberIds,
     }
     return last
   }

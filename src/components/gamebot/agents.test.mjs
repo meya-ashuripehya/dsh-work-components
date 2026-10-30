@@ -75,11 +75,14 @@ test('GameBot patch derives MC_MEMBER_IDS / MC_USERNAME from enabled rows and om
   const agents = [{ code: 'grok', name: 'Grok NPC' }, { code: 'claude', name: 'Claude', enabled: false }, { code: 'zed', name: 'Zed', removed: true }]
   const body = toGameBotPatch('minecraft', { chatroomSeats: SEATS, gb_minecraft_MC_AGENTS: serializeAgents(agents) })
   assert.equal(body.config.MC_MEMBER_IDS, 'grok')
-  assert.equal(body.config.MC_USERNAME, 'Grok NPC')
+  assert.equal(body.config.MC_USERNAME, 'Grok')
   assert.equal(body.config.MC_AGENTS, undefined)
   const legacy = toGameBotPatch('minecraft', { gb_minecraft_MC_MEMBER_IDS: 'claude', gb_minecraft_MC_USERNAME: 'Steve', chatroomSeats: SEATS })
   assert.equal(legacy.config.MC_MEMBER_IDS, 'claude')
-  assert.equal(legacy.config.MC_USERNAME, 'Steve')
+  assert.equal(legacy.config.MC_USERNAME, 'Claude')
+  const fromRoom = toGameBotPatch('minecraft', { chatroomSeats: SEATS, mcRoomSeatIds: ['grok'], gb_minecraft_MC_AGENTS: serializeAgents(agents) })
+  assert.equal(fromRoom.config.MC_MEMBER_IDS, 'grok')
+  assert.equal(fromRoom.config.MC_USERNAME, 'Grok')
 })
 
 test('npc names use display width, may repeat, and are not truncated', () => {

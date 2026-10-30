@@ -47,10 +47,10 @@ export function ytdlpBinPath(root, platform = process.platform) {
 const markerPath = (root) => join(ytdlpBinDir(root), 'yt-dlp.json')
 
 /** 已下载的副本：{ version, sha256, url, installedAt, path } 或 null（程序缺失也算未安装）。 */
-export function readYtdlpInstalled(root) {
+export function readYtdlpInstalled(root, platform = process.platform) {
   let m
   try { m = JSON.parse(readFileSync(markerPath(root), 'utf8')) } catch { return null }
-  const path = ytdlpBinPath(root)
+  const path = ytdlpBinPath(root, platform)
   if (!m || !m.version || !existsSync(path)) return null
   return { version: String(m.version), sha256: m.sha256 || '', url: m.url || '', installedAt: m.installedAt || '', path }
 }
@@ -175,7 +175,7 @@ export function createYtdlpInstaller({ download = httpDownload, redirect = resol
       const { promise, ...rest } = job
       return rest
     },
-    installed: () => readYtdlpInstalled(rootDir()),
+    installed: () => readYtdlpInstalled(rootDir(), platform),
     binPath: () => ytdlpBinPath(rootDir(), platform),
   }
 }

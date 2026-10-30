@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureMemberToken, gamebotChildEnv, memberToken } from './process.mjs'
-import { memberIdsFor, seatMcPresence, createMcPresenceResolver } from './members.mjs'
+import { memberIdsFor, memberNamesFor, seatMcPresence, createMcPresenceResolver, setBoundRoomSeatIds } from './members.mjs'
 import { createGamebotMembersFeature, createMembersTools } from './members-tools.mjs'
 import { WORK_TOOLS } from './minecraft-work/tools.mjs'
 import { bundledRoot } from './index.mjs'
@@ -29,6 +29,7 @@ test('member token is created once and passed to the body env', () => {
 })
 
 test('member roster is enabled seats intersected with enabled Minecraft AI rows', () => {
+  setBoundRoomSeatIds(undefined)
   const seats = [
     { id: 'claude', enabled: true },
     { id: 'gpt', enabled: false },
@@ -47,6 +48,42 @@ test('member roster is enabled seats intersected with enabled Minecraft AI rows'
   )
   // MC_AGENTS 未保存时仍按旧 MC_MEMBER_IDS 迁移表
   assert.deepEqual(memberIdsFor({ chatroomSeats: seats, gb_minecraft_MC_MEMBER_IDS: 'grok, missing' }), ['grok'])
+})
+
+test('member roster uses setBoundRoomSeatIds cache when cfg has no mcRoomSeatIds', () => {
+  const seats = [
+    { id: 'claude', name: 'Claude', enabled: true },
+    { id: 'grok', name: 'Grok', enabled: true },
+  ]
+  const cfg = {
+    chatroomSeats: seats,
+    gb_minecraft_MC_AGENTS: JSON.stringify([{ code: 'claude', name: 'Claude', enabled: true }]),
+  }
+  try {
+    setBoundRoomSeatIds(['grok'])
+    assert.deepEqual(memberIdsFor(cfg), ['grok'])
+    assert.deepEqual(memberNamesFor(cfg), { grok: 'Grok' })
+    setBoundRoomSeatIds([])
+    assert.deepEqual(memberIdsFor(cfg), [])
+  } finally {
+    setBoundRoomSeatIds(undefined)
+  }
+  assert.deepEqual(memberIdsFor(cfg), ['claude'])
+})
+
+test('member roster prefers the bound chatroom seat-id list over MC_AGENTS', () => {
+  const seats = [
+    { id: 'claude', name: 'Claude', enabled: true },
+    { id: 'gpt', name: 'GPT', enabled: false },
+    { id: 'grok', name: 'Grok', enabled: true },
+  ]
+  const cfg = {
+    chatroomSeats: seats,
+    gb_minecraft_MC_AGENTS: JSON.stringify([{ code: 'claude', name: 'Claude', enabled: true }]),
+    mcRoomSeatIds: ['grok', 'claude', 'missing'],
+  }
+  assert.deepEqual(memberIdsFor(cfg), ['grok', 'claude'])
+  assert.deepEqual(memberIdsFor({ ...cfg, mcRoomSeatIds: [] }), [])
 })
 
 test('mc tools follow the caller and reject spoofed ids', async () => {
@@ -133,7 +170,7 @@ test('seatMcPresence reports ineligible seats without calling GameBot', async ()
   }
   const info = await seatMcPresence(cfg, 'gpt', { fetchImpl })
   assert.equal(info.eligible, false)
-  assert.match(info.lines[0], /not on the Minecraft AI roster/)
+  assert.match(info.lines[0], /not in the bound chatroom roster/)
   assert.equal(calls, 0)
 })
 

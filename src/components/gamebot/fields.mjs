@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { activeAgents } from './agents.mjs'
+import { memberIdsFor, memberNamesFor } from './members.mjs'
 
 export const PROVIDERS = ['openai', 'deepseek', 'xai', 'anthropic', 'ollama', 'custom']
 export const PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages']
@@ -68,8 +68,8 @@ export const GAME_FIELDS = {
     { cfg: 'NEOFORGE_WS_AUTH_USER', label: 'NeoForge WS 用户', kind: 'text', def: '' },
     { cfg: 'NEOFORGE_WS_AUTH_PASS', label: 'NeoForge WS 密码', kind: 'password', def: '' },
 
-    { cfg: 'MC_AGENTS', label: 'Minecraft AI', kind: 'mcagents', def: '', desc: '每行一个 Minecraft AI。编码从已启用的聊天室席位选择，与席位 id 相同，只读，保存后不可修改。名称即游戏内 NPC 名，最多 12 个显示宽度（一个汉字算 2），允许重名。删除只标记为已移除并下线，可恢复。编码对不上现有席位的旧行会标红，需要重新选择。只有已启用、未移除且对应已启用聊天室成员的 AI 会连接。可选一个个人档案（profileId）；人设和密钥留在档案库，不写进这里。修改后请点击「保存」。' },
-    { cfg: 'MC_CHATROOM', label: '绑定聊天室', kind: 'mcroom', def: '', desc: '选择 Minecraft AI 所在的聊天室房间（以后游戏内发言写入这里）。保存本卡或启用 Minecraft 时自动同步：房间成员按「编码 = 成员 id」自动建立对应的 Minecraft AI（复制配置，不修改成员）；已启用但不在成员中的 Minecraft AI 自动加入成员。已删除的 AI 不会重新加入，也不会从成员中移除。选择「未绑定（自动新建）」时自动新建房间「Minecraft」。注意：聊天室成员对所有房间通用。' },
+    { cfg: 'MC_AGENTS', label: 'Minecraft AI（旧）', kind: 'mcagents', def: '', hidden: true, desc: '已由席位管理 + 绑定聊天室的成员列表取代，仅用于把旧行的 profileId / 名称迁入席位池。' },
+    { cfg: 'MC_CHATROOM', label: '绑定聊天室', kind: 'mcroom', def: '', desc: '选择 Minecraft 使用的聊天室。进世界的 NPC = 该房间成员（席位池中的有序席位，仅已启用且 id 合法者）。席位在「席位管理」中维护，房间名册在「聊天室」中从席位池挑选。保存本卡或启用 Minecraft 时：未绑定或房间已不存在则自动新建房间「Minecraft」；旧 Minecraft AI 表中尚未出现在席位池的行会迁入池中。' },
     { cfg: 'MC_USERNAME', label: '机器人用户名（旧）', kind: 'text', def: 'Player', hidden: true, desc: '已由「Minecraft AI」的名称取代，仅用于迁移；下发时取第一个已启用 AI 的名称。' },
     { cfg: 'MC_MEMBER_IDS', label: '成员 NPC（旧）', kind: 'text', def: '', hidden: true, desc: '已由「Minecraft AI」取代，仅用于迁移；下发时由已启用的 AI 编码生成。' },
     { cfg: 'MC_VERSION', label: 'MC 版本', kind: 'text', def: '1.21.1' },
@@ -154,9 +154,12 @@ export function toGameBotPatch(game, cfg) {
   if (game === 'minecraft') {
     // 进世界自动连接固定为开：不再作为设置项，始终下发。
     config.MC_AUTO_CONNECT = '1'
-    const active = activeAgents(cfg)
-    config.MC_MEMBER_IDS = active.map((a) => a.code).join(',')
-    if (active.length) config.MC_USERNAME = active[0].name
+    const ids = memberIdsFor(cfg)
+    config.MC_MEMBER_IDS = ids.join(',')
+    if (ids.length) {
+      const names = memberNamesFor(cfg)
+      config.MC_USERNAME = names[ids[0]] || ids[0]
+    }
   }
   if (game === 'minecraft' && driver && driver !== 'minaret' && !mineflayerBridgeAvailable()) driver = 'minaret'
   const body = { config }

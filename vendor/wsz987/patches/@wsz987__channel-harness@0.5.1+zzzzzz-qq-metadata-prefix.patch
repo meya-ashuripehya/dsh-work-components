@@ -1,0 +1,26 @@
+diff --git a/lib/message-converter.js b/lib/message-converter.js
+--- a/lib/message-converter.js
++++ b/lib/message-converter.js
+@@ -1,4 +1,4 @@
+-/**
++﻿/**
+  * Inbound conversion: `MessageReceived` -> a Harness `UserMessage`.
+  *
+  * Content is structured-text by default (red line 6): platform parts without
+@@ -55,6 +55,16 @@ async function partsToBlocks(parts, options) {
+     return blocks;
+ }
+ function metadataPrefix(event) {
++    // QQ: only unique sender OpenID + nickname (message ids are opaque and huge).
++    if (String(event.channel || '') === 'qq') {
++        const id = String(event.sender?.id ?? '').trim();
++        const name = String(event.sender?.name ?? '').trim();
++        if (!id && !name)
++            return '';
++        if (id && name)
++            return `[${id} ${name}] `;
++        return `[${id || name}] `;
++    }
+     return `[channel=${event.channel} sender=${event.sender.id} message=${event.message.id}] `;
+ }
+ /**

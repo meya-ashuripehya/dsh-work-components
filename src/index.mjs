@@ -42,7 +42,7 @@
  *     图片写入数据目录 images/<日期>/；「测试连接」只请求 GET {base}/models。两个工具不在 Telegram OPEN_TOOLS，仅授权用户可用。
  *     余额查询（通用，默认关闭）：各服务商在卡片中单独保存密钥（不复用 DSH 聊天服务商的密钥），只请求官方查询接口，
  *     结果缓存约 60 秒，可定时自动刷新；接口在 /dsh-workbench/api/balance/*。可选 balance_query 工具不在 Telegram OPEN_TOOLS，仅授权用户可用。
- *     聊天室（默认关闭）：设置里的席位列表（DSH 服务商 + 模型 + 可选预设人设）与用户同处一个房间轮流发言，记录只追加写在数据目录 chatroom/rooms/；
+     *     聊天室（默认关闭）：席位池由「席位管理」维护（DSH 服务商 + 模型 + 可选预设人设）；每个房间保存有序席位 id。记录只追加写在数据目录 chatroom/rooms/；
  *     调用经 DSH 服务商层 ctx.llm.stream，本插件不保存密钥；服务商在 DSH「设置 › 模型」中添加。
  *     进行中的棋局或牌局按座位轮流，不占用讨论回合。连续 AI 步数达到 chatroomGameAiStreak 时暂停，所有者回复「继续」或「停止」（不进入 AI 可见记录）。
  *     核心在 ./chatroom/（不依赖界面，第二阶段 Telegram 群桥复用），接口 /dsh-workbench/api/chatroom/*。房间停靠窗有「记录」和「牌桌」。
@@ -80,7 +80,7 @@ import { handleBoardsApi, handleBoardsPage } from './boards/api.mjs'
 import { createBoardsFeature } from './boards/index.mjs'
 import { createGamebotMembersFeature } from './components/gamebot/members-tools.mjs'
 import { createMinecraftRoomBinding, roomSyncWanted, ROOM_KEY as MC_ROOM_KEY } from './components/gamebot/room-bind.mjs'
-import { createMcPresenceResolver } from './components/gamebot/members.mjs'
+import { createMcPresenceResolver, setBoundRoomSeatIds } from './components/gamebot/members.mjs'
 import { createMcControlHost } from './components/gamebot/mc-host.mjs'
 import { profileChoices } from './components/gamebot/mc-profile.mjs'
 import { ProfileError } from './profiles/errors.mjs'
@@ -666,23 +666,33 @@ export function apply(ctx, config) {
   // yt-dlp：聊天室与视频理解共用一份（设置中的路径 → PATH → 设置页下载的副本），下载 / 更新后清除检测缓存。
   const ytdlpInstaller = createYtdlpInstaller({ proxy: () => current.proxy, onInstalled: () => sharedYtdlp.reset() })
   const sharedYtdlp = createYtdlp({ candidates: () => ytdlpCandidates(current, { downloaded: ytdlpInstaller.binPath() }) })
+  async function refreshMcRoomSeats() {
+    const id = String(current[MC_ROOM_KEY] || '').trim()
+    if (!id || typeof chatroom?.memberSeatIdsOf !== 'function') {
+      setBoundRoomSeatIds(undefined)
+      return
+    }
+    try { setBoundRoomSeatIds(await chatroom.memberSeatIdsOf(id)) } catch { setBoundRoomSeatIds(undefined) }
+  }
   const chatroom = createChatroomFeature(ctx, () => current, {
     ytdlp: sharedYtdlp,
     saveSeats: (seats) => applyPatch({ [CHATROOM_SEATS_KEY]: seats }),
     savePatch: (patch) => applyPatch(patch),
     onChatsChanged: () => { void telegram.sync() },
+    onMembersChanged: () => refreshMcRoomSeats(),
     resolveMcInfo: createMcPresenceResolver({ getConfig: () => current }),
   })
   // 「多模态 › 视频理解」：聊天室直接读本组件的设置；会话工具用本组件的密钥 videoGeminiKey，代理沿用聊天室的 Gemini 路由
   const videoGemini = { resolveKey: async () => resolveVideoKey(current), fetch: () => chatroom.gemini?.fetch?.() }
   const video = createVideoFeature(ctx, () => current, { getGemini: () => videoGemini, ytdlp: sharedYtdlp, installer: ytdlpInstaller })
-  // Minecraft「绑定聊天室」：保存 Minecraft 卡片或启用 Minecraft 时对齐房间成员与 MC AI（见 components/gamebot/room-bind.mjs）。
+  // Minecraft「绑定聊天室」：保存 Minecraft 卡片或启用 Minecraft 时对齐绑定房间与席位池（见 components/gamebot/room-bind.mjs）。
   const mcRoom = createMinecraftRoomBinding({
     getConfig: () => current,
     store: chatroom.store,
     ensureSession: (id) => chatroom.roomSessions?.ensure?.(id),
     applyPatch: (patch) => applyPatch(patch),
     normalizeSeats,
+    ensureRoomMembers: (id, opts) => chatroom.ensureRoomMembers(id, opts),
   })
   const mcControl = createMcControlHost({
     ctx,
@@ -701,7 +711,17 @@ export function apply(ctx, config) {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync(); void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void stickers.sync(); void crossSessionMemory.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync(); void (async () => { await telegram.sync(); await qq.sync(); await chatroom.sync() })() })
+      scope.watch?.((next) => {
+        current = next
+        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void stickers.sync(); void crossSessionMemory.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
+        void (async () => {
+          await refreshMcRoomSeats()
+          await components.sync()
+          await telegram.sync()
+          await qq.sync()
+          await chatroom.sync()
+        })()
+      })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -827,7 +847,7 @@ export function apply(ctx, config) {
   }
 
   // ── 工作组件：各自 fork 一个 dsh-mcp-client 子插件（不写进 profile，随本插件卸载）──
-  components.sync()
+  // GameBot launch 的 MC_MEMBER_IDS 来自绑定房间名册缓存，须在 components.sync 之前写入。
   void map.sync()
   void gptImage.sync()
   void video.sync()
@@ -838,8 +858,13 @@ export function apply(ctx, config) {
   void crossSessionMemory.sync()
   void boards.sync()
   void cards.sync()
-  void minecraftMembers.sync()
   void mcControl.sync()
+  // GameBot 下发 MC_MEMBER_IDS 前先写入绑定房间名册；不跟 Telegram 抢启动。
+  void (async () => {
+    await refreshMcRoomSeats()
+    await components.sync()
+    await minecraftMembers.sync()
+  })()
   // 先通道 claim/轮询，再聊天室决定自拉或委托订阅，避免双 getUpdates 与「consumed 无订阅」黑洞。
   void (async () => { await telegram.sync(); await qq.sync(); await chatroom.sync() })()
   // 宿主的凭据服务可能晚于本插件就绪：就绪时重新同步一次 Telegram（令牌从 credentials 读取）。
@@ -932,6 +957,9 @@ export function apply(ctx, config) {
                 }
               }
             }
+            await chatroom.sync()
+            if (roomSyncWanted(patch, current)) await mcRoom.sync(patch['gamebot-minecraftEnabled'] === true ? 'launch' : 'save')
+            await refreshMcRoomSeats()
             await components.sync()
             await telegram.sync()
             await qq.sync()
@@ -941,16 +969,14 @@ export function apply(ctx, config) {
             await balance.sync()
             await calendar.sync()
             await notes.sync()
-  await preCompactionHistory.sync()
+            await preCompactionHistory.sync()
             await companionCompaction.sync()
-        await stickers.sync()
+            await stickers.sync()
             await crossSessionMemory.sync()
             await boards.sync()
             await cards.sync()
             await minecraftMembers.sync()
             await mcControl.sync()
-            await chatroom.sync()
-            if (roomSyncWanted(patch, current)) await mcRoom.sync(patch['gamebot-minecraftEnabled'] === true ? 'launch' : 'save')
             return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await qq.decorateSettings(await telegram.decorateSettings(maskSecrets(current), SECRET_MASK), SECRET_MASK) })
           }
           if (sub === '/gamebot/minecraft/room' && req.method === 'GET') {
