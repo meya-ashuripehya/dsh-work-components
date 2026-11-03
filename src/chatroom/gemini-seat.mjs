@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto'
 import { GEMINI_API_BASE, redact } from './transcribe.mjs'
 import { ProviderError } from './providers.mjs'
+import { sanitizeToolSchemas } from './schema-sanitize.mjs'
 
 /** Gemini 3 对回放的 functionCall 要求思考签名；不是本适配器产出的块用官方文档给出的占位值。 */
 export const SIGNATURE_PLACEHOLDER = 'skip_thought_signature_validator'
@@ -77,8 +78,18 @@ export async function toGeminiContents(messages, resolveMedia) {
   return out
 }
 
+/** 声明上的参数 schema：parameters 优先，其次 MCP / Anthropic 字段。调用前应已净化。 */
+function geminiParameterSchema(tool) {
+  for (const key of ['parameters', 'inputSchema', 'input_schema', 'parametersJsonSchema']) {
+    const v = tool?.[key]
+    if (v && typeof v === 'object') return v
+  }
+  return { type: 'object', properties: {} }
+}
+
 export function toGeminiTools(tools) {
-  const decls = (Array.isArray(tools) ? tools : []).filter((t) => t?.name).map((t) => ({ name: t.name, description: String(t.description || ''), parametersJsonSchema: t.parameters || { type: 'object', properties: {} } }))
+  const list = sanitizeToolSchemas(Array.isArray(tools) ? tools : [])
+  const decls = list.filter((t) => t?.name).map((t) => ({ name: t.name, description: String(t.description || ''), parametersJsonSchema: geminiParameterSchema(t) }))
   return decls.length ? [{ functionDeclarations: decls }] : undefined
 }
 
