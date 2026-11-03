@@ -74,6 +74,7 @@ import { createCalendarFeature } from './calendar/index.mjs'
 import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
 import { createPreCompactionHistoryFeature, createCompanionCompactionFeature } from './session-history/index.mjs'
+import { createGoogleSchemaGuard } from './google-schema/wrap.mjs'
 import { createStickersFeature, handleStickersApi } from './stickers/index.mjs'
 import { createCrossSessionFeature } from './channels/cross-session-feature.mjs'
 import { handleBoardsApi, handleBoardsPage } from './boards/api.mjs'
@@ -655,6 +656,8 @@ export function apply(ctx, config) {
   const notes = createNotesFeature(ctx, () => current)
   const preCompactionHistory = createPreCompactionHistoryFeature(ctx, () => current)
   const companionCompaction = createCompanionCompactionFeature(ctx, () => current)
+  // Gemini / Vertex 拒绝元组 items。包住宿主 llm.stream / prepareCall，并在 llm/stream 上就地净化。
+  const googleSchemas = createGoogleSchemaGuard(ctx)
   const stickers = createStickersFeature(ctx, () => current)
   const crossSessionMemory = createCrossSessionFeature(ctx, () => current)
   const boards = createBoardsFeature(ctx, () => current)
@@ -701,7 +704,7 @@ export function apply(ctx, config) {
     try {
       scope = settings.register(NAMESPACE, RuntimeSettingsSchema, { base: config ?? {}, applies: 'live' })
       current = scope.get()
-      scope.watch?.((next) => { current = next; components.sync(); void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void stickers.sync(); void crossSessionMemory.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync(); void (async () => { await telegram.sync(); await qq.sync(); await chatroom.sync() })() })
+      scope.watch?.((next) => { current = next; components.sync(); void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync().finally(() => googleSchemas.sync()); void stickers.sync(); void crossSessionMemory.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync(); void (async () => { await telegram.sync(); await qq.sync(); await chatroom.sync() })() })
     } catch (error) {
       ctx.logger?.warn?.('dsh-workbench: settings.register failed, fallback to file/composition config', error)
       scope = null
@@ -878,6 +881,11 @@ export function apply(ctx, config) {
     return async () => { off(); try { await gatewayTrust.flush() } catch {} gatewayTrust.dispose() }
   }, 'dsh-workbench: gateway-trust')
 
+  ctx.effect?.(() => {
+    googleSchemas.sync()
+    return () => { googleSchemas.dispose() }
+  }, 'dsh-workbench: google schema sanitize')
+
   const sessionControls = mountSessionControls(ctx, () => current)
   ctx.effect?.(() => () => sessionControls.dispose?.(), 'dsh-workbench: session-controls')
 
@@ -943,6 +951,7 @@ export function apply(ctx, config) {
             await notes.sync()
   await preCompactionHistory.sync()
             await companionCompaction.sync()
+            googleSchemas.sync()
         await stickers.sync()
             await crossSessionMemory.sync()
             await boards.sync()

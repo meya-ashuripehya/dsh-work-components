@@ -62,7 +62,8 @@ test('matlab: exe path or PATH lookup, README flags, existing mode drops root/fo
   assert.deepEqual(p.config.args, ['--matlab-session-mode=auto', '--matlab-root=C:\\Program Files\\MATLAB\\R2026a', '--initial-working-folder=D:\\proj', '--matlab-display-mode=nodesktop', '--disable-telemetry=true'])
   const e = matlabPlan({ matlabEnabled: true, matlabServerPath: 'x.exe', matlabRoot: 'R', matlabSessionMode: 'existing', matlabTelemetry: true }, { exists: () => true })
   assert.deepEqual(e.config.args, ['--matlab-session-mode=existing'])
-  const found = matlabPlan({ matlabEnabled: true }, { exists: (f) => /matlab-mcp-server/.test(f) && f.startsWith('C:\\bin'), env: { PATH: 'C:\\bin' } })
+  const pathDir = process.platform === 'win32' ? 'C:\\bin' : '/opt/bin'
+  const found = matlabPlan({ matlabEnabled: true }, { exists: (f) => /matlab-mcp-server/.test(f) && f.startsWith(pathDir), env: { PATH: pathDir } })
   assert.equal(found.ok, true); assert.equal(found.source, 'system')
   assert.match(matlab.note(), /MathWorks 软件许可协议/)
 })
