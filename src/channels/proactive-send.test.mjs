@@ -1,5 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { buildChannelMessage } from './outbound-file.mjs'
 import { createTelegramFanout } from './telegram/fanout.mjs'
 import { OPEN_TOOLS } from './telegram/owner-gate.mjs'
 import {
@@ -147,6 +153,116 @@ test('telegram: two accounts bound to the same chat is ambiguous', async () => {
   assert.equal(result.ok, false)
   assert.match(result.error, /多个 Telegram 账号/)
   assert.equal(out.calls.length, 0)
+})
+
+const GEMINI_BOTS = [
+  { id: 'main', enabled: true, preset: 'lingsnow', groupPreset: 'room' },
+  { id: 'chatgpt', enabled: true, preset: 'chatgpt' },
+  { id: 'gemini', enabled: true, preset: 'gemini', groupPreset: 'gemini-group' },
+]
+
+test('telegram: target bound to main+chatgpt+gemini sends via the session preset', async () => {
+  const out = recorder()
+  const rows = bindingsOf([
+    tgRow('main', TG_USER, 'dm'),
+    tgRow('chatgpt', TG_USER, 'dm'),
+    tgRow('gemini', TG_USER, 'dm'),
+  ])
+  const resolved = resolveTelegramAccount(rows, TG_USER, { presetId: 'gemini', bots: GEMINI_BOTS })
+  assert.equal(resolved.ok, true)
+  assert.equal(resolved.accountId, 'gemini')
+  assert.equal(resolved.conversationType, 'dm')
+  const tool = createTelegramProactiveTool({
+    getConfig: () => ({
+      telegramProactiveSendEnabled: true,
+      telegramProactiveSendAllowlist: TG_USER,
+      telegramBots: GEMINI_BOTS,
+    }),
+    loadBindings: () => rows,
+    send: out.send,
+    sessionPreset: () => 'gemini',
+  })
+  const result = await tool.execute({ target_id: TG_USER, text: 'from gemini' }, { agent: { id: 's-gemini' } })
+  assert.equal(result.ok, true)
+  assert.equal(result.delivered, true)
+  assert.equal(result.accountId, 'gemini')
+  assert.equal(out.calls.length, 1)
+  assert.equal(out.calls[0].accountId, 'gemini')
+  assert.equal(out.calls[0].conversationId, TG_USER)
+  assert.equal(out.calls[0].text, 'from gemini')
+  assert.equal(result.error, undefined)
+})
+
+test('telegram: no preset match refuses instead of using main', async () => {
+  const out = recorder()
+  const rows = bindingsOf([
+    tgRow('main', TG_USER, 'dm'),
+    tgRow('chatgpt', TG_USER, 'dm'),
+    tgRow('gemini', TG_USER, 'dm'),
+  ])
+  const resolved = resolveTelegramAccount(rows, TG_USER, { presetId: 'claude', bots: GEMINI_BOTS })
+  assert.equal(resolved.ok, false)
+  assert.equal(resolved.code, 'preset-mismatch')
+  assert.match(resolved.error, /claude/)
+  assert.match(resolved.error, /main/)
+  const onlyMain = resolveTelegramAccount(bindingsOf([tgRow('main', TG_USER, 'dm')]), TG_USER, {
+    presetId: 'gemini',
+    bots: GEMINI_BOTS,
+  })
+  assert.equal(onlyMain.ok, false)
+  assert.equal(onlyMain.code, 'preset-mismatch')
+  const tool = createTelegramProactiveTool({
+    getConfig: () => ({
+      telegramProactiveSendEnabled: true,
+      telegramProactiveSendAllowlist: TG_USER,
+      telegramBots: GEMINI_BOTS,
+    }),
+    loadBindings: () => rows,
+    send: out.send,
+    sessionPreset: () => 'claude',
+  })
+  const result = await tool.execute({ target_id: TG_USER, text: 'nope' })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /没有与当前预设/)
+  assert.equal(out.calls.length, 0)
+})
+
+test('telegram: group target matches groupPreset; two accounts with the same preset stay ambiguous', () => {
+  const rows = bindingsOf([
+    tgRow('main', TG_GROUP, 'group'),
+    tgRow('gemini', TG_GROUP, 'group'),
+  ])
+  const hit = resolveTelegramAccount(rows, TG_GROUP, { presetId: 'gemini-group', bots: GEMINI_BOTS })
+  assert.equal(hit.ok, true)
+  assert.equal(hit.accountId, 'gemini')
+  const privatePreset = resolveTelegramAccount(rows, TG_GROUP, { presetId: 'gemini', bots: GEMINI_BOTS })
+  assert.equal(privatePreset.ok, false)
+  assert.equal(privatePreset.code, 'preset-mismatch')
+  const room = resolveTelegramAccount(rows, TG_GROUP, { presetId: 'room', bots: GEMINI_BOTS })
+  assert.equal(room.ok, true)
+  assert.equal(room.accountId, 'main')
+
+  const twins = [
+    { id: 'gemini', enabled: true, preset: 'gemini' },
+    { id: 'gemini-b', enabled: true, preset: 'gemini' },
+  ]
+  const ambiguous = resolveTelegramAccount(bindingsOf([
+    tgRow('gemini', TG_USER, 'dm'),
+    tgRow('gemini-b', TG_USER, 'dm'),
+  ]), TG_USER, { presetId: 'gemini', bots: twins })
+  assert.equal(ambiguous.ok, false)
+  assert.equal(ambiguous.code, 'ambiguous')
+  assert.match(ambiguous.error, /多个 Telegram 账号/)
+
+  const disabled = resolveTelegramAccount(bindingsOf([
+    tgRow('main', TG_USER, 'dm'),
+    tgRow('gemini', TG_USER, 'dm'),
+  ]), TG_USER, {
+    presetId: 'gemini',
+    bots: GEMINI_BOTS.map((bot) => bot.id === 'gemini' ? { ...bot, enabled: false } : bot),
+  })
+  assert.equal(disabled.ok, false)
+  assert.equal(disabled.code, 'preset-mismatch')
 })
 
 test('telegram: a thread binding on the same account is not ambiguous', () => {
@@ -372,4 +488,174 @@ test('feature offers a tool only on a matching preset and removes it when disabl
   await feature.dispose()
   assert.deepEqual(feature.mountedNames('s-room'), [])
   assert.equal(registered.some((row) => row.id === 's-room'), false)
+})
+
+test('feature execute uses the calling session preset when several accounts bind the target', async () => {
+  const out = recorder()
+  const rows = bindingsOf([
+    tgRow('main', TG_USER, 'dm'),
+    tgRow('chatgpt', TG_USER, 'dm'),
+    tgRow('gemini', TG_USER, 'dm'),
+  ])
+  let registered = null
+  const agent = { id: 's-gemini', ctx: { presetId: 'gemini' } }
+  agent.ctx.inject = (_n, cb) => cb({
+    tools: {
+      register(tool) {
+        if (tool.name === TELEGRAM_PROACTIVE_TOOL) registered = tool
+        return () => {}
+      },
+    },
+  })
+  const feature = createProactiveSendFeature({
+    logger: { warn() {} },
+    get(name) {
+      if (name === 'agentPresets') return { composedPreset: (agentCtx) => agentCtx?.presetId || '' }
+      if (name === 'agents') return { get: (id) => id === agent.id ? agent : null }
+      return null
+    },
+    on() { return () => {} },
+    inject() {},
+  }, () => ({
+    telegramProactiveSendEnabled: true,
+    telegramBots: GEMINI_BOTS,
+    telegramProactiveSendAllowlist: TG_USER,
+    qqProactiveSendEnabled: false,
+  }), {
+    loadBindings: () => rows,
+    sendTelegram: out.send,
+  })
+  assert.deepEqual(feature.consider(agent), [TELEGRAM_PROACTIVE_TOOL])
+  const result = await registered.execute({ target_id: TG_USER, text: 'via feature' }, { agent: { id: 's-gemini' } })
+  assert.equal(result.ok, true)
+  assert.equal(result.accountId, 'gemini')
+  assert.equal(out.calls[0].accountId, 'gemini')
+  assert.equal(out.calls[0].text, 'via feature')
+  await feature.dispose()
+})
+
+test('proactive file send reuses the mm_send_file document part for Telegram and QQ', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'proactive-file-'))
+  const path = join(dir, 'note.txt')
+  await writeFile(path, 'hello file')
+  try {
+    const tg = recorder()
+    let loads = 0
+    const blocked = createTelegramProactiveTool({
+      getConfig: () => ({ telegramProactiveSendEnabled: true, telegramProactiveSendAllowlist: '111' }),
+      loadBindings: () => bindingsOf([tgRow('gemini', TG_USER, 'dm')]),
+      send: tg.send,
+      sessionPreset: () => 'gemini',
+      loadFile: () => { loads += 1; throw new Error('should not read') },
+    })
+    const denied = await blocked.execute({ target_id: TG_USER, path, text: 'nope' })
+    assert.equal(denied.ok, false)
+    assert.match(denied.error, /白名单/)
+    assert.equal(loads, 0)
+    assert.equal(tg.calls.length, 0)
+
+    const rows = bindingsOf([
+      tgRow('main', TG_USER, 'dm'),
+      tgRow('chatgpt', TG_USER, 'dm'),
+      tgRow('gemini', TG_USER, 'dm'),
+    ])
+    const tool = createTelegramProactiveTool({
+      getConfig: () => ({
+        telegramProactiveSendEnabled: true,
+        telegramProactiveSendAllowlist: TG_USER,
+        telegramBots: GEMINI_BOTS,
+      }),
+      loadBindings: () => rows,
+      send: tg.send,
+      sessionPreset: () => 'gemini',
+    })
+    const sent = await tool.execute({ target_id: TG_USER, path, caption: 'see attached' })
+    assert.equal(sent.ok, true)
+    assert.equal(sent.accountId, 'gemini')
+    assert.equal(sent.fileName, 'note.txt')
+    const call = tg.calls[0]
+    assert.equal(call.accountId, 'gemini')
+    assert.equal(call.text, 'see attached')
+    assert.equal(call.file.name, 'note.txt')
+    assert.equal(call.file.mimeType, 'text/plain')
+    assert.equal(Buffer.from(call.file.localData).toString(), 'hello file')
+    const message = buildChannelMessage(call)
+    assert.equal(message.text, 'see attached')
+    assert.deepEqual(message.parts.map((part) => ({ type: part.type, name: part.name, mimeType: part.mimeType })), [
+      { type: 'file', name: 'note.txt', mimeType: 'text/plain' },
+    ])
+    assert.equal(Buffer.from(message.parts[0].localData).toString(), 'hello file')
+
+    const remote = await tool.execute({ target_id: TG_USER, path: 'https://example.com/a.pdf', text: 'x' })
+    assert.equal(remote.ok, false)
+    assert.match(remote.error, /remote URLs/i)
+    assert.equal(tg.calls.length, 1)
+
+    const empty = await tool.execute({ target_id: TG_USER })
+    assert.equal(empty.ok, false)
+    assert.match(empty.error, /消息正文为空/)
+
+    const qq = recorder()
+    const qqTool = createQqProactiveTool({
+      getConfig: () => ({ qqProactiveSendEnabled: true, qqProactiveSendAllowlist: `${QQ_USER}\n${QQ_GROUP}` }),
+      loadBindings: () => ({}),
+      send: qq.send,
+    })
+    const qqSent = await qqTool.execute({ target_id: QQ_USER, path, conversation_type: 'dm' })
+    assert.equal(qqSent.ok, true)
+    assert.equal(qqSent.accountId, 'main')
+    assert.equal(qqSent.fileName, 'note.txt')
+    assert.equal(qq.calls[0].conversationType, 'dm')
+    assert.equal(qq.calls[0].text, undefined)
+    assert.equal(Buffer.from(qq.calls[0].file.localData).toString(), 'hello file')
+    const qqMessage = buildChannelMessage(qq.calls[0])
+    assert.equal(qqMessage.text, undefined)
+    assert.equal(qqMessage.parts[0].type, 'file')
+    assert.equal(qqMessage.parts[0].mimeType, 'text/plain')
+
+    const qqGroup = await qqTool.execute({ target_id: QQ_GROUP, path, text: '群文件', conversation_type: 'group' })
+    assert.equal(qqGroup.ok, true)
+    assert.equal(qq.calls[1].conversationType, 'group')
+    assert.equal(qq.calls[1].text, '群文件')
+    assert.equal(qq.calls[1].file.name, 'note.txt')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('fanout proactive send forwards a document part to the named account', async () => {
+  const calls = []
+  const fanout = createTelegramFanout([{
+    id: 'gemini',
+    adapter: {
+      async send(target, message) {
+        calls.push({ accountId: target.accountId, message })
+        return { delivered: true, messageId: 'doc-1' }
+      },
+    },
+  }, {
+    id: 'main',
+    adapter: { async send() { throw new Error('main must not send') } },
+  }])
+  const message = buildChannelMessage({
+    text: 'caption',
+    file: { name: 'note.txt', mimeType: 'text/plain', localData: Buffer.from('hello file') },
+  })
+  const sent = await fanout.sendProactive('gemini', { conversationId: TG_USER, conversationType: 'dm' }, message)
+  assert.equal(sent.messageId, 'doc-1')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].accountId, 'gemini')
+  assert.equal(calls[0].message.parts[0].type, 'file')
+  assert.equal(calls[0].message.parts[0].name, 'note.txt')
+  assert.equal(Buffer.from(calls[0].message.parts[0].localData).toString(), 'hello file')
+})
+
+test('channel runtimes build proactive files with the shared document message', () => {
+  const root = fileURLToPath(new URL('.', import.meta.url))
+  const telegram = readFileSync(join(root, 'telegram', 'runtime.mjs'), 'utf8')
+  const qq = readFileSync(join(root, 'qq', 'runtime.mjs'), 'utf8')
+  assert.match(telegram, /buildChannelMessage\(payload\)/)
+  assert.match(qq, /buildChannelMessage\(payload\)/)
+  assert.match(telegram, /outbound-file\.mjs/)
+  assert.match(qq, /outbound-file\.mjs/)
 })

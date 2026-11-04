@@ -38,6 +38,7 @@ import { dmSenderOf, isUnauthorizedDm, noteDmDiscover } from '../../telegram/dm-
 import { installBoardsLink, mountBoardsBridge } from './boards-link.mjs'
 import { installCardsLink } from './cards-link.mjs'
 import { installPersonMemoryInject } from '../person-memory-inject.mjs'
+import { buildChannelMessage, channelMessageIsEmpty } from '../outbound-file.mjs'
 
 installMapPlaceDelivery(harness.ReplyRouter)
 installCalendarDelivery(harness.ReplyRouter)
@@ -518,7 +519,8 @@ export function startTelegram(ctx, options) {
       if (dispatcher) { try { await dispatcher.close() } catch { /* ignore */ } }
     },
     /**
-     * 主动文本。accountId 必须是绑定解析出的那个机器人；fanout.sendProactive 找不到就拒绝，不退回 main。
+     * 主动文本或本地文件。accountId 必须是绑定解析出的那个机器人；fanout.sendProactive 找不到就拒绝，不退回 main。
+     * 文件部分与 mm_send_file 的文档出站相同（type:file + localData）。
      */
     async sendText(payload = {}) {
       if (state.disposed || !state.mounted || !fanout || typeof fanout.sendProactive !== 'function') {
@@ -526,11 +528,13 @@ export function startTelegram(ctx, options) {
       }
       const conversationId = String(payload.conversationId ?? '').trim()
       if (!conversationId) throw Object.assign(new Error('缺少目标 ID'), { code: 'invalid-target' })
+      const message = buildChannelMessage(payload)
+      if (channelMessageIsEmpty(message)) throw Object.assign(new Error('消息正文为空'), { code: 'empty' })
       return fanout.sendProactive(String(payload.accountId ?? '').trim(), {
         channelId: CHANNEL_ID,
         conversationId,
         conversationType: payload.conversationType === 'group' ? 'group' : 'dm',
-      }, { text: String(payload.text ?? '') })
+      }, message)
     },
     async snapshot() {
       let described = null

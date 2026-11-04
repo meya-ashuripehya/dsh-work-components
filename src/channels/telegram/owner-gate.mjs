@@ -168,7 +168,10 @@ export function installOwnerGate(ReplyContextStore) {
   Object.defineProperty(proto, '__dshOwnerGate', { value: true })
 }
 
-/** 解析「授权用户 ID」：填写的列表优先，留空时回退到所有者用户 ID。 */
+/**
+ * 解析「授权用户 ID」：填写的列表优先，留空时回退到所有者用户 ID。
+ * 只接受 Telegram 数字用户 ID。QQ OpenID 用 channels/qq/owner-gate.mjs 的同名函数。
+ */
 export function resolveAuthorizedIds(authorizedRaw, ownerId) {
   const list = String(authorizedRaw ?? '').split(/[\s,，;；]+/).map((s) => s.trim()).filter(Boolean)
   for (const id of list) if (!/^-?\d{1,20}$/.test(id)) throw new Error(`授权用户 ID「${id}」不是 Telegram 数字用户 ID`)

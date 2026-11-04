@@ -65,11 +65,18 @@ if (existsSync(join(root, 'lib', 'channel-telegram.mjs'))) {
   }
 }
 
-// 主动发送：开关、白名单、Telegram 绑定选账号、预设可见性（node:test，模拟出站）。
+// 主动发送：开关、白名单、Telegram 绑定选账号、预设可见性、文件出站（node:test，模拟出站）。
 try {
   execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'proactive-send.test.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push('src/channels/proactive-send.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 20).join('\n'))
+}
+
+// QQ 授权 OpenID 与 Telegram 数字用户 ID 分开校验（设置页启用 QQ 时走这份解析）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'qq', 'owner-gate.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/channels/qq/owner-gate.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 20).join('\n'))
 }
 
 const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'))
