@@ -45,7 +45,7 @@ export function qqSchemaShape(z) {
     qqGroupIds: z.string().default('').description('指定群的 group_openid（官方 API，不是传统 QQ 群号），逗号、空格或换行分隔。仅「指定群」时使用。'),
     qqGroupRequireMention: z.boolean().default(true).description('群内需要 @ 唤醒。官方网关默认推送 AT 事件；默认开启。'),
     qqAuthorizedIds: z.string().default('').description('授权用户 OpenID：只有这些用户触发的回合可以使用会更改电脑的工具。留空时使用所有者 OpenID；两者都空时任何人都不能使用。'),
-    qqProactiveSendEnabled: z.boolean().default(false).description('启用主动发送工具 qq_proactive_send（默认关闭）。填了私聊预设时，只有使用同一预设的会话能看到该工具；预设留空时只看本开关。'),
+    qqProactiveSendEnabled: z.boolean().default(false).description('启用主动发送工具 qq_proactive_send（默认关闭）。可发文本，或按 mm_send_file 的方式发一个本地文件。填了私聊预设时，只有使用同一预设的会话能看到该工具；预设留空时只看本开关。'),
     qqProactiveSendAllowlist: z.string().default('').description('允许主动发送的用户 OpenID 或群 group_openid，逗号、空格或换行分隔。不在名单中的目标一律拒绝。与私聊白名单、群白名单、授权用户无关。'),
     qqPreset: z.string().default('').description('账号 main 的私聊预设 ID。留空沿用全局默认。'),
     qqChannelRoutes: z.string().default('').description('通道级预设覆盖，形如 qq:预设名（routing.overrides.channel）。留空不覆盖。'),

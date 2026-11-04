@@ -27,6 +27,7 @@ import { installPersonMemoryInject } from '../person-memory-inject.mjs'
 import { MAIN_ACCOUNT, accountRouteOf } from './accounts.mjs'
 import { buildReplayEvent, notePendingDiscover, pendingInfoOfEvent } from '../../qq/pending-discover.mjs'
 import { installQqLingChatOutbound } from './lingchat-segments.mjs'
+import { buildChannelMessage, channelMessageIsEmpty } from '../outbound-file.mjs'
 
 installOwnerGate(harness.ReplyContextStore)
 installPersonMemoryInject(harness.ChannelHarnessBridge)
@@ -421,8 +422,9 @@ export function startQQ(ctx, options) {
     emitInbound,
     replayPending,
     /**
-     * 主动文本。走已经包过 LingChat 分段的 adapter.send，不另开一条传输。
-     * 账号固定 main。
+     * 主动文本或本地文件。走已经包过 LingChat 分段的 adapter.send，不另开一条传输。
+     * 带 parts 的文件消息由分段包装原样交出（见 lingchat-segments）。账号固定 main。
+     * 文件部分与 mm_send_file 的文档出站相同（type:file + localData）。
      */
     async sendText(payload = {}) {
       if (state.disposed || !state.mounted) {
@@ -430,12 +432,14 @@ export function startQQ(ctx, options) {
       }
       const conversationId = String(payload.conversationId ?? '').trim()
       if (!conversationId) throw Object.assign(new Error('缺少目标 ID'), { code: 'invalid-target' })
+      const message = buildChannelMessage(payload)
+      if (channelMessageIsEmpty(message)) throw Object.assign(new Error('消息正文为空'), { code: 'empty' })
       return adapter.send({
         channelId: CHANNEL_ID,
         accountId: ACCOUNT_ID,
         conversationId,
         conversationType: payload.conversationType === 'group' ? 'group' : 'dm',
-      }, { text: String(payload.text ?? '') })
+      }, message)
     },
     async snapshot() {
       let health = null
