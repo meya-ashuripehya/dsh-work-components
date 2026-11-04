@@ -164,7 +164,7 @@ test('moderator: DeepSeek main by default, others polled one at a time, PASS sil
     const msgs = await f.store.readMessages(f.room.id)
     assert.ok(msgs.some((m) => m.speaker.id === 'claude' && m.status === 'pass'))
     assert.ok(!f.relayed.some((r) => /PASS/.test(r.text)))
-    assert.deepEqual(f.relayed.filter((r) => r.seat).map((r) => r.seat), ['deepseek', 'gpt'])
+    assert.deepEqual(f.relayed.filter((r) => r.seat).map((r) => r.seat), ['deepseek', 'deepseek', 'gpt']) // local user via main, then AI replies
     assert.equal(f.relayed[0].prefix, 'Shiro') // 本地用户消息经接收机器人转发
     assert.ok(msgs.filter((m) => m.kind === 'seat').every((m) => typeof m.basedOn === 'number'))
     assert.deepEqual(f.typing.slice(0, 2), [['start', 'deepseek'], ['stop', 'deepseek']])
