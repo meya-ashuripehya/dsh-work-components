@@ -517,6 +517,21 @@ export function startTelegram(ctx, options) {
       try { await fork?.dispose?.() } catch { /* ignore */ }
       if (dispatcher) { try { await dispatcher.close() } catch { /* ignore */ } }
     },
+    /**
+     * 主动文本。accountId 必须是绑定解析出的那个机器人；fanout.sendProactive 找不到就拒绝，不退回 main。
+     */
+    async sendText(payload = {}) {
+      if (state.disposed || !state.mounted || !fanout || typeof fanout.sendProactive !== 'function') {
+        throw Object.assign(new Error('Telegram 通道未连接，无法主动发送'), { code: 'channel-offline' })
+      }
+      const conversationId = String(payload.conversationId ?? '').trim()
+      if (!conversationId) throw Object.assign(new Error('缺少目标 ID'), { code: 'invalid-target' })
+      return fanout.sendProactive(String(payload.accountId ?? '').trim(), {
+        channelId: CHANNEL_ID,
+        conversationId,
+        conversationType: payload.conversationType === 'group' ? 'group' : 'dm',
+      }, { text: String(payload.text ?? '') })
+    },
     async snapshot() {
       let described = null
       if (fanout && state.mounted) {

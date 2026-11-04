@@ -76,6 +76,7 @@ import { createNotesFeature } from './notes/index.mjs'
 import { createPreCompactionHistoryFeature, createCompanionCompactionFeature } from './session-history/index.mjs'
 import { createStickersFeature, handleStickersApi } from './stickers/index.mjs'
 import { createCrossSessionFeature } from './channels/cross-session-feature.mjs'
+import { createProactiveSendFeature } from './channels/proactive-send.mjs'
 import { handleBoardsApi, handleBoardsPage } from './boards/api.mjs'
 import { createBoardsFeature } from './boards/index.mjs'
 import { createGamebotMembersFeature } from './components/gamebot/members-tools.mjs'
@@ -706,6 +707,7 @@ export function apply(ctx, config) {
   minecraftMembers.bindControl(mcControl)
   late.boundChatIds = () => chatroom.boundChatIds()
   late.chatroomSync = (force) => chatroom.sync(force === true)
+  let proactiveSend = null
   const settings = typeof ctx.get === 'function' ? ctx.get('settings') : undefined
   if (settings && typeof settings.register === 'function') {
     try {
@@ -713,7 +715,7 @@ export function apply(ctx, config) {
       current = scope.get()
       scope.watch?.((next) => {
         current = next
-        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void stickers.sync(); void crossSessionMemory.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
+        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void stickers.sync(); void crossSessionMemory.sync(); void proactiveSend?.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
         void (async () => {
           await refreshMcRoomSeats()
           await components.sync()
@@ -794,6 +796,11 @@ export function apply(ctx, config) {
     },
   })
   qqSave.allowFrom = (raw) => applyPatch({ qqAllowFrom: String(raw ?? '') })
+  // 主动发送：按会话预设挂工具，白名单在调用时读取。不放进通道重启键，改白名单不必重连。
+  proactiveSend = createProactiveSendFeature(ctx, () => current, {
+    sendTelegram: (payload) => telegram.sendProactive(payload),
+    sendQq: (payload) => qq.sendProactive(payload),
+  })
   qqSave.groupAllow = (patch) => {
     const out = {}
     if (patch && typeof patch.groupIds === 'string') out.qqGroupIds = patch.groupIds
@@ -856,6 +863,7 @@ export function apply(ctx, config) {
   void notes.sync()
   void stickers.sync()
   void crossSessionMemory.sync()
+  void proactiveSend.sync()
   void boards.sync()
   void cards.sync()
   void mcControl.sync()
@@ -889,6 +897,7 @@ export function apply(ctx, config) {
       try { await companionCompaction.dispose() } catch {}
       try { await stickers.dispose() } catch {}
       try { await crossSessionMemory.dispose() } catch {}
+      try { await proactiveSend.dispose() } catch {}
       try { await boards.dispose() } catch {}
       try { await cards.dispose() } catch {}
       try { await minecraftMembers.dispose() } catch {}
@@ -973,6 +982,7 @@ export function apply(ctx, config) {
             await companionCompaction.sync()
             await stickers.sync()
             await crossSessionMemory.sync()
+            await proactiveSend.sync()
             await boards.sync()
             await cards.sync()
             await minecraftMembers.sync()

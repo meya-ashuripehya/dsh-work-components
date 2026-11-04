@@ -73,6 +73,8 @@ export function telegramSchemaShape(z) {
     telegramGroupPreset: z.string().default('').description('兼容别名：账号 main 的群聊预设。请在机器人列表里修改；保存机器人时会写回这里。'),
     telegramBots: z.array(z.any()).default([]).description('全部 Telegram 机器人（含 id 为 main 的一行）：{ id, name, tokenRef, preset, groupPreset, enabled, provider, model, reasoningEffort }。令牌在宿主凭据里，每个机器人有自己的 DSH 会话。'),
     telegramAuthorizedIds: z.string().default('').description('授权用户 ID：只有这些 Telegram 用户触发的回合可以使用会更改电脑的工具。留空时使用所有者用户 ID；两者都空时任何人都不能使用。'),
+    telegramProactiveSendEnabled: z.boolean().default(false).description('启用主动发送工具 telegram_proactive_send（默认关闭）。仅当当前会话预设等于某个已启用机器人的私聊预设或群预设时，该会话才能看到此工具。'),
+    telegramProactiveSendAllowlist: z.string().default('').description('允许主动发送的用户 ID 或群 ID，逗号、空格或换行分隔。不在名单中的目标一律拒绝。与私聊白名单、群 ID、授权用户无关。发送账号由已有会话绑定决定。'),
     telegramDebugTrace: z.boolean().default(false).description('排查日志：把入站更新与准入 / 建会话阶段写到 ~/.dsh/dsh-channels/telegram-inbound.log。默认关闭。'),
     telegramChannelRoutes: z.string().default('').description('通道级预设覆盖，形如 telegram:预设名（routing.overrides.channel）。留空不覆盖。'),
     telegramConversationRoutes: z.string().default('').description('已停用。会话级覆盖会压过每个机器人自己的预设，启动时忽略，保存机器人时清空。'),
@@ -495,6 +497,15 @@ export function createTelegramChannel(ctx, getConfig, options = {}) {
       } catch (error) {
         return fail(error?.status || 400, String(error?.message || error))
       }
+    },
+
+    /** 主动发送：转给运行时的 fanout.sendProactive（按绑定账号，不退回 main）。通道没连上就拒绝。 */
+    async sendProactive(payload) {
+      const h = s.handle
+      if (!h || typeof h.sendText !== 'function') {
+        throw Object.assign(new Error('Telegram 通道未连接，无法主动发送'), { code: 'channel-offline' })
+      }
+      return h.sendText(payload)
     },
 
     /** GET /telegram/dm-pending，POST /telegram/dm-pending/:userId/authorize|ignore|remove（仅本机设置页）。 */

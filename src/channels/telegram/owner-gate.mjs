@@ -40,6 +40,8 @@ export const OPEN_TOOLS = new Set([
   // an owner-authorized turn + Memory Circle (see createOwnerGate.isAuthorizedTurn).
   'cross_session_list',
   'cross_session_search',
+  // telegram_proactive_send / qq_proactive_send 会主动发消息，故意不放进本表：
+  // 通道回合里仍按所有者闸门拒绝非授权发送者，也不因此扩大「可改电脑」的授权名单。
   // 棋类、牌类的看局面和出牌按座位校验，不在这里放行。开局、结束、重开会下载或写存档，仅所有者可用。
 ])
 
