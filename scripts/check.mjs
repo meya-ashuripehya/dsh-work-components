@@ -60,6 +60,16 @@ if (existsSync(join(root, 'lib', 'channel-telegram.mjs'))) {
     if (!client.includes(`key: "${key}"`)) problems.push(`lib/client.js lacks INPUT_FIELDS entry ${key}`)
   }
   if (!client.includes('group: "通道"')) problems.push('lib/client.js lacks the 通道 group')
+  for (const key of ['telegramProactiveSendEnabled', 'telegramProactiveSendAllowlist', 'qqProactiveSendEnabled', 'qqProactiveSendAllowlist']) {
+    if (!client.includes(`key: "${key}"`)) problems.push(`lib/client.js lacks INPUT_FIELDS entry ${key}`)
+  }
+}
+
+// 主动发送：开关、白名单、Telegram 绑定选账号、预设可见性（node:test，模拟出站）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'proactive-send.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/channels/proactive-send.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 20).join('\n'))
 }
 
 const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'))

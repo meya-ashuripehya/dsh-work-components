@@ -103,6 +103,20 @@ export function createTelegramFanout(entries, options = {}) {
       return conflicts.size >= children.length
     },
     send(target, message) { return childAdapter(target).send(target, message) },
+    /**
+     * 主动发送：必须点名 accountId，且该机器人当前在本 fanout 里。
+     * 找不到就拒绝，不退回 main，也不改用第一个机器人（与 send() 的回复路由不同）。
+     */
+    sendProactive(accountId, target, message) {
+      const id = String(accountId ?? '').trim()
+      const hit = id ? byId.get(id) : undefined
+      if (!hit) {
+        throw Object.assign(new Error(id
+          ? `Telegram 账号「${id}」未在运行，无法主动发送（不会改用其他机器人）`
+          : '未解析到 Telegram 账号，无法主动发送'), { code: 'account-unavailable' })
+      }
+      return hit.adapter.send({ ...(target || {}), accountId: id }, message)
+    },
     /** 按 target.accountId 取子适配器 upstream（place/calendar 的 sendVenue/sendMessage 用）。 */
     upstreamFor(target) {
       try { return childAdapter(target).upstream || null } catch { return null }

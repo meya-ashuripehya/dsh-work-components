@@ -420,6 +420,23 @@ export function startQQ(ctx, options) {
     },
     emitInbound,
     replayPending,
+    /**
+     * 主动文本。走已经包过 LingChat 分段的 adapter.send，不另开一条传输。
+     * 账号固定 main。
+     */
+    async sendText(payload = {}) {
+      if (state.disposed || !state.mounted) {
+        throw Object.assign(new Error('QQ 通道未连接，无法主动发送'), { code: 'channel-offline' })
+      }
+      const conversationId = String(payload.conversationId ?? '').trim()
+      if (!conversationId) throw Object.assign(new Error('缺少目标 ID'), { code: 'invalid-target' })
+      return adapter.send({
+        channelId: CHANNEL_ID,
+        accountId: ACCOUNT_ID,
+        conversationId,
+        conversationType: payload.conversationType === 'group' ? 'group' : 'dm',
+      }, { text: String(payload.text ?? '') })
+    },
     async snapshot() {
       let health = null
       let bot = null
