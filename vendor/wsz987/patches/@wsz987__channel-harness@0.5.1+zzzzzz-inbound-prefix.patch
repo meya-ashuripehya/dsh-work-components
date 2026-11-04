@@ -1,0 +1,15 @@
+diff --git a/lib/message-converter.js b/lib/message-converter.js
+--- a/lib/message-converter.js
++++ b/lib/message-converter.js
+@@ -26,6 +26,12 @@ export async function toHarnessUserMessage(event, options = {}) {
+         if (prefix)
+             blocks.push({ type: 'text', text: prefix });
+     }
++    // Workbench: CSM / person-memory hang on prefix channel, not user message body.
++    const inboundPrefix = String(event?.__dshInboundPrefix || options.inboundPrefix || '').trim();
++    if (inboundPrefix) {
++        blocks.push({ type: 'text', text: inboundPrefix.endsWith('\n') ? inboundPrefix : inboundPrefix + '\n' });
++    }
+     blocks.push(...await partsToBlocks(event.message.content, options));
+     if (blocks.length === 0)
+         blocks.push({ type: 'text', text: '' });

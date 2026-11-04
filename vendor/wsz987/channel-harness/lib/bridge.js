@@ -42,6 +42,7 @@ import { parseCommand } from '@deepseek-ai/dsh-commands';
 import { PersistenceUnavailableError, SessionNotFoundError } from './agent-manager.js';
 import { routesEqual } from './agent-router.js';
 import { sessionKey, } from './session-router.js';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { toHarnessUserMessage, } from './message-converter.js';
 import { installAttachmentCompatibilityTools, } from './file-provider.js';
 import { ReplyContextStore } from './reply-context-store.js';
@@ -53,9 +54,16 @@ import { ChannelSessionFactory } from './channel-session-factory.js';
 import { isReservedClaimCommand } from '@wsz987/channel-core';
 import { InboundAccessController } from './access/controller.js';
 import { commandLocaleFromSettings } from './commands/locale.js';
-/** Inbound trace log is opt-in (Telegram card «排查日志» sets DSH_TELEGRAM_TRACE=1). */
+/** Inbound trace log is opt-in (Telegram/QQ card sets DSH_TELEGRAM_TRACE / DSH_QQ_TRACE=1). */
 function inboundTraceEnabled() {
-    return process.env.DSH_TELEGRAM_TRACE === '1';
+    return process.env.DSH_TELEGRAM_TRACE === '1' || process.env.DSH_QQ_TRACE === '1';
+}
+function inboundTraceFile(entry) {
+    const channel = String(entry?.channel || '').toLowerCase();
+    if (channel === 'qq' || (process.env.DSH_QQ_TRACE === '1' && process.env.DSH_TELEGRAM_TRACE !== '1' && channel !== 'telegram')) {
+        return join(homedir(), '.dsh', 'dsh-channels', 'qq-inbound.log');
+    }
+    return join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
 }
 /** Formal notice sent to the chat when a message could not be handled (no internal detail leaks to the chat). */
 const HANDLING_FAILED_NOTICE = '抱歉，本条消息未能处理：会话创建或恢复失败，请稍后再试；若持续出现，请联系管理员检查智能体预设。';
@@ -564,7 +572,7 @@ export class ChannelHarnessBridge {
         if (!inboundTraceEnabled())
             return;
         try {
-            const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+            const file = inboundTraceFile(entry);
             mkdirSync(dirname(file), { recursive: true });
             const error = typeof entry.error === 'string' ? entry.error.replace(/\s+/g, ' ').slice(0, 240) : undefined;
             appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...entry, ...(error ? { error } : {}) }) + '\n');
@@ -585,7 +593,7 @@ export class ChannelHarnessBridge {
         if (!inboundTraceEnabled())
             return;
         try {
-            const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+            const file = inboundTraceFile({ channel: event.channel });
             mkdirSync(dirname(file), { recursive: true });
             appendFileSync(file, JSON.stringify({
                 t: new Date().toISOString(),
@@ -691,26 +699,9 @@ export class ChannelHarnessBridge {
         }
         else {
             // --- Existing conversation: reconcile route snapshot + resolve ----------
-            // Route drift: provider/model can update in place, but an Agent preset
-            // change cannot recompose a durable session (AgentPresetConflictError).
-            // Mint a fresh session under the new preset — same intent as an explicit /new
-            // after the user switched the channel/conversation preset in settings.
-            let resolvedFromPresetSwitch = false;
             if (!routesEqual(binding.route, route)) {
-                const presetChanged = (binding.route?.preset ?? null) !== (route?.preset ?? null);
-                if (presetChanged) {
-                    const archivedSessionId = binding.sessionId;
-                    this.traceInbound({ stage: 'creating', conversationId: event.conversation.id, preset: route?.preset ?? null });
-                    const fresh = await this.sessionFactory.create(this.conversationInput(event), route);
-                    binding = fresh.binding;
-                    agentRef = fresh.agentRef;
-                    await this.options.agentManager.retireSession(archivedSessionId);
-                    resolvedFromPresetSwitch = true;
-                }
-                else {
-                    binding = { ...binding, route, updatedAt: now };
-                    await this.options.bindingStore.put(binding);
-                }
+                binding = { ...binding, route, updatedAt: now };
+                await this.options.bindingStore.put(binding);
             }
             // Existing-binding resolution follows the official Host resolver order
             // (live agent -> persistence membership -> resume), never the reverse:
@@ -723,32 +714,30 @@ export class ChannelHarnessBridge {
             //   ③ membership hit -> resume;
             //   ④ membership MISS -> durable binding => session-not-found, while an
             //      explicitly ephemeral binding may recreate the recorded id.
-            if (!resolvedFromPresetSwitch) {
-                const borrowed = await this.options.agentManager.borrowIfLive(binding.sessionId, route, this.commandSetup);
-                if (borrowed) {
-                    agentRef = borrowed;
+            const borrowed = await this.options.agentManager.borrowIfLive(binding.sessionId, route, this.commandSetup);
+            if (borrowed) {
+                agentRef = borrowed;
+            }
+            else {
+                const probe = await this.options.agentManager.probePersisted(binding.sessionId);
+                if (probe === 'unavailable' && this.bindingDurability(binding) === 'ephemeral') {
+                    const recreated = await this.sessionFactory.recreate(binding, route);
+                    binding = recreated.binding;
+                    agentRef = recreated.agentRef;
+                }
+                else if (probe === 'present') {
+                    agentRef = await this.options.agentManager.resolve(binding.sessionId, route, this.commandSetup);
+                }
+                else if (probe === 'unavailable') {
+                    throw new PersistenceUnavailableError(binding.sessionId, key);
+                }
+                else if (this.bindingDurability(binding) === 'ephemeral') {
+                    const recreated = await this.sessionFactory.recreate(binding, route);
+                    binding = recreated.binding;
+                    agentRef = recreated.agentRef;
                 }
                 else {
-                    const probe = await this.options.agentManager.probePersisted(binding.sessionId);
-                    if (probe === 'unavailable' && this.bindingDurability(binding) === 'ephemeral') {
-                        const recreated = await this.sessionFactory.recreate(binding, route);
-                        binding = recreated.binding;
-                        agentRef = recreated.agentRef;
-                    }
-                    else if (probe === 'present') {
-                        agentRef = await this.options.agentManager.resolve(binding.sessionId, route, this.commandSetup);
-                    }
-                    else if (probe === 'unavailable') {
-                        throw new PersistenceUnavailableError(binding.sessionId, key);
-                    }
-                    else if (this.bindingDurability(binding) === 'ephemeral') {
-                        const recreated = await this.sessionFactory.recreate(binding, route);
-                        binding = recreated.binding;
-                        agentRef = recreated.agentRef;
-                    }
-                    else {
-                        throw new SessionNotFoundError(binding.sessionId, key);
-                    }
+                    throw new SessionNotFoundError(binding.sessionId, key);
                 }
             }
             this.options.agentManager.registerBinding(binding);
@@ -794,11 +783,33 @@ export class ChannelHarnessBridge {
         // --- Ordinary message followup --------------------------------------------
         const runId = randomUUID();
         this.logInboundBinaryAvailability(event, binding.sessionId);
-        const userMessage = await toHarnessUserMessage(event, {
+        // Workbench CSM / person-memory: seed as plugin recall context, not as user speech.
+        const inboundPrefix = String(event?.__dshInboundPrefix || '').trim();
+        const eventForUser = inboundPrefix
+            ? { ...event, __dshInboundPrefix: undefined }
+            : event;
+        const userMessage = await toHarnessUserMessage(eventForUser, {
             includeMetadataPrefix: this.options.config.includeMetadataPrefix,
             saveImage: this.saveImageHook(event, binding.sessionId),
             fileStore: this.fileStoreHook(event, binding.sessionId),
         });
+        if (inboundPrefix && agentRef?.agent && typeof agentRef.agent.inject === 'function') {
+            try {
+                const text = inboundPrefix.endsWith('\n') ? inboundPrefix : inboundPrefix + '\n';
+                agentRef.agent.inject(createUserMessage({
+                    content: [{ type: 'text', text }],
+                    source: {
+                        // Session format v4 refuses retired kind:'plugin' wrappers;
+                        // producer-owned kind matches V3→V4 rewritePluginSource output.
+                        kind: 'plugin:dsh-workbench-cross-session-memory',
+                        form: 'recall',
+                    },
+                }));
+            }
+            catch {
+                // never block delivery
+            }
+        }
         // Register the reply context keyed by the Harness UserMessage id strictly
         // BEFORE followup.
         this.options.replyContexts.register(userMessage.id, {

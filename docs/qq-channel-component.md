@@ -202,3 +202,8 @@ docs/qq-channel-component.md  # 本文件
 3. 授权只经本机设置页（`localOnlyRefusal`）；**无**聊天指令写白名单。`qqAuthorizedIds`（电脑工具闸门）与私聊授权分离；所有者 OpenID 未填时授权返回 409。
 4. **授权回放（2026-10-27）**：pending 记录 `lastText` / `lastMessageId` / `lastMentionedBot`；授权写入白名单并 `sync` 后，经 runtime `replayPending` 把触发消息再投进 harness（群默认 `mentionedBot: true`）。Telegram dm-pending **不**回放——此为 QQ 补齐「授权那条进 DSH」。回放失败不回滚白名单；`replayedAt` 防重复。
 
+---
+
+## 平台表面（tools 判定；模型不见）
+
+通道身份（`desktop` | `telegram` | `qq`）由工具 / 运行时从会话 origin 解析，**不要**写进模型可见的 tool description / system prompt。共享模块见 `docs/platform-surface.md` 与 `src/channels/surface.mjs`。QQ 富出站（日历/地图/棋牌图）仍为 capability stub（false）。

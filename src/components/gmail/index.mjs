@@ -22,7 +22,7 @@ export const meta = {
   group: '工作组件',
   url: 'https://support.google.com/accounts/answer/185833',
   serverName: 'gmail',
-  summary: '用应用专用密码连接个人 Gmail（IMAP/SMTP），需要填写地址和应用专用密码。',
+  summary: '用应用专用密码连接个人 Gmail（IMAP/SMTP），需要填写地址和应用专用密码。申请应用专用密码：https://myaccount.google.com/apppasswords',
 }
 
 const SERVER = join(pluginRoot(), 'lib', 'gmail-server.mjs')

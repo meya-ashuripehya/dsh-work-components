@@ -1,4 +1,4 @@
-﻿/**
+/**
  * QQ 通道运行时（单独打包为 lib/channel-qq.mjs，只在「通道 › QQ」启用时才被动态 import）。
  *
  * 复用 @wsz987/channel-core / channel-harness / channel-qq 0.5.1：
@@ -23,14 +23,18 @@ import * as harness from '@wsz987/channel-harness'
 import { Config as QQConfig, QQAdapter } from '@wsz987/channel-qq'
 import { join } from 'node:path'
 import { DENY_MESSAGE, createOwnerGate, installOwnerGate, setActiveGate, clearActiveGate, resolveAuthorizedIds } from './owner-gate.mjs'
-import { installPersonMemoryInject } from '../person-memory-inject.mjs'
+import { installPersonMemoryInject, installAssistantMemoryWrite } from '../person-memory-inject.mjs'
 import { MAIN_ACCOUNT, accountRouteOf } from './accounts.mjs'
+export { accountRouteOf, routeFromSeat } from './accounts.mjs'
 import { buildReplayEvent, notePendingDiscover, pendingInfoOfEvent } from '../../qq/pending-discover.mjs'
 import { installQqLingChatOutbound } from './lingchat-segments.mjs'
 import { buildChannelMessage, channelMessageIsEmpty } from '../outbound-file.mjs'
+import { installQQSessionOriginLink } from './session-origin.mjs'
 
 installOwnerGate(harness.ReplyContextStore)
+installQQSessionOriginLink(harness.ReplyContextStore)
 installPersonMemoryInject(harness.ChannelHarnessBridge)
+installAssistantMemoryWrite(harness.ReplyRouter)
 
 export { DENY_MESSAGE, createOwnerGate, resolveAuthorizedIds }
 
@@ -268,6 +272,9 @@ export function startQQ(ctx, options) {
     appId,
     appSecret,
     appSecretRef = 'QQBOT_APP_SECRET',
+    seatId = '',
+    seats = [],
+    defaultRoute = null,
     preset = '',
     inboundPreempt = true,
     authorizedIds = [],
@@ -285,7 +292,8 @@ export function startQQ(ctx, options) {
   if (debugTrace === true) process.env.DSH_QQ_TRACE = '1'
   else delete process.env.DSH_QQ_TRACE
 
-  const lead = accountRouteOf({ qqPreset: preset })
+  // QQ：单席位路由（settings.qqSeatId → 席位池），不是聊天室多 AI 名册。
+  const lead = routeOf(defaultRoute) || accountRouteOf({ qqPreset: preset, qqSeatId: seatId }, seats)
   const hConfig = harnessConfig({
     inboundPreempt,
     defaultRoute: lead,

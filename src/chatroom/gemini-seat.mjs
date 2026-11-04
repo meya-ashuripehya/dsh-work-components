@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto'
 import { GEMINI_API_BASE, redact } from './transcribe.mjs'
 import { ProviderError } from './providers.mjs'
+import { sanitizeSchema } from './schema-sanitize.mjs'
 
 /** Gemini 3 对回放的 functionCall 要求思考签名；不是本适配器产出的块用官方文档给出的占位值。 */
 export const SIGNATURE_PLACEHOLDER = 'skip_thought_signature_validator'
@@ -78,7 +79,7 @@ export async function toGeminiContents(messages, resolveMedia) {
 }
 
 export function toGeminiTools(tools) {
-  const decls = (Array.isArray(tools) ? tools : []).filter((t) => t?.name).map((t) => ({ name: t.name, description: String(t.description || ''), parametersJsonSchema: t.parameters || { type: 'object', properties: {} } }))
+  const decls = (Array.isArray(tools) ? tools : []).filter((t) => t?.name).map((t) => ({ name: t.name, description: String(t.description || ''), parametersJsonSchema: sanitizeSchema(t.parameters || { type: 'object', properties: {} }) }))
   return decls.length ? [{ functionDeclarations: decls }] : undefined
 }
 

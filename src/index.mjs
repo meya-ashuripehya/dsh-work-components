@@ -74,6 +74,7 @@ import { createCalendarFeature } from './calendar/index.mjs'
 import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
 import { createPreCompactionHistoryFeature, createCompanionCompactionFeature } from './session-history/index.mjs'
+import { createGoogleToolCapFeature, GOOGLE_TOOL_CAP_KEYS } from './google-tool-cap/index.mjs'
 import { createStickersFeature, handleStickersApi } from './stickers/index.mjs'
 import { createCrossSessionFeature } from './channels/cross-session-feature.mjs'
 import { createProactiveSendFeature } from './channels/proactive-send.mjs'
@@ -245,9 +246,9 @@ export const SettingsSchema = z.object({
   notionEnabled: z.boolean().default(false).description('启动官方 Notion MCP（经 mcp-remote OAuth 桥；首次连接会弹出授权页）。'),
   notionUrl: z.string().default('https://mcp.notion.com/mcp').description('Notion MCP 远程地址。'),
   notionPackage: z.string().default('mcp-remote').description('OAuth 桥接用的 npm 包（默认 mcp-remote），「下载安装」时安装到 tools/notion；也可复用 %USERPROFILE%\.dsh\mcp-remote。'),
-  gmailEnabled: z.boolean().default(false).description('启动 Gmail（IMAP/SMTP）。需要填写地址和应用专用密码。'),
+  gmailEnabled: z.boolean().default(false).description('启动 Gmail（IMAP/SMTP）。需要填写地址和应用专用密码。申请应用专用密码：https://myaccount.google.com/apppasswords'),
   gmailAddress: z.string().default('').description('Gmail 地址（必填）。'),
-  gmailAppPassword: z.string().role('secret').default('').description('应用专用密码（必填，16 位）。'),
+  gmailAppPassword: z.string().role('secret').default('').description('应用专用密码（必填，16 位）。申请：https://myaccount.google.com/apppasswords'),
   cloudflareEnabled: z.boolean().default(false).description('启动官方 Cloudflare API MCP（经 mcp-remote OAuth 桥；scope=offline_access）。'),
   cloudflareUrl: z.string().default('https://mcp.cloudflare.com/mcp').description('Cloudflare API MCP 远程地址。'),
   cloudflarePackage: z.string().default('mcp-remote').description('OAuth 桥接用的 npm 包（默认 mcp-remote），「下载安装」时安装到 tools/cloudflare。'),
@@ -342,13 +343,14 @@ export const SettingsSchema = z.object({
   preCompactionHistoryEnabled: z.boolean().default(true).description('启用官方压缩前历史工具 search_pre_compaction：压缩后模型可见面只剩摘要，但会话日志仍保留被遮蔽的原始回合；本工具只读检索当前会话中被 compact-checkpoint 遮蔽的原文。默认开启。关闭后卸下工具。'),
   companionCompactionEnabled: z.boolean().default(true).description('启用陪伴向压缩指令：官方压缩（purpose=compaction）时，用陪伴检查点结构覆盖 @deepseek-ai/dsh-compaction-basic 的编码助手指令。默认开启。关闭后恢复官方指令。'),
   companionCompactionInstruction: z.string().default('').description('可选：自定义陪伴压缩指令（多行）。留空则使用内置中文陪伴检查点结构。'),
+  googleToolCapEnabled: z.boolean().default(true).description('启用 Google/Vertex 工具查找（discovery）。开启（默认）：工具超过 512 时只暴露核心非 MCP + find_tools + 会话钉选，避免 Vertex functionDeclarations 上限 INVALID_ARGUMENT。关闭：恢复预 discovery 行为，原样传入全部可用工具；工具很多时可能再次触发 Vertex 512 上限（400）。'),
   stickersEnabled: z.boolean().default(true).description('启用表情包工具：sticker_search / sticker_save / sticker_send。本地维护标签化图片库，发送时按普通图片出站。默认开启。关闭后卸下工具，已保存的表情包仍保留。'),
   stickersDefaultPackId: z.string().default('').description('导入/保存未指定包时使用的默认表情包 id；留空则使用名为「默认」的包。'),
-  crossSessionMemoryEnabled: z.boolean().default(true).description('启用跨会话记忆：cross_session_list / cross_session_search（按需拉取 QQ/Telegram 历史）以及通道入站时的短 [person-memory] 称呼摘要。默认开启。关闭后卸下工具并停止摘要注入。'),
-  crossSessionOwnerTelegramIds: z.string().default('').description('OwnerLink 的 Telegram 用户 ID，逗号/空格分隔。留空使用内置默认（Shiro: 6153059771）。'),
-  crossSessionOwnerQqOpenIds: z.string().default('').description('OwnerLink 的 QQ OpenID，逗号/空格分隔。留空使用内置默认（Shiro: B4C6E62A8A0919E62678494F20F30530）。'),
-  crossSessionPresets: z.string().default('').description('共享记忆圈的预设 ID，逗号/空格分隔。留空默认 lingsnow。'),
-  crossSessionShareGroups: z.boolean().default(true).description('是否把群会话纳入可查询记忆圈。默认开启。'),
+  crossSessionMemoryEnabled: z.boolean().default(true).description('总开关：挂载 cross_session_list / cross_session_search，并在 QQ/Telegram 入站时注入短 [person-memory] 称呼摘要。默认开启。关闭后卸下工具并停止摘要。哪些智能体预设参与记忆圈，由席位池中各席位的 crossSessionMemoryEnabled 决定。'),
+  crossSessionOwnerTelegramIds: z.string().default('').description('身份关联用的 Telegram 用户 ID（OwnerLink），逗号/空格分隔。用于跨通道识别同一主人。留空使用内置默认（Shiro: 6153059771）。'),
+  crossSessionOwnerQqOpenIds: z.string().default('').description('身份关联用的 QQ OpenID（OwnerLink），逗号/空格分隔。用于跨通道识别同一主人。留空使用内置默认（Shiro: B4C6E62A8A0919E62678494F20F30530）。'),
+  crossSessionPresets: z.string().default('').description('【已弃用·兼容保留】旧版共享预设互访圈。席位池中若有任一席位开启跨会话记忆，则忽略本字段，改用这些席位的 preset；否则仍可作为回退（留空默认 lingsnow）。设置页已移除。'),
+  crossSessionShareGroups: z.boolean().default(true).description('是否把群会话纳入可查询记忆圈（全局）。默认开启。与席位记忆开关独立。'),
   crossSessionAliases: z.string().default('').description('通道用户/群 ID 到显示称呼的别名表。设置页为按通道类型筛选的表格；保存为行文本：channel peerId 名称 [dm|group]，例如 telegram 6153059771 Shiro。也支持 JSON。优先于聊天记录提取的名字。'),
   boardsEnabled: z.boolean().default(false).description('启用棋类工具：当前会话里的 AI 用 board_open / board_look / board_play / board_close / board_reset / board_hint 下中国象棋、国际象棋、五子棋或围棋。聊天室启用后可按房间座位开局。默认关闭。关闭后卸下工具并结束当前棋局，已下载的棋盘项目仍保留。'),
   boardsHintMs: z.number().default(1000).description('辅助引擎每次分析的时长（毫秒），100–10000，默认 1000。只在下载了辅助引擎时生效。'),
@@ -656,6 +658,7 @@ export function apply(ctx, config) {
   const notes = createNotesFeature(ctx, () => current)
   const preCompactionHistory = createPreCompactionHistoryFeature(ctx, () => current)
   const companionCompaction = createCompanionCompactionFeature(ctx, () => current)
+  const googleToolCap = createGoogleToolCapFeature(ctx, () => current)
   const stickers = createStickersFeature(ctx, () => current)
   const crossSessionMemory = createCrossSessionFeature(ctx, () => current)
   const boards = createBoardsFeature(ctx, () => current)
@@ -715,7 +718,7 @@ export function apply(ctx, config) {
       current = scope.get()
       scope.watch?.((next) => {
         current = next
-        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void stickers.sync(); void crossSessionMemory.sync(); void proactiveSend?.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
+        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void googleToolCap.sync(); void stickers.sync(); void crossSessionMemory.sync(); void proactiveSend?.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
         void (async () => {
           await refreshMcRoomSeats()
           await components.sync()
@@ -861,6 +864,7 @@ export function apply(ctx, config) {
   void balance.sync()
   void calendar.sync()
   void notes.sync()
+  void googleToolCap.sync()
   void stickers.sync()
   void crossSessionMemory.sync()
   void proactiveSend.sync()
@@ -895,6 +899,7 @@ export function apply(ctx, config) {
       try { await notes.dispose() } catch {}
     try { await preCompactionHistory.dispose() } catch {}
       try { await companionCompaction.dispose() } catch {}
+      try { await googleToolCap.dispose() } catch {}
       try { await stickers.dispose() } catch {}
       try { await crossSessionMemory.dispose() } catch {}
       try { await proactiveSend.dispose() } catch {}
@@ -980,6 +985,7 @@ export function apply(ctx, config) {
             await notes.sync()
             await preCompactionHistory.sync()
             await companionCompaction.sync()
+            await googleToolCap.sync()
             await stickers.sync()
             await crossSessionMemory.sync()
             await proactiveSend.sync()

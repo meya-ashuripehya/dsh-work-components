@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto'
  *   name             —— 显示名（可覆盖预设名），多 AI 房间里的称呼，
  *   persona          —— 可选的附加人设 / 要求，
  *   profileId        —— 可选的个人档案 id（Minecraft 控制会话用；人设与密钥留在档案库），
- *   crossSessionMemoryEnabled —— 该席位是否启用即将接入的跨会话记忆（只存开关，本版不写 JSONL / 不注入）。
+ *   crossSessionMemoryEnabled —— 该席位绑定的智能体预设是否参与跨会话记忆圈；与设置页「跨会话记忆」总开关配合。
  * 聊天室房间与 Minecraft（经绑定的聊天室）只保存有序席位 id 列表，从本池解析完整席位。
  * 本插件不保存任何 API Key：调用全部经 DSH 的服务商层（ctx.llm.stream），密钥由 DSH 凭据服务持有。
  *

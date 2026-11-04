@@ -1,0 +1,61 @@
+--- a/lib/bridge.js
++++ b/lib/bridge.js
+@@ -42,6 +42,7 @@
+ import { PersistenceUnavailableError, SessionNotFoundError } from './agent-manager.js';
+ import { routesEqual } from './agent-router.js';
+ import { sessionKey, } from './session-router.js';
++import { createUserMessage } from '@deepseek-ai/dsh-llm';
+ import { toHarnessUserMessage, } from './message-converter.js';
+ import { installAttachmentCompatibilityTools, } from './file-provider.js';
+ import { ReplyContextStore } from './reply-context-store.js';
+@@ -794,11 +795,34 @@
+         // --- Ordinary message followup --------------------------------------------
+         const runId = randomUUID();
+         this.logInboundBinaryAvailability(event, binding.sessionId);
+-        const userMessage = await toHarnessUserMessage(event, {
++        // Workbench CSM / person-memory: seed as plugin recall context, not as user speech.
++        const inboundPrefix = String(event?.__dshInboundPrefix || '').trim();
++        const eventForUser = inboundPrefix
++            ? { ...event, __dshInboundPrefix: undefined }
++            : event;
++        const userMessage = await toHarnessUserMessage(eventForUser, {
+             includeMetadataPrefix: this.options.config.includeMetadataPrefix,
+             saveImage: this.saveImageHook(event, binding.sessionId),
+             fileStore: this.fileStoreHook(event, binding.sessionId),
+         });
++        if (inboundPrefix && agentRef?.agent && typeof agentRef.agent.inject === 'function') {
++            try {
++                const text = inboundPrefix.endsWith('\n') ? inboundPrefix : inboundPrefix + '\n';
++                agentRef.agent.inject(createUserMessage({
++                    content: [{ type: 'text', text }],
++                    source: {
++                        // Session format v4 refuses retired kind:'plugin' wrappers;
++                        // producer-owned kind matches V3→V4 rewritePluginSource output.
++                        kind: 'plugin:dsh-workbench-cross-session-memory',
++                        form: 'recall',
++                    },
++                }));
++            }
++            catch {
++                // never block delivery
++            }
++        }
+         // Register the reply context keyed by the Harness UserMessage id strictly
+         // BEFORE followup.
+         this.options.replyContexts.register(userMessage.id, {
+--- a/lib/message-converter.js
++++ b/lib/message-converter.js
+@@ -26,11 +26,8 @@
+         if (prefix)
+             blocks.push({ type: 'text', text: prefix });
+     }
+-    // Workbench: CSM / person-memory hang on prefix channel, not user message body.
+-    const inboundPrefix = String(event?.__dshInboundPrefix || options.inboundPrefix || '').trim();
+-    if (inboundPrefix) {
+-        blocks.push({ type: 'text', text: inboundPrefix.endsWith('\n') ? inboundPrefix : inboundPrefix + '\n' });
+-    }
++    // Workbench: __dshInboundPrefix is injected via agent.inject (form: recall) in bridge.js,
++    // not merged into this user-authored message (avoids model treating CSM as user speech).
+     blocks.push(...await partsToBlocks(event.message.content, options));
+     if (blocks.length === 0)
+         blocks.push({ type: 'text', text: '' });

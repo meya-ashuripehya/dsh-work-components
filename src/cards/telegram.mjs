@@ -5,26 +5,15 @@ import { renderTable } from './render.mjs'
 import { listSessions, lookSession, onSessionChange, playSession, saveSessionNow, stripPrivate } from './session.mjs'
 import { clearCardsInbound, setCardsInbound } from './telegram-bridge.mjs'
 import { getTelegramBridge } from '../boards/telegram-bridge.mjs'
+import { originForSession } from '../channels/surface.mjs'
 import { sameAccount } from '../channels/telegram/accounts.mjs'
 
 export const ILLEGAL_NOTICE = '只能说 hit、stand、要牌或停牌'
 export const NOT_PLAYER_NOTICE = '只有发起这手的人可以要牌或停牌'
 
+/** Resolve bind origin for cards tools (Telegram or QQ stub). Runtime-only; not model-visible. */
 export function telegramOriginFor(sessionId) {
-  const bridge = getTelegramBridge()
-  if (!bridge || !sessionId) return null
-  let hit
-  try { hit = bridge.lookup(String(sessionId)) } catch { hit = null }
-  if (!hit || hit.chatId === undefined || hit.chatId === null || hit.chatId === '') return null
-  return {
-    channel: 'telegram',
-    chatId: String(hit.chatId),
-    ...(hit.threadId ? { threadId: String(hit.threadId) } : {}),
-    conversationType: hit.conversationType === 'group' ? 'group' : 'dm',
-    starterId: hit.senderId ? String(hit.senderId) : '',
-    ...(hit.accountId ? { accountId: String(hit.accountId) } : {}),
-    messageId: null,
-  }
+  return originForSession(sessionId)
 }
 
 function visibleCards(cards) {

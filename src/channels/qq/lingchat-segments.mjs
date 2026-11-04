@@ -1,3 +1,48 @@
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+
+function qqOutboundTrace(entry) {
+  if (process.env.DSH_QQ_TRACE !== '1') return
+  try {
+    const out = join(homedir(), '.dsh', 'dsh-channels', 'qq-inbound.log')
+    mkdirSync(dirname(out), { recursive: true })
+    appendFileSync(out, JSON.stringify({ t: new Date().toISOString(), dir: 'outbound', ...entry }) + '\n')
+  } catch { /* never block send */ }
+}
+
+async function sendWithRetry(sendFn, target, message, { retries = 2, gapMs = 400 } = {}) {
+  let lastErr
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await sendFn(target, message)
+      qqOutboundTrace({
+        stage: 'send_ok',
+        attempt,
+        conversationId: target?.conversationId,
+        replyTo: target?.replyToMessageId,
+        chars: String(message?.text ?? '').length,
+        delivered: result?.delivered,
+        skipped: result?.skipped,
+        messageId: result?.messageId,
+      })
+      return result
+    } catch (error) {
+      lastErr = error
+      qqOutboundTrace({
+        stage: 'send_fail',
+        attempt,
+        conversationId: target?.conversationId,
+        replyTo: target?.replyToMessageId,
+        chars: String(message?.text ?? '').length,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      if (attempt < retries) await new Promise((r) => setTimeout(r, gapMs * (attempt + 1)))
+    }
+  }
+  throw lastErr
+}
+
 /**
  * LingChat-style reply segments for QQ outbound.
  * Model outputs multiple 【情绪】台词; we pile them up during the turn (buffered),
@@ -5,12 +50,6 @@
  */
 const EMOTION_RE = /【([^】]*)】/g
 const SKIP_RE = /^(?:【\s*(?:跳过|略过|沉默|无关)\s*】|\s*(?:跳过|略过|沉默|无关)\s*)$/u
-
-/** Short format reminder prepended to QQ inbound (keep compact). */
-export const QQ_LINGCHAT_FORMAT_HINT = [
-  '[reply-format] 用多条「台词」回复；每条以【情绪】开头（2~5字情绪，无主语），后接1~2句正文；不要写（）动作或旁白。',
-  '单次回复台词条数≤4（最多四个【情绪】）。话题与你无关时只输出【跳过】，不要解释。禁止颜文字。',
-].join('')
 
 /**
  * Split assistant text into LingChat segments.
@@ -88,24 +127,30 @@ export function installQqLingChatOutbound(adapter, { gapMs = 350, enabled = true
   adapter.send = async function lingChatSend(target, message) {
     const text = message?.text
     if (text == null || typeof text !== 'string') {
-      return origSend(target, message)
+      return sendWithRetry(origSend, target, message)
     }
     // Media / actions: leave untouched
     if (message.parts?.length || message.actions?.length) {
-      return origSend(target, message)
+      return sendWithRetry(origSend, target, message)
     }
     const pieces = qqOutboundPieces(text)
     if (!pieces.length) {
       // Silent skip — do not send empty/tag-only spam
+      qqOutboundTrace({
+        stage: 'skip_reply',
+        conversationId: target?.conversationId,
+        replyTo: target?.replyToMessageId,
+        chars: String(text).length,
+      })
       return { delivered: true, skipped: true }
     }
     // No tags → single send of cleaned/original body
     if (pieces.length === 1 && !/【[^】]+】/.test(text)) {
-      return origSend(target, { ...message, text: pieces[0] })
+      return sendWithRetry(origSend, target, { ...message, text: pieces[0] })
     }
     let last = null
     for (let i = 0; i < pieces.length; i++) {
-      last = await origSend(target, { ...message, text: pieces[i] })
+      last = await sendWithRetry(origSend, target, { ...message, text: pieces[i] })
       if (i + 1 < pieces.length && gapMs > 0) {
         await new Promise((r) => setTimeout(r, gapMs))
       }

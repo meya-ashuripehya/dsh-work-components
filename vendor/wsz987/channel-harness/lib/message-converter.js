@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Inbound conversion: `MessageReceived` -> a Harness `UserMessage`.
  *
  * Content is structured-text by default (red line 6): platform parts without
@@ -26,6 +26,8 @@ export async function toHarnessUserMessage(event, options = {}) {
         if (prefix)
             blocks.push({ type: 'text', text: prefix });
     }
+    // Workbench: __dshInboundPrefix is injected via agent.inject (form: recall) in bridge.js,
+    // not merged into this user-authored message (avoids model treating CSM as user speech).
     blocks.push(...await partsToBlocks(event.message.content, options));
     if (blocks.length === 0)
         blocks.push({ type: 'text', text: '' });
@@ -55,16 +57,6 @@ async function partsToBlocks(parts, options) {
     return blocks;
 }
 function metadataPrefix(event) {
-    // QQ: only unique sender OpenID + nickname (message ids are opaque and huge).
-    if (String(event.channel || '') === 'qq') {
-        const id = String(event.sender?.id ?? '').trim();
-        const name = String(event.sender?.name ?? '').trim();
-        if (!id && !name)
-            return '';
-        if (id && name)
-            return `[${id} ${name}] `;
-        return `[${id || name}] `;
-    }
     return `[channel=${event.channel} sender=${event.sender.id} message=${event.message.id}] `;
 }
 /**

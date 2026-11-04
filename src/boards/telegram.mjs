@@ -15,30 +15,16 @@ import { displayMove, looksLikeMove, splitLeadingMove } from './notation.mjs'
 import { renderBoard } from './render.mjs'
 import { lookSession, onSessionChange, playSession, saveSessionNow, sessionLabel, telegramTableKey } from './session.mjs'
 import { clearBoardsInbound, getTelegramBridge, setBoardsInbound } from './telegram-bridge.mjs'
+import { originForSession } from '../channels/surface.mjs'
 import { sameAccount } from '../channels/telegram/accounts.mjs'
 
 export const ILLEGAL_NOTICE = '这步不在合法着法里'
 export const NOT_PLAYER_NOTICE = '只有发起这局的人（或指定的对手）可以走棋'
 export const AI_TURN_NOTICE = '现在是 AI 的回合'
 
-/** 由会话 ID 判断这局是否来自 Telegram；是则返回要绑定的来源。opponent 为可选的对手 Telegram 用户 ID。 */
+/** 由会话 ID 解析绑定来源（Telegram 或 QQ stub）。opponent 为可选对手用户 ID。仅工具/出站用，不进模型提示。 */
 export function telegramOriginFor(sessionId, opponent) {
-  const bridge = getTelegramBridge()
-  if (!bridge || !sessionId) return null
-  let hit
-  try { hit = bridge.lookup(String(sessionId)) } catch { hit = null }
-  if (!hit || hit.chatId === undefined || hit.chatId === null || hit.chatId === '') return null
-  const opp = String(opponent ?? '').trim()
-  return {
-    channel: 'telegram',
-    chatId: String(hit.chatId),
-    ...(hit.threadId ? { threadId: String(hit.threadId) } : {}),
-    conversationType: hit.conversationType === 'group' ? 'group' : 'dm',
-    starterId: hit.senderId ? String(hit.senderId) : '',
-    ...(hit.accountId ? { accountId: String(hit.accountId) } : {}),
-    ...(/^-?\d{1,20}$/.test(opp) ? { opponentId: opp } : {}),
-    messageId: null,
-  }
+  return originForSession(sessionId, { opponent })
 }
 
 /** 图片说明，一行。 */

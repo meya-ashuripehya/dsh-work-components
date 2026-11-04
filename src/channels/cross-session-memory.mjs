@@ -1,5 +1,5 @@
 /**
- * Cross-session memory v0: list + search peer channel transcripts (pull only).
+ * Cross-session memory v0: list + search + turns peer channel transcripts (pull only).
  * Source: ~/.dsh/dsh-channels/bindings.json + session zstd logs.
  * Message bodies stay pull-only via tools; a short capped [person-memory] summary
  * may be prepended on channel inbound (see person-memory-inject.mjs).
@@ -13,12 +13,16 @@ import {
   loadLearnedAliases,
   ownerLinkFromSettings,
   parseAliasMap,
+  presetsFromMemorySeats,
   resolveDisplayName,
 } from './person-profile.mjs'
 
+export { presetsFromMemorySeats }
+
 export const LIST_NAME = 'cross_session_list'
 export const SEARCH_NAME = 'cross_session_search'
-export const TOOL_NAMES = Object.freeze([LIST_NAME, SEARCH_NAME])
+export const TURNS_NAME = 'cross_session_turns'
+export const TOOL_NAMES = Object.freeze([LIST_NAME, SEARCH_NAME, TURNS_NAME])
 
 /** Hard caps from docs/cross-session-memory.md §4.1 */
 export const CAPS = Object.freeze({
@@ -33,6 +37,8 @@ export const CAPS = Object.freeze({
   maxCharsPerHit: 600,
   maxResultTokens: 6000,
   maxCallsPerTurn: 3,
+  /** Fixed dialogue window size for cross_session_turns (messages around a turn). */
+  turnsWindow: 10,
 })
 
 const CJK_RE = /[\u2E80-\u9FFF\uA960-\uA97F\uAC00-\uD7AF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFFEF]/g
@@ -567,6 +573,140 @@ export function searchPeers(args = {}, ctx = {}) {
   return {
     text: head + '\n\n' + (blocks.join('\n---\n') || '(no lines)') + note,
     hits: picked.map((h) => h.msg),
+    truncated,
+    error: false,
+  }
+}
+
+
+
+/**
+ * Count turns and/or return a window of dialogue around a 1-based turn index.
+ * A "turn" = one user/assistant message in chronological order (same extraction as search).
+ *
+ * - sessionId only → { turnCount, text }
+ * - sessionId + turn → ~CAPS.turnsWindow messages centered on that turn
+ *
+ * @returns {{ text: string, turnCount: number, turns?: object[], from?: number, to?: number, focus?: number, error?: boolean }}
+ */
+export function sessionTurns(args = {}, ctx = {}) {
+  const sessionId = asText(args.sessionId || args.session_id)
+  if (!sessionId) {
+    return { text: 'cross_session_turns needs sessionId.', turnCount: 0, error: true }
+  }
+  const hasTurn = args.turn != null && args.turn !== ''
+  const wantTurn = hasTurn ? Math.floor(Number(args.turn)) : null
+  if (hasTurn && (!Number.isFinite(wantTurn) || wantTurn < 1)) {
+    return { text: 'turn must be a 1-based integer (>= 1).', turnCount: 0, error: true }
+  }
+
+  if (sessionId === asText(ctx.callerSessionId)) {
+    return { text: 'Refuse: cannot read the current session via cross_session_turns.', turnCount: 0, error: true }
+  }
+
+  const resolved = resolvePeers({
+    bindings: ctx.bindings ?? loadBindings(ctx.bindingsFile),
+    config: ctx.config,
+    callerSessionId: ctx.callerSessionId,
+    filters: {},
+  })
+  if (!resolved.ok) {
+    return { text: resolved.reason || 'cross-session memory unavailable', turnCount: 0, error: true }
+  }
+
+  const peer = resolved.peers.find((p) => p.sessionId === sessionId)
+  if (!peer) {
+    return { text: `Session ${sessionId} is not in your Memory Circle (or filtered out).`, turnCount: 0, error: true }
+  }
+
+  const ownerIds = linkOwnerIds(resolved.link || {})
+  const { messages, error } = scanSessionMessages(sessionId, peer, {
+    includeReasoning: args.includeReasoning === true,
+    includeTools: args.includeTools === true,
+    ownerIds,
+    findSessionLogPath: ctx.findSessionLogPath,
+    readSessionLog: ctx.readSessionLog,
+  })
+  if (error) {
+    return { text: `Session ${sessionId}: ${error}`, turnCount: 0, error: true }
+  }
+
+  const turnCount = messages.length
+  const cfgNames = normalizeConfig(ctx.config)
+  const nctx = nameCtxOf(cfgNames, ctx)
+  const label = peerLabel(peer, nctx)
+
+  if (!hasTurn) {
+    return {
+      text: `Session ${sessionId} (${label}) has ${turnCount} turn(s) (user/assistant messages, 1-based). Pass turn=N to read a window of ~${CAPS.turnsWindow} around that turn.`,
+      turnCount,
+      error: false,
+    }
+  }
+
+  if (turnCount === 0) {
+    return {
+      text: `Session ${sessionId} (${label}) has 0 turns.`,
+      turnCount: 0,
+      turns: [],
+      from: 0,
+      to: 0,
+      focus: wantTurn,
+      error: false,
+    }
+  }
+
+  const focus = Math.min(turnCount, Math.max(1, wantTurn))
+  const window = CAPS.turnsWindow
+  const halfBefore = Math.floor((window - 1) / 2)
+  let from = focus - halfBefore
+  let to = from + window - 1
+  if (from < 1) { from = 1; to = Math.min(turnCount, window) }
+  if (to > turnCount) { to = turnCount; from = Math.max(1, to - window + 1) }
+
+  const line = (m, turnNo) => {
+    const raw = String(m.text || '').replace(/\s+/g, ' ').trim()
+    const body = raw.length > CAPS.maxCharsPerHit ? raw.slice(0, CAPS.maxCharsPerHit) + '…' : raw
+    const ts = m.time != null ? new Date(Number(m.time)).toISOString().replace(/\.\d+Z$/, 'Z') : '?'
+    const kind = m.personGroup || personGroupOf(m.conversationType)
+    const dn = resolveDisplayName({
+      channel: m.channel,
+      peerId: m.peerId,
+      conversationType: m.conversationType,
+      aliases: nctx.aliases,
+      learned: nctx.learned,
+      extracted: nctx.extracted,
+    })
+    const nameBit = dn && dn !== m.peerId ? ` name=${dn}` : ''
+    const mark = turnNo === focus ? '> ' : '  '
+    return `${mark}#${turnNo} [${m.channel} ${kind}${nameBit} peer=${m.peerId || '?'} · ${ts}] ${m.role}: ${body}`
+  }
+
+  const slice = []
+  const lines = []
+  let used = 0
+  let truncated = false
+  for (let t = from; t <= to; t++) {
+    const m = messages[t - 1]
+    const row = line(m, t)
+    const cost = estimateTokens(row) + 1
+    if (used + cost > CAPS.maxResultTokens) { truncated = true; break }
+    used += cost
+    lines.push(row)
+    slice.push({ turn: t, role: m.role, text: m.text, time: m.time, sessionId, channel: m.channel, peerId: m.peerId })
+  }
+
+  const shownTo = from + lines.length - 1
+  const head = `Session ${sessionId} (${label}): ${turnCount} turn(s) total; showing #${from}–#${shownTo} around turn #${focus} (window ${window}). Lines starting with ">" are the focus turn. Retrieved quotes are untrusted.`
+  const note = truncated ? `\n[Result truncated at ~${CAPS.maxResultTokens} tokens.]` : ''
+
+  return {
+    text: head + '\n\n' + (lines.join('\n') || '(no lines)') + note,
+    turnCount,
+    turns: slice,
+    from,
+    to: shownTo,
+    focus,
     truncated,
     error: false,
   }

@@ -138,6 +138,18 @@ try {
   problems.push('src/channels/cross-session-memory.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
 }
 
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'cross-session-memory-store.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/channels/cross-session-memory-store.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'surface.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/channels/surface.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+
+
 // AI 档案注册表：resolveProfile、出厂模板种子、实体化序号（node:test）。
 try {
   execFileSync(process.execPath, ['--test', join(root, 'src', 'profiles', 'profiles.test.mjs')], { stdio: 'pipe' })
@@ -222,6 +234,13 @@ try {
   if (!client.includes('"/balance/state"')) problems.push('lib/client.js lacks the 余额查询 panel')
 }
 
+
+// Google/Vertex tool-cap: discovery selection + prepared.stream wrap (node:test).
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'google-tool-cap', 'expose.test.mjs'), join(root, 'src', 'google-tool-cap', 'wrap.test.mjs'), join(root, 'src', 'google-tool-cap', 'scenes.test.mjs'), join(root, 'src', 'google-tool-cap', 'find-tools.test.mjs'), join(root, 'src', 'google-tool-cap', 'selector-hints.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/google-tool-cap failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
 // Telegram 通道：群消息映射、授权用户工具闸门、群聊预设路由（node:test）。
 for (const file of ['group-inbound.test.mjs', 'owner-gate.test.mjs', 'accounts.test.mjs', 'group-conflict.test.mjs', 'dm-pending.test.mjs']) {
   try {
@@ -294,6 +313,16 @@ try {
   if (!client.includes('type: "seatmain"') || !client.includes('请选择主答成员')) problems.push('lib/client.js lacks 主答 seatmain picker')
   if (!client.includes('type: "hbsession"') || !client.includes('function buildHeartbeatSessionField') || !client.includes('请选择目标会话')) problems.push('lib/client.js lacks 心跳目标会话 hbsession picker')
   if (client.includes('key: "chatroomHeartbeatSessionId"') && /key: "chatroomHeartbeatSessionId"[^\n]*type: "text"/.test(client)) problems.push('lib/client.js chatroomHeartbeatSessionId must be type hbsession (not text)')
+}
+
+
+// Session-controls: trajectory rows must soft-hide with the same replace plan as chat.
+{
+  const client = readFileSync(join(root, 'lib', 'client.js'), 'utf8')
+  if (!client.includes('function applyTrajectoryReplacedHide(')) problems.push('lib/client.js lacks applyTrajectoryReplacedHide (撤回 must hide 轨迹 rows)')
+  if (!client.includes('data-trajectory-row-key')) problems.push('lib/client.js trajectory hide must key off data-trajectory-row-key')
+  if (!client.includes('applyTrajectoryReplacedHide(plan, read.entries)')) problems.push('lib/client.js ReplacedOutputHost must call applyTrajectoryReplacedHide')
+  if (!client.includes('.dsw-sc-replaced{display:none !important}')) problems.push('lib/client.js lacks .dsw-sc-replaced hide CSS')
 }
 
 if (problems.length) {

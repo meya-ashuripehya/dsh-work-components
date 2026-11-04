@@ -1,5 +1,6 @@
 /**
  * 日历能力：默认开启。关闭时卸掉工具。天气城市在每次调用时读取，不写进日志。
+ * 挂载时注入 attachments，供 QQ 月历 PNG 走 harness image 出站。
  */
 import { createCalendarTools } from './tools.mjs'
 
@@ -44,8 +45,11 @@ export function createCalendarFeature(ctx, getConfig) {
       state.fork = ctx.plugin({
         name: 'dsh-workbench-calendar',
         apply(sub) {
-          sub.inject(['tools'], (toolCtx) => {
-            const tools = createCalendarTools({ getConfig })
+          sub.inject(['tools', 'attachments'], (toolCtx) => {
+            const tools = createCalendarTools({
+              getConfig,
+              getAttachments: () => toolCtx.get('attachments'),
+            })
             for (const tool of tools) toolCtx.tools.register(tool)
           })
         },

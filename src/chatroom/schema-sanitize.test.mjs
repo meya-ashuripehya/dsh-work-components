@@ -2,6 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { sanitizeSchema, sanitizeToolSchemas } from './schema-sanitize.mjs'
+import { toGeminiTools } from './gemini-seat.mjs'
 
 const tuple3 = { type: 'array', minItems: 3, maxItems: 3, items: [{ type: 'integer' }, { type: 'integer' }, { type: 'integer' }] }
 
@@ -27,4 +28,37 @@ test('anyOf / $defs / additionalProperties 递归，且不修改输入', () => {
   assert.deepEqual(r.additionalProperties.items, { type: 'string' })
   assert.deepEqual(src, copy)
   assert.ok(!JSON.stringify(sanitizeToolSchemas([{ name: 'mcp__deepslate__x', parameters: src }])).includes('"items":['))
+})
+
+test('sanitizeToolSchemas also cleans inputSchema/input_schema', () => {
+  const tuple = { type: 'array', items: [{ type: 'number' }, { type: 'number' }] }
+  const [a] = sanitizeToolSchemas([{ name: 'x', inputSchema: { type: 'object', properties: { position: tuple } } }])
+  const [b] = sanitizeToolSchemas([{ name: 'y', input_schema: { type: 'object', properties: { position: tuple } } }])
+  assert.deepEqual(a.inputSchema.properties.position.items, { type: 'number' })
+  assert.deepEqual(b.input_schema.properties.position.items, { type: 'number' })
+})
+
+test('toGeminiTools sanitizes nested tuple items (Gemini 400)', () => {
+  const tools = [{
+    name: 'mcp__deepslate__place',
+    description: 'place',
+    parameters: {
+      type: 'object',
+      properties: {
+        blocks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              position: { type: 'array', items: [{ type: 'number' }, { type: 'number' }, { type: 'number' }] },
+            },
+          },
+        },
+      },
+    },
+  }]
+  const decls = toGeminiTools(tools)[0].functionDeclarations[0]
+  const items = decls.parametersJsonSchema.properties.blocks.items.properties.position.items
+  assert.equal(Array.isArray(items), false)
+  assert.deepEqual(items, { type: 'number' })
 })

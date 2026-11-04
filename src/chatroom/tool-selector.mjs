@@ -74,12 +74,14 @@ export function listCatalog(tools) {
   return out
 }
 
-export function selectorPrompt(query, catalog, { current = [], max = 3 } = {}) {
+export function selectorPrompt(query, catalog, { current = [], max = 3, hints = [] } = {}) {
   const system = [
     'You pick tools for an AI assistant from a tool catalog.',
     `Return ONLY a JSON object, no prose, no code fence: {"tools": ["name1", ...], "reason": "short reason"}.`,
     `Pick at most ${max} tools, best first, using exact names from the catalog. Pick none ({"tools": []}) if nothing fits.`,
     'Prefer the smallest set that fully covers the request. If a tool already in the current toolset fits, pick it (it is reported back as already available); do not skip it just because it is already there.',
+    'Prefer specialized tools over overlapping generalists when a scene hint applies (e.g. desktop-control for UI click/type/screenshot over a broad windows OS MCP). Do not keep picking a generalist from the current toolset when a specialist in the catalog better matches the request.',
+    ...(Array.isArray(hints) && hints.length ? ['Scene / exclusivity hints:', ...hints.map((h) => '- ' + h)] : []),
   ].join('\n')
   const lines = catalog.map((t) => `- ${t.name}: ${firstLine(t.description)}`)
   const user = `Request: ${String(query || '').slice(0, 2000)}\n\nCurrent toolset: ${current.length ? current.join(', ') : '(empty)'}\n\nCatalog:\n${lines.join('\n')}`
@@ -156,9 +158,9 @@ export function lexicalCurrentMatch(query, current = [], max = 3) {
 }
 
 /** 调用 DSH 的 DeepSeek 服务商选择工具。 */
-export async function selectTools({ llm, provider, model, query, catalog, current = [], max = 3, signal }) {
+export async function selectTools({ llm, provider, model, query, catalog, current = [], max = 3, hints = [], signal }) {
   if (!llm || typeof llm.stream !== 'function') throw new Error('DSH 服务商服务不可用（ctx.llm 未就绪）')
-  const { system, user } = selectorPrompt(query, catalog, { current, max })
+  const { system, user } = selectorPrompt(query, catalog, { current, max, hints })
   const r = await streamText(llm, { provider, model, system, user, maxTokens: 400, signal })
   return { ...parseSelection(r.text, catalog.map((t) => t.name), max), raw: r.text.slice(0, 500), usage: r.usage }
 }

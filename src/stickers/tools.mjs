@@ -2,11 +2,12 @@
  * 表情包工具：sticker_search / sticker_save / sticker_send。
  * 描述与参数名为英文；门闸：search/send ∈ OPEN_TOOLS，save 仅授权用户。
  * sticker_send 走与 mm_send_image 相同的 attachments.saveImage + image 块路径，
- * 以便 harness deliverTurnImages 在 QQ/Telegram 通道出站。
+ * 以便 harness deliverTurnImages 在通道会话出站。
  */
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { defineTool } from '../../vendor/dsh-tools/schema.js'
+import { resolveChannelId } from '../channels/surface.mjs'
 import {
   LIMITS,
   StickersError,
@@ -174,7 +175,7 @@ export function createStickersTools(options = {}) {
 
   const sendTool = defineTool({
     name: 'sticker_send',
-    description: 'Send a sticker from the local library to the current conversation surface. Resolve by id (preferred), alias, or (if unique) tag. On QQ/Telegram channel sessions this is delivered as an image (not a native Telegram sticker). On desktop it appears as an image card. Prefer sticker_search first when unsure which id to use. If alias/tag matches multiple stickers, nothing is sent — search first.',
+    description: 'Send a sticker from the local library to the current conversation. Resolve by id (preferred), alias, or (if unique) tag. Delivered as an image card (or channel photo); not a native channel sticker pack. Prefer sticker_search first when unsure which id to use. If alias/tag matches multiple stickers, nothing is sent — search first.',
     parameters: {
       id: { type: 'string', description: 'Sticker id (preferred).' },
       alias: { type: 'string', description: 'Exact alias; if multiple stickers share it, search first.' },
@@ -228,8 +229,9 @@ export function createStickersTools(options = {}) {
       },
     },
     isConcurrencySafe: () => true,
-    async execute(args) {
+    async execute(args, exec) {
       try {
+        const channelId = resolveChannelId({ sessionId: exec?.agent?.id, exec })
         const resolved = await resolveSendTarget({
           id: asText(args.id),
           alias: asText(args.alias),
@@ -268,8 +270,8 @@ export function createStickersTools(options = {}) {
           delivered: true,
           id: sticker.id,
           path: sticker.path,
-          surface: 'desktop',
-          note: 'Delivered as image (MmCard / channel photo). Native Telegram stickers are not used in v1.',
+          surface: channelId,
+          note: 'Delivered as image (MmCard / channel photo). Native channel sticker packs are not used in v1.',
           ...(captionRaw ? { caption: captionRaw } : {}),
           image: {
             attachmentId: String(ref.attachmentId),

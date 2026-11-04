@@ -13,6 +13,13 @@ export function contextKey({ sessionId, origin } = {}) {
     if (account && account !== 'main') return `telegram:${account}:${chat}:${thread}`
     return `telegram:${chat}:${thread}`
   }
+  if (origin?.channel === 'qq') {
+    const chat = String(origin.chatId ?? origin.peerId ?? '').trim()
+    if (!chat) return ''
+    const account = String(origin.accountId ?? '').trim()
+    if (account && account !== 'main') return `qq:${account}:${chat}`
+    return `qq:${chat}`
+  }
   const sid = String(sessionId ?? '').trim()
   if (!sid) return ''
   return `desktop:${sid}`

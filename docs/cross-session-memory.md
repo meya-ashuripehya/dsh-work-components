@@ -1,12 +1,56 @@
 ﻿# Cross-session memory / history (design)
 
-> Status: **v0 tools shipped** + **person-profile slice (2026-10-25)**: OwnerLink defaults, alias map UI, display-name priority, capped `[person-memory]` inbound summary.  
+> Status: **v0 tools** (+ `cross_session_turns`) + **person-profile** + **JSONL write/inject (2026-10-29)**: one preset JSONL under `~/.dsh/channels-memory/presets/<preset>.jsonl`; channel + chatroom append; short auto-inject (compaction + other-session tail); seat-centric `crossSessionMemoryEnabled`.  
 > Repo: `S:\TRIX\dsh-workbench` (`dsh-work-components`). Machine: Ashuripehya.  
 > Date: 2026-10-25 (America/New_York). **No commit.**  
 > Related: `docs/qq-channel-component.md`, chatroom `search_history` (`src/chatroom/history-search.mjs`), harness bindings (`vendor/wsz987/channel-harness`), session log helpers (`src/session-controls/zstd-log.mjs`), notes tools (`src/notes/tools.mjs`).  
-> Code: `src/channels/cross-session-memory.mjs`, `cross-session-tools.mjs`, `cross-session-feature.mjs`, `person-profile.mjs`, `person-memory-inject.mjs`.
+> Code: `cross-session-memory.mjs`, `cross-session-memory-store.mjs`, `cross-session-memory-write.mjs`, `cross-session-tools.mjs`, `cross-session-feature.mjs`, `person-profile.mjs`, `person-memory-inject.mjs`; chatroom hooks in `moderator.mjs` / `transcript.mjs`.
+> **Seat-centric (2026-10-29):** Memory circle presets come from `chatroomSeats[].crossSessionMemoryEnabled` (UI: 「席位记忆」 + 席位管理). Legacy `crossSessionPresets` / 「共享预设」 is ignored when any seat flag is on; else kept as migration fallback (default `lingsnow`). Global: `crossSessionMemoryEnabled` master switch, `crossSessionShareGroups`, aliases; OwnerLink TG/QQ kept for identity.
+> 
 
 ---
+
+
+---
+
+## JSONL write / inject (2026-10-29)
+
+Shipped local implementation (no commit). Extends the pull tools; does **not** replace DSH transcripts.
+
+### File layout
+
+| Path | Role |
+| --- | --- |
+| `~/.dsh/channels-memory/presets/<preset>.jsonl` | One append-only JSONL per Agent preset (keyed by memory-enabled seats). |
+| Entry `type: "message"` | `{ scene, speaker, role, text, time, preset }` — scene carries `sessionId` / `channel` / `roomId` / peer. |
+| Entry `type: "compaction"` | Latest checkpoint only; `replaceCompaction` deletes prior compaction rows. |
+
+Caps (`STORE_CAPS`): inject ≤ ~2000 tokens; compact trigger ~24000 tokens corpus; per-line text clamp 2000 chars.
+
+### Write path
+
+1. **Channels (QQ / Telegram):** `person-memory-inject` patches `ChannelHarnessBridge.handleQueuedMessage` → `writeInboundChannelMessage`; `installAssistantMemoryWrite(ReplyRouter)` patches `finalize` → `writeAssistantChannelMessage`. Gated by master switch + preset in `ownerLinkFromSettings` / seat flags.
+2. **Chatroom:** `moderator.appendAndEmit` fire-and-forgets `writeChatroomMemoryMessage` for `user`/`seat` kinds. User turns fan out to every memory-enabled seat preset in the room; seat turns write only that seat’s preset.
+3. After each append, `scheduleCompact(preset)` may run `maybeCompactPreset` (LLM via `ctx`/`getLlm`, instruction from companion-compaction when enabled).
+
+### Inject path
+
+- **Channels:** same enrich hook sets event.`__dshInboundPrefix`; channel-harness bridge seeds it with `agent.inject` (source form `recall`), not merged into the user-authored UserMessage.
+- **Chatroom:** `promptFor` → `injectForChatroomSeat` → `buildPrompt(..., memoryInject)` inserts an ai-visible system line. Current `roomId` excluded.
+- Hard token cap; optional `cross_session_list` / `cross_session_search` tools remain.
+
+### Compaction trigger
+
+Soft: after append, if estimated injectable corpus (latest compaction + uncompressed messages) exceeds `STORE_CAPS.compactThresholdTokens` (~24k), summarize with companion instruction (when companion compaction enabled) else a short generic prompt; write one new compaction and drop previous.
+
+### Gaps / not done
+
+- **Desktop / plain DSH sessions** (non-channel, non-chatroom): no write/inject hooks yet.
+- Compaction needs a live LLM (`getLlm`); without it, corpus grows until one is available.
+- No backfill from existing zstd / chatroom `messages.jsonl`.
+- Chatroom inject excludes by `roomId` only (guest `sessionId` not mapped into scene today).
+- No UI to browse/edit the JSONL store.
+
 
 ## 0. Why this exists
 
@@ -319,7 +363,7 @@ Agents should prefer **notes** for long-lived preferences; use **cross_session_s
 1. **`enabled: true`** with a single OwnerLink `shiro`: TG `6153059771` ↔ QQ `B4C6E62A8A0919E62678494F20F30530`.
 2. **`presets: ["lingsnow"]` only** — do not include `chatgpt`, `guest`, `liangshen` unless asked.
 3. **`includeChannels: ["qq","telegram","desktop"]`**, **`shareGroups: true   # user decision 2026-10-25: channel groups queryable`**, **`chatroomShare: false`**.
-4. **v0 tools only**: `cross_session_list` + `cross_session_search`; caps as in §4.1 (6000 token results, 3 calls/turn).
+4. **v0 tools only**: `cross_session_list` + `cross_session_search` + `cross_session_turns`; caps as in §4.1 (6000 token results, 3 calls/turn).
 5. **Owner-turn required** to read peers (desktop UI counts as owner).
 6. Keep using **`note_*`** for stable prefs (“叫我 Shiro”、“别念 ROBOT 令牌”); use cross-session for “上次在 QQ 说的行程”.
 7. Leave `~\.dsh\channels-memory\` empty until v1; do not invent a second bindings file.
@@ -371,6 +415,19 @@ When the agent is in QQ DM and calls `cross_session_search({ query: "行程", li
 
 User decision (`pt1011u`): 称呼从聊天记录里取，也允许在通道设置里手动映射「出现的用户/群 ID → 显示名」；OwnerLink + 短 person summary 在通道回合注入 prompt。
 
+
+
+### cross_session_turns (2026-10-29)
+
+Pull-only peer transcript window tool (same Memory Circle + owner-turn gate as list/search).
+
+| Input | Output |
+| --- | --- |
+| `sessionId` only | How many turns exist (1-based count of user/assistant messages). |
+| `sessionId` + `turn` | ~10 dialogue messages centered on that turn (`CAPS.turnsWindow`). |
+
+Focus turn is marked with `>`; current session is refused (same as search).
+
 ### 13.1 Display-name priority
 
 On inbound labels, `cross_session_list`, and `cross_session_search` hit lines:
@@ -415,7 +472,7 @@ Editable settings (flat, Chinese UI on「跨会话记忆」card):
 
 ### 13.4 Person summary inject
 
-On each channel inbound (QQ/Telegram harness `handleQueuedMessage`), prepend one text block:
+On each channel inbound (QQ/Telegram harness `handleQueuedMessage`), set event.`__dshInboundPrefix`; bridge `agent.inject` (form recall), not message body:
 
 ```
 [person-memory] channel=telegram kind=person peer=6153059771 name=Shiro role=owner circle=shiro | 对方称呼「Shiro」。跨通道细节请用 cross_session_list / cross_session_search，勿臆造。
@@ -433,4 +490,5 @@ Install: `person-memory-inject.mjs` → `installPersonMemoryInject(ChannelHarnes
 4. Save the card
 
 Under the hood the table still saves as the compatible line form (`telegram 6153059771 Shiro`, optional trailing `dm`/`group`). Aliases apply immediately to list/search labels and the next inbound `[person-memory]` block.
+
 

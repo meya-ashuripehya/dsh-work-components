@@ -1,10 +1,14 @@
 /**
- * 日历工具。render 只给模型文字；卡片走 presentationMeta.mm，kind 为 calendar。
- * 天气预报走 Open-Meteo，不读取高德 Key。
+ * 日历工具。render 给模型文字；卡片走 presentationMeta.mm（kind=calendar）。
+ * QQ：tools 侧 resolveChannelId，能力打开时渲 PNG → attachments.saveImage → content image，
+ * 由 harness deliverTurnImages 出站。Telegram 仍只靠 installCalendarDelivery 的 HTML，不加 image。
+ * 天气预报走 Open-Meteo，不读取高德 Key。平台名不进模型可见描述。
  */
 import { defineTool } from '../../vendor/dsh-tools/schema.js'
+import { resolveChannelId, capabilitiesFor } from '../channels/surface.mjs'
 import { CalendarError } from './day.mjs'
 import { buildMonth } from './month.mjs'
+import { renderCalendarPng, pngSize } from './render.mjs'
 import { deleteEvent, saveEvent } from './store.mjs'
 
 function textBlock(value) {
@@ -37,6 +41,30 @@ const EVENT_SCHEMA = {
   },
 }
 
+const IMAGE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    attachmentId: { type: 'string', required: true },
+    mediaType: { type: 'string', enum: ['image/png'], required: true },
+    bytes: { type: 'integer', required: true },
+    width: { type: 'integer', required: true },
+    height: { type: 'integer', required: true },
+    name: { type: 'string' },
+  },
+}
+
+function imageRef(image, name) {
+  return {
+    attachmentId: image.attachmentId,
+    mediaType: image.mediaType,
+    bytes: image.bytes,
+    width: image.width,
+    height: image.height,
+    ...(name ? { name } : {}),
+  }
+}
+
 function mmCalendarBlock(value) {
   return {
     type: 'mm',
@@ -48,18 +76,24 @@ function mmCalendarBlock(value) {
 }
 
 /**
- * @param {{ getConfig?: () => object }} options
+ * @param {{
+ *   getConfig?: () => object,
+ *   dir?: string,
+ *   fetchImpl?: typeof fetch,
+ *   getAttachments?: () => any,
+ * }} options
  */
 export function createCalendarTools(options = {}) {
   const getConfig = options.getConfig
   const dir = options.dir
+  const getAttachments = options.getAttachments
 
   const show = defineTool({
     name: 'calendar_show',
-    description: 'Show a month view with the Gregorian and Chinese lunar calendars, solar terms, China statutory holidays and make-up workdays, saved events, and the weather forecast. Defaults to the current month (Asia/Shanghai). Posts a calendar card in the chat; if the session is on Telegram, the channel also sends the same month as a separate message, so the reply need not paste the whole month table. Weather comes from Open-Meteo using the calendar city in settings, queried for the longest range the API provides; without a city, the calendar and events are still returned. Does not use Amap (高德) and does not read environment variables.',
+    description: 'Show a month view with the Gregorian and Chinese lunar calendars, solar terms, China statutory holidays and make-up workdays, saved events, and the weather forecast. Defaults to the current month (Asia/Shanghai). Posts a calendar card in the chat; on channel sessions the runtime may also deliver the month as a separate message, so the reply need not paste the whole month table. Weather comes from Open-Meteo using the calendar city in settings, queried for the longest range the API provides; without a city, the calendar and events are still returned. Does not use Amap (高德) and does not read environment variables.',
     parameters: {
-      month: { type: 'string', description: 'Month as YYYY-MM. Leave empty for the current month (Asia/Shanghai).' },
-      city: { type: 'string', description: 'Optional. Overrides the weather forecast city from settings, e.g. Chengdu or 成都. Leave empty to use the city in settings.' },
+      month: { type: 'string', description: 'Month as YYYY-MM. Defaults to the current month in Asia/Shanghai.' },
+      city: { type: 'string', description: 'Override the weather city for this call only. Leave empty to use the calendar city in settings.' },
     },
     output: {
       schema: {
@@ -96,24 +130,64 @@ export function createCalendarTools(options = {}) {
             },
           },
           days: { type: 'array', required: true },
+          image: IMAGE_SCHEMA,
         },
       },
-      render: (_args, value) => textBlock(value),
-      presentationMeta: (_args, value) => ({
-        title: value.title,
-        month: value.month,
-        mm: mmCalendarBlock(value),
-      }),
+      render: (_args, value) => {
+        const blocks = textBlock(value)
+        if (value.image?.attachmentId) {
+          blocks.push({ type: 'image', attachment: imageRef(value.image, value.title || 'calendar.png') })
+        }
+        return blocks
+      },
+      presentationMeta: (_args, value) => {
+        // Keep page calendar mm free of the channel PNG attachment blob.
+        const { image: _image, ...calendar } = value
+        return {
+          title: value.title,
+          month: value.month,
+          mm: mmCalendarBlock(calendar),
+        }
+      },
     },
     isConcurrencySafe: () => true,
-    async execute(args) {
+    async execute(args, exec) {
       const cfg = runtimeConfig(getConfig)
-      return buildMonth(asText(args.month), {
+      const value = await buildMonth(asText(args.month), {
         now: new Date(),
         dir,
         city: asText(args.city) || cfg.city,
         fetchImpl: options.fetchImpl,
       })
+
+      // QQ only: PNG via harness image path. Telegram keeps HTML-only calendar delivery.
+      const channelId = resolveChannelId({ sessionId: exec?.agent?.id, exec })
+      const caps = capabilitiesFor(channelId)
+      if (channelId === 'qq' && caps.calendarCard) {
+        const attachments = getAttachments?.()
+        if (attachments && typeof attachments.saveImage === 'function') {
+          try {
+            const { png, width, height } = renderCalendarPng(value)
+            const size = pngSize(png)
+            const ref = await attachments.saveImage({
+              data: png,
+              mediaType: 'image/png',
+              name: 'calendar.png',
+            })
+            value.image = {
+              attachmentId: String(ref.attachmentId),
+              mediaType: String(ref.mediaType || 'image/png'),
+              bytes: Number(ref.bytes ?? png.length),
+              width: Number(ref.width ?? size.width) || width,
+              height: Number(ref.height ?? size.height) || height,
+              name: 'calendar.png',
+            }
+          } catch {
+            // Month data still returned; channel just skips the photo if render/save fails.
+          }
+        }
+      }
+      return value
     },
   })
 

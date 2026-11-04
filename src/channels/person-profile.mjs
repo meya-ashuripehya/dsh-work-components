@@ -291,16 +291,40 @@ export function resolveDisplayName({
   return peer
 }
 
+/** Presets from seats with crossSessionMemoryEnabled (seat-centric memory). */
+export function presetsFromMemorySeats(seats) {
+  const out = []
+  const seen = new Set()
+  for (const s of Array.isArray(seats) ? seats : []) {
+    if (!s || typeof s !== 'object') continue
+    if (s.crossSessionMemoryEnabled !== true) continue
+    const p = asText(s.preset)
+    if (!p || seen.has(p)) continue
+    seen.add(p)
+    out.push(p)
+  }
+  return out
+}
+
 /**
- * Build OwnerLink overrides from flat settings fields.
+ * OwnerLink from flat settings + optional chatroomSeats.
+ * Persona family (presets) prefers seats with crossSessionMemoryEnabled;
+ * legacy crossSessionPresets is ignored when any seat flag is on, else used as fallback.
  */
 export function ownerLinkFromSettings(cfg = {}) {
   const tg = asText(cfg.crossSessionOwnerTelegramIds || cfg.telegramOwnerIds)
     .split(/[\s,，;；]+/).map(asText).filter(Boolean)
   const qq = asText(cfg.crossSessionOwnerQqOpenIds || cfg.qqOwnerOpenIds)
     .split(/[\s,，;；]+/).map(asText).filter(Boolean)
-  const presets = asText(cfg.crossSessionPresets || '')
+  const seats = Array.isArray(cfg.chatroomSeats) ? cfg.chatroomSeats : null
+  const fromSeats = presetsFromMemorySeats(seats)
+  const legacyPresets = asText(cfg.crossSessionPresets || '')
     .split(/[\s,，;；]+/).map(asText).filter(Boolean)
+  // Seat pool present + at least one memory seat → seat-centric.
+  // Else legacy text (migration) → else built-in default.
+  const presets = fromSeats.length
+    ? fromSeats
+    : (legacyPresets.length ? legacyPresets : null)
   const shareGroups = cfg.crossSessionShareGroups !== false
   const base = { ...DEFAULT_OWNER_LINK }
   return {
@@ -308,7 +332,7 @@ export function ownerLinkFromSettings(cfg = {}) {
     id: asText(cfg.crossSessionOwnerLinkId) || base.id,
     telegramOwnerIds: tg.length ? tg : [...base.telegramOwnerIds],
     qqOwnerOpenIds: qq.length ? qq : [...base.qqOwnerOpenIds],
-    presets: presets.length ? presets : [...base.presets],
+    presets: presets && presets.length ? presets : [...base.presets],
     shareGroups,
   }
 }
@@ -363,8 +387,8 @@ export function buildPersonSummary({
   let body = parts.join(' ')
   // One short Chinese hint for the model
   const hint = display
-    ? `对方称呼「${display}」。跨通道细节请用 cross_session_list / cross_session_search，勿臆造。`
-    : `尚无称呼映射（可在通道设置填写别名）。跨通道细节请用 cross_session_list / cross_session_search。`
+    ? `对方称呼「${display}」。跨通道细节请用 cross_session_list / cross_session_search / cross_session_turns，勿臆造。`
+    : `尚无称呼映射（可在通道设置填写别名）。跨通道细节请用 cross_session_list / cross_session_search / cross_session_turns。`
   let text = `[person-memory] ${body} | ${hint}`
   if (text.length > PERSON_SUMMARY_MAX_CHARS) {
     text = text.slice(0, PERSON_SUMMARY_MAX_CHARS - 1) + '…'

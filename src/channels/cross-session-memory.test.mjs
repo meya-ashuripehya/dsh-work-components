@@ -196,7 +196,7 @@ test('searchPeers finds across channels with labels; strips tokens; skips reason
     })
     assert.equal(out.error, false)
     assert.match(out.text, /Peers searched/)
-    assert.match(out.text, /telegram person peer=6153059771/)
+    assert.match(out.text, /telegram person(?: name=\S+)? peer=6153059771/)
     assert.match(out.text, /telegram group peer=-1003435238151/)
     assert.match(out.text, /上海/)
     assert.match(out.text, /改期/)
@@ -388,7 +388,7 @@ test('extractNamesFromMessages reads person-memory and name= prefix', () => {
   assert.equal(map.get('qq:B4C6E62A8A0919E62678494F20F30530'), '雪')
 })
 
-test('enrichInboundEvent prepends person-memory and keeps body', () => {
+test('enrichInboundEvent hangs person-memory on inbound prefix, keeps body', () => {
   const event = {
     channel: 'telegram',
     conversation: { id: '6153059771', type: 'dm' },
@@ -399,9 +399,11 @@ test('enrichInboundEvent prepends person-memory and keeps body', () => {
     aliases: [],
     link: DEFAULT_CONFIG.ownerLinks[0],
     learnedFile: join(tmpdir(), 'dsh-learned-missing.json'),
+    config: { crossSessionMemoryEnabled: false },
   })
-  assert.equal(out.message.content[0].type, 'text')
-  assert.match(out.message.content[0].text, /\[person-memory\]/)
-  assert.match(out.message.content[0].text, /name=Shiro/)
-  assert.equal(out.message.content[1].text, 'hello')
+  assert.match(String(out.__dshInboundPrefix || ''), /\[person-memory\]/)
+  assert.match(String(out.__dshInboundPrefix || ''), /name=Shiro/)
+  const texts = out.message.content.filter((b) => b?.type === 'text').map((b) => b.text)
+  assert.equal(texts.join(''), 'hello')
+  assert.ok(!texts.some((t) => String(t).includes('[person-memory]')), 'must not prepend onto message body')
 })

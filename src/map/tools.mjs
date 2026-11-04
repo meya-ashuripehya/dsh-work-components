@@ -52,7 +52,7 @@ function imageRef(image, name) {
   }
 }
 
-/** 路线图。source.url 打开高德导航页。不带 place，避免 Telegram 把它当成一个标点。 */
+/** 路线图。source.url 打开高德导航页。不带 place，避免通道把它当成一个标点。 */
 function mmRouteBlock(value) {
   const block = {
     type: 'mm',
@@ -65,7 +65,7 @@ function mmRouteBlock(value) {
   return block
 }
 
-/** 地图标点。预览图仍在 asset 里；source.url 打开高德标点页。place 里的 wgs* 供 Telegram sendVenue。 */
+/** 地图标点。预览图仍在 asset 里；source.url 打开高德标点页。place 里的 wgs* 供通道 venue 出站。 */
 function mmPlaceBlock(image, opts) {
   const wgs = gcj02ToWgs84(opts.lon, opts.lat)
   return {
@@ -216,7 +216,7 @@ export function createMapTools(options) {
 
   const routeTool = defineTool({
     name: 'route',
-    description: 'Plan a route for one travel mode (one of driving, walking, cycling, transit). Returns distance, duration, tolls, and a summary, and posts a clickable route map on the page. The route map opens the https://uri.amap.com/navigation share link, which works on iOS and Android. Send share to the phone via Telegram, or copy it into a system browser. deepLink (amapuri) opens directly on Android and HarmonyOS. Do not generate QR codes, do not automatically call all four modes just to compare, and do not write to the AMap account\'s favorites. In the web share link, waypoints are supported only for driving and only the first one is included; all waypoints are in deepLink. Consumes AMap route-planning quota; the route map uses one additional static-map quota call. ' + COORD,
+    description: 'Plan a route for one travel mode (one of driving, walking, cycling, transit). Returns distance, duration, tolls, and a summary, and posts a clickable route map on the page. The route map opens the https://uri.amap.com/navigation share link, which works on iOS and Android. Send share to the phone via the current channel handoff, or copy it into a system browser. deepLink (amapuri) opens directly on Android and HarmonyOS. Do not generate QR codes, do not automatically call all four modes just to compare, and do not write to the AMap account\'s favorites. In the web share link, waypoints are supported only for driving and only the first one is included; all waypoints are in deepLink. Consumes AMap route-planning quota; the route map uses one additional static-map quota call. ' + COORD,
     parameters: {
       mode: { type: 'string', required: true, description: 'driving, walking, cycling, or transit.' },
       origin: { type: 'string', required: true, description: 'Origin, GCJ-02 longitude,latitude.' },
@@ -349,7 +349,7 @@ export function createMapTools(options) {
 
   const card = defineTool({
     name: 'map_card',
-    description: 'Create a map pin card. On the page it is a card that opens AMap; when sent to Telegram it becomes a native location (venue) instead of a static map image. Pass an address (with a city) or existing GCJ-02 coordinates. Every card fetches a fresh static map as the page preview; do not reuse a previous image. Consumes AMap basic LBS quota; if an address is geocoded first, that counts as one more call. ' + COORD,
+    description: 'Create a map pin card. On the page it is a card that opens AMap; on channel sessions the runtime may deliver a native location (venue) instead of a static map image when the surface supports it. Pass an address (with a city) or existing GCJ-02 coordinates. Every card fetches a fresh static map as the page preview; do not reuse a previous image. Consumes AMap basic LBS quota; if an address is geocoded first, that counts as one more call. ' + COORD,
     parameters: {
       address: { type: 'string', description: 'Address to pin. Use either this or location; when using an address, city is also required.' },
       city: { type: 'string', description: 'City of the address. Required when address is used.' },

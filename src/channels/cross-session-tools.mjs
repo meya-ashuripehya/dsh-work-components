@@ -1,5 +1,5 @@
 /**
- * cross_session_list / cross_session_search tool registration (pull only).
+ * cross_session_list / cross_session_search / cross_session_turns tool registration (pull only).
  * Gate: OPEN_TOOLS naming + owner-authorized turn + Memory Circle (OPEN_TOOLS alone is not enough).
  */
 import { defineTool } from '../../vendor/dsh-tools/schema.js'
@@ -8,6 +8,7 @@ import {
   CAPS,
   LIST_NAME,
   SEARCH_NAME,
+  TURNS_NAME,
   TOOL_NAMES,
   DEFAULT_CONFIG,
   gateAllowsCrossSession,
@@ -16,6 +17,7 @@ import {
   loadBindings,
   normalizeConfig,
   searchPeers,
+  sessionTurns,
 } from './cross-session-memory.mjs'
 
 const OUTPUT = {
@@ -135,7 +137,27 @@ export function createCrossSessionTools(options = {}) {
     },
   })
 
-  return [listTool, searchTool]
+
+  const turnsTool = defineTool({
+    name: TURNS_NAME,
+    description:
+      'Inspect turns in one peer channel session (QQ / Telegram Memory Circle). Pass sessionId alone to learn how many turns (user/assistant messages, 1-based) exist. Pass sessionId + turn to read ~' + CAPS.turnsWindow + ' dialogue messages centered on that turn. Pull only; owner-authorized turns only. Prefer cross_session_search for keyword recall; prefer note_* for stable facts.',
+    parameters: {
+      sessionId: { type: 'string', description: 'Required: peer session id from cross_session_list.' },
+      turn: { type: 'integer', description: 'Optional 1-based turn index. Omit to only return the turn count. When set, returns a window of ~' + CAPS.turnsWindow + ' messages around that turn.' },
+      includeTools: { type: 'boolean', description: 'Default false. Include tool markers.' },
+      includeReasoning: { type: 'boolean', description: 'Default false. Never return reasoning unless true.' },
+    },
+    output: OUTPUT,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const check = precheck(exec)
+      if (check.error) return check.error
+      return sessionTurns(args || {}, check.ctx)
+    },
+  })
+
+  return [listTool, searchTool, turnsTool]
 }
 
-export { LIST_NAME, SEARCH_NAME, TOOL_NAMES, CAPS }
+export { LIST_NAME, SEARCH_NAME, TURNS_NAME, TOOL_NAMES, CAPS }

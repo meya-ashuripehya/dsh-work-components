@@ -676,6 +676,20 @@ export class ReplyRouter {
             : this.resolveTurnTarget(sessionId, context);
         try {
             if (active) await this.finalize(active, turn);
+            else if (context && terminalTarget) {
+                // Claim/stream race: inbox/claimed can land after assistant deltas,
+                // so ensureActive never armed active and finalize would skip send.
+                const rebuilt = rebuildAssistantText(session.events, turn);
+                if (rebuilt) {
+                    this.options.logger.warn(`[channel-harness] finishTurn fallback deliver (no active) session='${sessionId}' turn=${turn}`);
+                    try {
+                        await this.deliver(terminalTarget.adapter, terminalTarget.target, rebuilt);
+                    }
+                    catch (error) {
+                        this.options.logger.error(`[channel-harness] finishTurn fallback deliver failed for session '${sessionId}'`, error);
+                    }
+                }
+            }
             try { await this.deliverTurnImages(sessionId, turn, terminalTarget); }
             catch (error) {
                 this.options.logger.warn(`[channel-harness] [dsh-telegram-temp patch] image delivery failed for session '${sessionId}'`, error);

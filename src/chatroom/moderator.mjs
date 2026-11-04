@@ -41,6 +41,7 @@ import { randomBytes } from 'node:crypto'
 import { isRepeatExempt } from './repeat-guard.mjs'
 import { isStreamDropFailure, hasStreamed } from './providers.mjs'
 import { estimateTokens, estimateRequestTokens, effectiveThreshold, IMAGE_TOKENS } from './ctx-compress.mjs'
+import { writeChatroomMemoryMessage, injectForChatroomSeat } from '../channels/cross-session-memory-write.mjs'
 
 const noopTg = { typing: () => () => {}, relay: async () => [] }
 const pendingId = () => 'msg-' + Date.now().toString(36) + '-' + randomBytes(3).toString('hex')
@@ -331,6 +332,22 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
 
   async function appendAndEmit(roomId, msg, { relay = true, relaySeat, prefixName } = {}) {
     const saved = await store.append(roomId, msg)
+    // Cross-session JSONL: user + seat turns for memory-enabled presets (fire-and-forget).
+    if (saved?.kind === 'user' || saved?.kind === 'seat') {
+      void (async () => {
+        try {
+          const cfg = await getRoomConfig(roomId)
+          let roomName = roomId
+          try { roomName = String((await store.getRoom(roomId))?.title || roomId) } catch {}
+          await writeChatroomMemoryMessage({
+            roomId,
+            roomName,
+            msg: saved,
+            seats: cfg?.seats || [],
+          })
+        } catch {}
+      })()
+    }
     emit(roomId, { type: 'message', message: saved })
     if (relay) {
       if (Array.isArray(saved.attachments) && saved.attachments.length && typeof tg.relayAttachments === 'function') {
@@ -469,7 +486,9 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
     if (typeof resolveMcInfo === 'function') {
       try { mcInfo = await resolveMcInfo(seat) } catch { mcInfo = null }
     }
-    return buildPrompt({ seat: { ...seat, presetPersona }, seats: cfg.seats, userName: cfg.userName, rules: cfg.rules, messages: history, maxHistory: cfg.maxHistory || 0, mainName: main?.name, away: awayNames(roomId, cfg.seats, seat.id), extraUser, toolsInfo, vision: !!vision && cfg.attachments?.enabled !== false, visionRelay, imageWindow, attachmentMeta, binned, videoInput, contextSummary, contextUntilSeq, mcInfo })
+    let memoryInject = ''
+    try { memoryInject = injectForChatroomSeat({ seat, roomId }) || '' } catch { memoryInject = '' }
+    return buildPrompt({ seat: { ...seat, presetPersona }, seats: cfg.seats, userName: cfg.userName, rules: cfg.rules, messages: history, maxHistory: cfg.maxHistory || 0, mainName: main?.name, away: awayNames(roomId, cfg.seats, seat.id), extraUser, toolsInfo, vision: !!vision && cfg.attachments?.enabled !== false, visionRelay, imageWindow, attachmentMeta, binned, videoInput, contextSummary, contextUntilSeq, mcInfo, memoryInject })
   }
 
   /** 房间回收站里（且确实存在）的卡片消息 id。 */

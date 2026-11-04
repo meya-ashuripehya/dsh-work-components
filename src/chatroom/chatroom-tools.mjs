@@ -8,6 +8,7 @@
  *     附件功能开启时对所有成员、所有回合可用，不经 find_tools 与所有者门禁。
  */
 import { FIND_TOOLS, OPEN_CARD, FIND_TOOLS_NAME, OPEN_CARD_NAMES, listCatalog, selectTools, lexicalCurrentMatch, summarizeResult, isSessionImageTool } from './tool-selector.mjs'
+import { matchScenes, annotateCatalog, lexicalSceneMatch } from '../google-tool-cap/scenes.mjs'
 import { createToolsets } from './toolset.mjs'
 import { createToolResults, previewText, charsForTokens, TOOL_DEFAULTS, cardTitle, inlineResult, isBlankResult } from './tool-results.mjs'
 import { isOwnerOnlyTool } from '../channels/telegram/owner-gate.mjs'
@@ -270,15 +271,22 @@ export function createChatroomTools({ roomDir, getTools, getLlm, getSettings, pr
       const cat = catalog()
       if (!cat.length) return { isError: true, modelText: 'DSH 工具目录为空或不可读。', room: null }
       const current = await roomToolNames(roomId, cat)
+      // Scene / exclusivity: stop overlapping generalists (windows) from shadowing specialists (desktop)
+      const scenes = matchScenes(query, { current })
+      const { catalog: catForSelect, hints: sceneHints } = annotateCatalog(cat, scenes)
       let sel
-      try { sel = await selectTools({ llm: getLlm(), provider: st.provider, model: st.model, query, catalog: cat, current, max: Math.max(1, Math.min(3, s.maxPerFind)), signal }) } catch (e) {
+      try { sel = await selectTools({ llm: getLlm(), provider: st.provider, model: st.model, query, catalog: catForSelect, current, max: Math.max(1, Math.min(3, s.maxPerFind)), hints: sceneHints, signal }) } catch (e) {
         if (signal?.aborted || e?.aborted) throw e
         return { isError: true, modelText: `选择器调用失败：${e?.message || e}`, room: { tool: FIND_TOOLS_NAME, text: `查找工具失败：${String(e?.message || e).slice(0, 160)}`, data: { ok: false, query } } }
       }
-      // 已在工具集（或默认工具）里的：报告为已可用，不重复加入；选择器什么都没选时按名称字面匹配当前工具集兜底
+      // 已在工具集：报告已可用；选择器空时优先全目录 scene 字面匹配，避免「当前工具集」把 windows 永久钉死
       const currentSet = new Set(current)
+      if (!sel.tools.length) {
+        const sceneLex = lexicalSceneMatch(query, cat, scenes, Math.max(1, Math.min(3, s.maxPerFind)))
+        if (sceneLex.length) sel = { ...sel, tools: sceneLex, reason: sel.reason || 'lexical scene fallback' }
+        else sel = { ...sel, tools: lexicalCurrentMatch(query, current.filter((n) => cat.some((t) => t.name === n))) }
+      }
       let available = sel.tools.filter((n) => currentSet.has(n))
-      if (!sel.tools.length) available = lexicalCurrentMatch(query, current.filter((n) => cat.some((t) => t.name === n)))
       if (available.length && sel.tools.every((n) => currentSet.has(n))) {
         const byName0 = new Map(cat.map((t) => [t.name, t]))
         const lines0 = available.map((n) => `- ${n}${!owner && (isOwnerOnlyTool(n) || !isOpen(n)) ? ' (owner-only: not usable in this turn)' : ''}: ${String(byName0.get(n)?.description || '').replace(/\s+/g, ' ').slice(0, 240)}`)

@@ -1,0 +1,1083 @@
+diff --git a/lib/bridge.js b/lib/bridge.js
+--- a/lib/bridge.js
++++ b/lib/bridge.js
+@@ -54,539 +54,546 @@
+ import { isReservedClaimCommand } from '@wsz987/channel-core';
+ import { InboundAccessController } from './access/controller.js';
+ import { commandLocaleFromSettings } from './commands/locale.js';
+-/** Inbound trace log is opt-in (Telegram card «排查日志» sets DSH_TELEGRAM_TRACE=1). */
+-function inboundTraceEnabled() {
+-    return process.env.DSH_TELEGRAM_TRACE === '1';
+-}
+-/** Formal notice sent to the chat when a message could not be handled (no internal detail leaks to the chat). */
+-const HANDLING_FAILED_NOTICE = '抱歉，本条消息未能处理：会话创建或恢复失败，请稍后再试；若持续出现，请联系管理员检查智能体预设。';
+-function trimBrandedId(value) {
+-    return value.trim();
+-}
+-/**
+- * Error historically raised when a Workspace attach failed inside fresh Session
+- * creation. Workspace attach is now non-fatal: the freshly-created session is
+- * kept (grouped as ungrouped) and the binding + followup continue, so the
+- * bridge no longer produces this error.
+- *
+- * @deprecated Workspace attachment failures are non-fatal and no longer raise
+- * this error. Retained as a public export for compatibility with existing
+- * imports; do not add new uses.
+- */
+-export class ChannelWorkspaceAttachError extends Error {
+-    sessionId;
+-    workspaceId;
+-    cwd;
+-    channelId;
+-    accountId;
+-    constructor(input) {
+-        super(`channel session '${input.sessionId}' could not attach to workspace '${input.workspaceId}'`);
+-        this.name = 'ChannelWorkspaceAttachError';
+-        this.sessionId = input.sessionId;
+-        this.workspaceId = input.workspaceId;
+-        this.cwd = input.cwd;
+-        this.channelId = input.channelId;
+-        this.accountId = input.accountId;
+-    }
+-}
+-export class ChannelHarnessBridge {
+-    options;
+-    sessionFactory;
+-    commandDisposers = new Set();
+-    modelSelectionDisposers = new Set();
+-    commandSetupsDisposed = false;
+-    /** Thin view over Harness's session/default model semantics. */
+-    modelSelection;
+-    /** Normalized command deps handed to every agent setup. */
+-    commandDeps;
+-    /** Per-conversation generation counters, invalidated by /stop (spec §6). */
+-    conversationGenerations = new Map();
+-    /** Pure fail-closed access decision engine. No I/O. */
+-    accessController = new InboundAccessController();
+-    constructor(options) {
+-        this.options = options;
+-        if (!options.accessResolver) {
+-            throw new Error('channel-harness requires an access policy resolver');
+-        }
+-        this.modelSelection =
+-            options.commandDeps.modelSelection ?? new ChannelModelSelectionController(options.ctx);
+-        // Every Harness service reach is bridged LAZILY from the plugin context
+-        // (options.ctx): command handlers must never read services through
+-        // invocation.agent.ctx — the agent-loop scoped context does not inject
+-        // commands/llm, and Cordis throws "without inject" there. This mirrors the
+-        // /new pattern: narrow deps, bridge-owned implementations (official
+-        // compact/goal/plan commands close over their plugin ctx the same way).
+-        this.commandDeps = {
+-            ...options.commandDeps,
+-            modelSelection: this.modelSelection,
+-            listCommands: (agent) => this.options.ctx.commands.list(agent),
+-            findCommand: (agent, name) => this.options.ctx.commands.find(agent, name),
+-            locale: options.commandDeps.locale ?? (() => commandLocaleFromSettings(this.options.ctx.get('settings'))),
+-            llm: {
+-                listProviders: () => this.options.ctx.llm.listProviders(),
+-                listModels: (provider) => this.options.ctx.llm.listModels(provider),
+-                resolveModelInfo: (provider, model, signal) => this.options.ctx.llm.resolveModelInfo(provider, model, signal),
+-                resolveCallConfig: (config, signal) => this.options.ctx.llm.resolveCallConfig(config, signal),
+-            },
+-            // /version's update hint: live probe of the (optional) control plane.
+-            // `ctx.get` is the official detection API — safe on any scope, undefined
+-            // when channel-control is not mounted (headless-without-control or the
+-            // check disabled). The probe re-runs on every /version so an HMR reload
+-            // of the control plugin is picked up without restarting the bridge.
+-            versionInfo: async () => {
+-                try {
+-                    const control = this.options.ctx.get('channelControl');
+-                    return await control?.getUpdateStatus();
+-                }
+-                catch {
+-                    return undefined;
+-                }
+-            },
+-        };
+-        this.sessionFactory = new ChannelSessionFactory({
+-            ctx: options.ctx,
+-            cwd: options.config.cwd,
+-            bindingStore: options.bindingStore,
+-            agentManager: options.agentManager,
+-            workspaceResolver: options.workspaceResolver,
+-            commandSetup: this.commandSetup,
+-            logger: options.logger,
+-        });
+-    }
+-    /** Per-conversation promise chains; entries self-clean on settle. */
+-    chains = new Map();
+-    /**
+-     * Per-conversation serialization. Each canonical key has an owning promise
+-     * chain; `fn` is appended onto the previous entry for that key so it starts
+-     * only after the prior one settles, while distinct keys run in parallel. The
+-     * returned promise resolves only after THIS operation has been handled; the
+-     * chain entry absorbs errors (logged, never rethrown) so ONE failing message
+-     * never poisons the conversation chain, while this call still surfaces THIS
+-     * operation's error to its await-er (preserving prior rejection semantics).
+-     */
+-    async enqueueSelf(key, fn) {
+-        const prev = this.chains.get(key) ?? Promise.resolve();
+-        const task = prev.then(fn);
+-        const chain = task.catch((error) => {
+-            this.options.logger.error(`[channel-harness] message handling failed for conversation '${key}'`, toLoggableError(error));
+-        });
+-        this.chains.set(key, chain);
+-        void chain.finally(() => {
+-            if (this.chains.get(key) === chain)
+-                this.chains.delete(key);
+-        });
+-        await task;
+-    }
+-    /**
+-     * Append work onto the per-conversation chain WITHOUT awaiting its
+-     * completion (used by the /stop stop barrier — spec §9). The returned
+-     * promise never rejects.
+-     */
+-    enqueueConversation(key, fn) {
+-        const prev = this.chains.get(key) ?? Promise.resolve();
+-        const task = prev.then(fn);
+-        const chain = task.catch((error) => {
+-            this.options.logger.error(`[channel-harness] queued message handling failed for conversation '${key}'`, toLoggableError(error));
+-        });
+-        this.chains.set(key, chain);
+-        void chain.finally(() => {
+-            if (this.chains.get(key) === chain)
+-                this.chains.delete(key);
+-        });
+-        return task.catch(() => undefined);
+-    }
+-    async handleChannelEvent(event) {
+-        // Connection/auth state is consumed by the control plane and Web status
+-        // surface. It is expected to be frequent during startup/reconnect and is
+-        // not an inbound message for the Harness Agent bridge.
+-        if (event.type === 'connection.changed' || event.type === 'auth.changed') {
+-            return;
+-        }
+-        if (event.type === 'interaction.received') {
+-            const normalized = this.normalizeInteractionIdentity(event);
+-            if (await this.enforceInteractionAccessGate(normalized))
+-                return;
+-            if (await this.options.questionPresenter?.handleChannelEvent(normalized))
+-                return;
+-            this.options.logger.debug('[channel-harness] ignoring unmatched interaction.received');
+-            return;
+-        }
+-        if (event.type !== 'message.received') {
+-            this.options.logger.debug(`[channel-harness] ignoring channel event '${event.type}'`);
+-            return;
+-        }
+-        // The command parser operates on the RAW user text (the concatenated plain
+-        // text blocks), never on the '[channel=.. sender=.. message=..] ' metadata
+-        // prefix the model-facing converter prepends, and never after a trim (the
+-        // official parseCommand requires '/' at byte zero — spec §5).
+-        const normalizedEvent = this.normalizeInboundIdentity(event);
+-        const text = normalizedEvent.message.content
+-            .filter((part) => part.type === 'text')
+-            .map((part) => part.text)
+-            .join('');
+-        // ------------------------------------------------------------------
+-        // FAIL-CLOSED ACCESS GATE. Runs BEFORE any side effect:
+-        // before conversationKey / parseCommand / /stop / binding writes /
+-        // session / workspace / agent. A drop here means NO side effect at all
+-        // (incl. /stop fast path — an unauthorized user can never cancel a live
+-        // agent or bump the generation).
+-        // ------------------------------------------------------------------
+-        const accessPolicy = await this.enforceAccessGate(normalizedEvent, text);
+-        if (!accessPolicy)
+-            return;
+-        if (await this.options.questionPresenter?.handleChannelEvent(normalizedEvent))
+-            return;
+-        const parsed = parseCommand(text);
+-        if (parsed &&
+-            normalizedEvent.conversation.type === 'group' &&
+-            normalizedEvent.sender.id !== accessPolicy.ownerId) {
+-            const accessLogger = this.options.accessLogger ?? this.options.logger;
+-            accessLogger.info('[channel-access] group command denied', {
+-                channel: normalizedEvent.channel,
+-                account: normalizedEvent.accountId,
+-                conversationType: normalizedEvent.conversation.type,
+-                reason: 'command_owner_required',
+-            });
+-            await this.sendCommandNotice(normalizedEvent, '群聊指令仅所有者可用。');
+-            return;
+-        }
+-        const key = this.conversationKey(normalizedEvent);
+-        // P0: /stop is handled on a FAST PATH AND RUNS IMMEDIATELY — it must
+-        // NEVER be chained behind queued conversation work (spec §4/§5), because
+-        // the whole point is to interrupt an in-flight turn. `handleImmediateStop`
+-        // bumps the generation synchronously before its first await, so every
+-        // already-queued message (captured with the OLD generation) is invalidated
+-        // at its next generation check and can never re-wake the agent.
+-        if (parsed?.name === 'stop') {
+-            try {
+-                await this.handleImmediateStop(normalizedEvent, key, text);
+-            }
+-            catch (error) {
+-                this.options.logger.error(`[channel-harness] /stop handling failed for conversation '${key}'`, toLoggableError(error));
+-            }
+-            return;
+-        }
+-        // Barge-in: cancel the live turn (clears inbox) and skip the serial chain
+-        // so the newest message is not stuck behind prior setup / queued followups.
+-        if (this.options.config.inboundPreempt) {
+-            try {
+-                await this.preemptConversation(key);
+-                const generation = this.generationOf(key);
+-                await this.handleQueuedMessage(normalizedEvent, key, text, parsed, generation);
+-            }
+-            catch (error) {
+-                this.options.logger.error(`[channel-harness] preempt message handling failed for conversation '${key}'`, toLoggableError(error));
+-                this.traceInbound({
+-                    stage: 'preempt_failed',
+-                    conversationId: normalizedEvent.conversation.id,
+-                    error: error instanceof Error ? error.message : String(error),
+-                });
+-                await this.notifyHandlingFailure(normalizedEvent);
+-            }
+-            return;
+-        }
+-        const generation = this.generationOf(key);
+-        await this.enqueueSelf(key, () => this.handleQueuedMessage(normalizedEvent, key, text, parsed, generation).catch(async (error) => {
+-            this.traceInbound({
+-                stage: 'handling_failed',
+-                conversationId: normalizedEvent.conversation.id,
+-                error: error instanceof Error ? error.message : String(error),
+-            });
+-            await this.notifyHandlingFailure(normalizedEvent);
+-            throw error;
+-        }));
+-    }
+-    /** Apply the contract's only identity normalization before any side effect. */
+-    normalizeInboundIdentity(event) {
+-        const senderId = trimBrandedId(event.sender.id);
+-        const conversationId = trimBrandedId(event.conversation.id);
+-        if (senderId === event.sender.id && conversationId === event.conversation.id) {
+-            return event;
+-        }
+-        return {
+-            ...event,
+-            sender: { ...event.sender, id: senderId },
+-            conversation: { ...event.conversation, id: conversationId },
+-        };
+-    }
+-    normalizeInteractionIdentity(event) {
+-        return {
+-            ...event,
+-            sender: { ...event.sender, id: trimBrandedId(event.sender.id) },
+-            conversation: {
+-                ...event.conversation,
+-                id: trimBrandedId(event.conversation.id),
+-            },
+-        };
+-    }
+-    /** Interaction admission reuses Security Gate semantics; the click is activation. */
+-    async enforceInteractionAccessGate(event) {
+-        const accessLogger = this.options.accessLogger ?? this.options.logger;
+-        if (!event.sender.id || event.sender.id === 'unknown') {
+-            this.dropInteraction(accessLogger, event, 'unidentified_sender');
+-            return true;
+-        }
+-        if (!event.conversation.id) {
+-            this.dropInteraction(accessLogger, event, 'invalid_conversation');
+-            return true;
+-        }
+-        let resolved;
+-        try {
+-            resolved = await this.options.accessResolver.resolve(event.channel, event.accountId);
+-        }
+-        catch (error) {
+-            this.options.logger.warn('[channel-access] policy resolution failed', toLoggableError(error));
+-            return true;
+-        }
+-        if (resolved.state !== 'present') {
+-            this.dropInteraction(accessLogger, event, resolved.state === 'missing' ? 'missing_policy' : 'invalid_policy');
+-            return true;
+-        }
+-        const decision = this.accessController.authorize({
+-            conversationType: event.conversation.type,
+-            senderId: event.sender.id,
+-            conversationId: event.conversation.id,
+-            policy: resolved.policy,
+-        });
+-        if (!decision.authorized) {
+-            this.dropInteraction(accessLogger, event, decision.reason);
+-            return true;
+-        }
+-        return false;
+-    }
+-    dropInteraction(logger, event, reason) {
+-        logger.info('[channel-access] interaction dropped', {
+-            channel: event.channel,
+-            account: event.accountId,
+-            conversationType: event.conversation.type,
+-            reason,
+-        });
+-    }
+-    /**
+-     * One-time Agent-scoped command and model-hook setup. Installed onto an
+-     * Agent's scoped context by every create/resolve and by the Session
+-     * factory's recreate (borrow + create) so a fresh, resumed OR recreated
+-     * session gets the channel commands and channel hooks before any driving
+-     * happens. Harness still resolves the Session model at creation/resume.
+-     * Channel images are NOT rewritten here: the inbound converter hands raw
+-     * images to the Harness Attachment Store and the official image
+-     * pipeline owns model-capability projection (vision variant / text-only
+-     * deterministic placeholder), so the Agent-scoped history keeps the
+-     * original ImageBlock.
+-     */
+-    // Bound arrow: passed to create/resolve/borrowIfLive as the official
+-    // AgentSetup (invoked as a bare setup(agentCtx)), so this must stay the
+-    // bridge instance.
+-    commandSetup = async (agentCtx) => {
+-        const disposeCommands = await installChannelCommands(agentCtx, this.commandDeps);
+-        const disposeModelSelection = this.modelSelection.install(agentCtx);
+-        if (this.commandSetupsDisposed) {
+-            await disposeCommands();
+-            disposeModelSelection();
+-            throw new Error('channel-harness command setup continued after bridge disposal');
+-        }
+-        this.commandDisposers.add(disposeCommands);
+-        this.modelSelectionDisposers.add(disposeModelSelection);
+-        // M4: Agent-scoped read_channel_attachment tool. Registered on the agent's
+-        // own scope so it is disposed with the agent. Best-effort: a tool-install
+-        // failure must never roll back the agent setup. The tool stays registered
+-        // through the provider's OPTIONAL compatibility path while it
+-        // is the only generic-attachment reader. The deprecated installTools name
+-        // remains a fallback for one cycle; providers with neither hook skip it.
+-        if (this.options.fileProvider) {
+-            try {
+-                await installAttachmentCompatibilityTools(this.options.fileProvider, agentCtx);
+-            }
+-            catch (error) {
+-                this.options.logger.warn('[channel-harness] failed to install read_channel_attachment tool', error);
+-            }
+-        }
+-        // M6: Agent-scoped send_channel_message tool. Only installed when the
+-        // durable outbox is wired. Best-effort, mirroring the attachment tool.
+-        if (this.options.outbox) {
+-            try {
+-                await installSendChannelMessageTool(agentCtx, { outbox: this.options.outbox });
+-            }
+-            catch (error) {
+-                this.options.logger.warn('[channel-harness] failed to install send_channel_message tool', error);
+-            }
+-        }
+-    };
+-    /** Release this bridge's Agent-scoped command and model-hook registrations. */
+-    async disposeCommandSetups() {
+-        this.commandSetupsDisposed = true;
+-        const commandDisposers = [...this.commandDisposers];
+-        this.commandDisposers.clear();
+-        const modelDisposers = [...this.modelSelectionDisposers];
+-        this.modelSelectionDisposers.clear();
+-        await Promise.all([
+-            ...commandDisposers.map((dispose) => dispose()),
+-            ...modelDisposers.map((dispose) => Promise.resolve(dispose())),
+-        ]);
+-    }
+-    conversationKey(event) {
+-        return sessionKey({
+-            channelId: event.channel,
+-            accountId: event.accountId,
+-            conversationId: event.conversation.id,
+-            ...(event.conversation.threadId ? { threadId: event.conversation.threadId } : {}),
+-        });
+-    }
+-    /** Conversation identity of an inbound event, as a bindable SessionKeyInput. */
+-    conversationInput(event) {
+-        return {
+-            channelId: event.channel,
+-            accountId: event.accountId,
+-            conversationId: event.conversation.id,
+-            // v3: stable conversation identity captured for the durable binding.
+-            conversationType: event.conversation.type,
+-            ...(event.sender.id ? { senderId: event.sender.id } : {}),
+-            ...(event.conversation.threadId ? { threadId: event.conversation.threadId } : {}),
+-        };
+-    }
+-    /**
+-     * Whether the durable session behind an existing binding is MISSING — the
+-     * stale condition behind both the EXPLICIT stale-binding repair (/new) and
+-     * the loud SessionNotFoundError for every other request. A live agent is
+-     * never stale (live-first: no persistence probe), and without a mounted
+-     * sessionPersistence there is no durable identity to lose (ephemeral
+-     * deployments recreate instead). One ATOMIC probe decides all three cases
+-     * (live capability resolved once — no canResume/exists TOCTOU across a
+-     * persistence HMR).
+-     */
+-    async isDurableSessionMissing(binding) {
+-        if (this.options.agentManager.getLiveAgent(binding.sessionId))
+-            return false;
+-        const probe = await this.options.agentManager.probePersisted(binding.sessionId);
+-        return probe === 'missing';
+-    }
+-    /** Bindings without the field predate the stable policy; fail closed. */
+-    bindingDurability(binding) {
+-        return binding.durability ?? 'durable';
+-    }
+-    /**
+-     * FAIL-CLOSED Access Gate. Returns the validated policy only when the
+-     * message is admitted. `undefined` means DROP with NO side effect (agent /
+-     * command / session / binding / workspace / generation / /stop fast path).
+-     *
+-     * Order:
+-     *   1. Reserved claim suppression (/dsh-claim never reaches anything).
+-     *   2. Identity validation: sender + conversation ids.
+-     *   3. Resolve policy (missing/invalid -> drop, fail closed).
+-     *   4. Authorize (security gate) + activate (activation gate).
+-     *
+-     * Logging follows the `channel-access` logger convention: minimal fields
+-     * (channel / account / conversationType / reason), never message body,
+-     * challenge code, raw payload or tokens.
+-     */
+-    async enforceAccessGate(event, text) {
+-        const accessLogger = this.options.accessLogger ?? this.options.logger;
+-        // 1. Reserved owner-claim suppression: /dsh-claim must
+-        //    NEVER reach model / command dispatcher / Session / Binding, even when
+-        //    no access policy exists. Static drop — no policy read is needed.
+-        if (isReservedClaimCommand(text)) {
+-            accessLogger.debug('[channel-access] reserved claim message suppressed', {
+-                channel: event.channel,
+-                account: event.accountId,
+-            });
+-            return undefined;
+-        }
+-        // 2. Identity validation: sender.id must be a non-empty string
+-        //    and !== 'unknown'; conversation.id must be non-empty.
+-        const senderId = event.sender.id;
+-        const conversationId = event.conversation.id;
+-        if (typeof senderId !== 'string' ||
+-            senderId.length === 0 ||
+-            senderId === 'unknown') {
+-            this.dropInbound(accessLogger, event, 'unidentified_sender');
+-            return undefined;
+-        }
+-        if (typeof conversationId !== 'string' || conversationId.length === 0) {
+-            this.dropInbound(accessLogger, event, 'invalid_conversation');
+-            return undefined;
+-        }
+-        // 3. Resolve the policy (fail closed).
+-        let resolved;
+-        try {
+-            resolved = await this.options.accessResolver.resolve(event.channel, event.accountId);
+-        }
+-        catch (error) {
+-            this.options.logger.warn('[channel-access] policy resolution failed', toLoggableError(error));
+-            this.traceInbound({
+-                stage: 'policy_error',
+-                conversationId,
+-                error: error instanceof Error ? error.message : String(error),
+-            });
+-            return undefined;
+-        }
+-        if (resolved.state === 'missing') {
+-            this.dropInbound(accessLogger, event, 'missing_policy');
+-            return undefined;
+-        }
+-        if (resolved.state === 'invalid') {
+-            this.dropInbound(accessLogger, event, 'invalid_policy');
+-            return undefined;
+-        }
+-        // 4. Authorize (Security Gate) then activate (Activation Gate).
+-        const decision = this.accessController.authorize({
+-            conversationType: event.conversation.type,
+-            senderId,
+-            conversationId,
+-            mentionedBot: event.message.activation?.mentionedBot,
+-            policy: resolved.policy,
+-        });
+-        if (!decision.authorized) {
+-            this.dropInbound(accessLogger, event, decision.reason);
+-            return undefined;
+-        }
+-        if (!decision.activated) {
+-            this.dropInbound(accessLogger, event, decision.reason);
+-            return undefined;
+-        }
+-        this.traceInbound({
+-            stage: 'admitted',
+-            conversationId,
+-            conversationType: event.conversation.type,
+-            mentioned: event.message.activation?.mentionedBot === true,
+-        });
+-        return resolved.policy;
+-    }
+-    /** Tell the chat that this message was not handled. Best-effort; never throws. */
+-    async notifyHandlingFailure(event) {
+-        try {
+-            await this.sendCommandNotice(event, HANDLING_FAILED_NOTICE);
+-        }
+-        catch (error) {
+-            this.options.logger.warn('[channel-harness] failed to send handling-failure notice', toLoggableError(error));
+-        }
+-    }
+-    /** Append one JSON line next to the telegram receive log (opt-in). Never throws. */
+-    traceInbound(entry) {
+-        if (!inboundTraceEnabled())
+-            return;
+-        try {
+-            const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
+-            mkdirSync(dirname(file), { recursive: true });
+-            const error = typeof entry.error === 'string' ? entry.error.replace(/\s+/g, ' ').slice(0, 240) : undefined;
+-            appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...entry, ...(error ? { error } : {}) }) + '\n');
+-        }
+-        catch {
+-            // Tracing must not affect delivery.
+-        }
+-    }
+-    /** Log a fail-closed inbound drop with minimal plan-§42 fields. */
+-    dropInbound(accessLogger, event, reason) {
+-        accessLogger.info('[channel-access] inbound dropped', {
+-            channel: event.channel,
+-            account: event.accountId,
+-            conversationId: event.conversation.id,
+-            conversationType: event.conversation.type,
+-            reason,
+-        });
+-        if (!inboundTraceEnabled())
+-            return;
+-        try {
+-            const file = join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
++/** Inbound trace log is opt-in (Telegram/QQ card sets DSH_TELEGRAM_TRACE / DSH_QQ_TRACE=1). */
++function inboundTraceEnabled() {
++    return process.env.DSH_TELEGRAM_TRACE === '1' || process.env.DSH_QQ_TRACE === '1';
++}
++function inboundTraceFile(entry) {
++    const channel = String(entry?.channel || '').toLowerCase();
++    if (channel === 'qq' || (process.env.DSH_QQ_TRACE === '1' && process.env.DSH_TELEGRAM_TRACE !== '1' && channel !== 'telegram')) {
++        return join(homedir(), '.dsh', 'dsh-channels', 'qq-inbound.log');
++    }
++    return join(homedir(), '.dsh', 'dsh-channels', 'telegram-inbound.log');
++}
++/** Formal notice sent to the chat when a message could not be handled (no internal detail leaks to the chat). */
++const HANDLING_FAILED_NOTICE = '抱歉，本条消息未能处理：会话创建或恢复失败，请稍后再试；若持续出现，请联系管理员检查智能体预设。';
++function trimBrandedId(value) {
++    return value.trim();
++}
++/**
++ * Error historically raised when a Workspace attach failed inside fresh Session
++ * creation. Workspace attach is now non-fatal: the freshly-created session is
++ * kept (grouped as ungrouped) and the binding + followup continue, so the
++ * bridge no longer produces this error.
++ *
++ * @deprecated Workspace attachment failures are non-fatal and no longer raise
++ * this error. Retained as a public export for compatibility with existing
++ * imports; do not add new uses.
++ */
++export class ChannelWorkspaceAttachError extends Error {
++    sessionId;
++    workspaceId;
++    cwd;
++    channelId;
++    accountId;
++    constructor(input) {
++        super(`channel session '${input.sessionId}' could not attach to workspace '${input.workspaceId}'`);
++        this.name = 'ChannelWorkspaceAttachError';
++        this.sessionId = input.sessionId;
++        this.workspaceId = input.workspaceId;
++        this.cwd = input.cwd;
++        this.channelId = input.channelId;
++        this.accountId = input.accountId;
++    }
++}
++export class ChannelHarnessBridge {
++    options;
++    sessionFactory;
++    commandDisposers = new Set();
++    modelSelectionDisposers = new Set();
++    commandSetupsDisposed = false;
++    /** Thin view over Harness's session/default model semantics. */
++    modelSelection;
++    /** Normalized command deps handed to every agent setup. */
++    commandDeps;
++    /** Per-conversation generation counters, invalidated by /stop (spec §6). */
++    conversationGenerations = new Map();
++    /** Pure fail-closed access decision engine. No I/O. */
++    accessController = new InboundAccessController();
++    constructor(options) {
++        this.options = options;
++        if (!options.accessResolver) {
++            throw new Error('channel-harness requires an access policy resolver');
++        }
++        this.modelSelection =
++            options.commandDeps.modelSelection ?? new ChannelModelSelectionController(options.ctx);
++        // Every Harness service reach is bridged LAZILY from the plugin context
++        // (options.ctx): command handlers must never read services through
++        // invocation.agent.ctx — the agent-loop scoped context does not inject
++        // commands/llm, and Cordis throws "without inject" there. This mirrors the
++        // /new pattern: narrow deps, bridge-owned implementations (official
++        // compact/goal/plan commands close over their plugin ctx the same way).
++        this.commandDeps = {
++            ...options.commandDeps,
++            modelSelection: this.modelSelection,
++            listCommands: (agent) => this.options.ctx.commands.list(agent),
++            findCommand: (agent, name) => this.options.ctx.commands.find(agent, name),
++            locale: options.commandDeps.locale ?? (() => commandLocaleFromSettings(this.options.ctx.get('settings'))),
++            llm: {
++                listProviders: () => this.options.ctx.llm.listProviders(),
++                listModels: (provider) => this.options.ctx.llm.listModels(provider),
++                resolveModelInfo: (provider, model, signal) => this.options.ctx.llm.resolveModelInfo(provider, model, signal),
++                resolveCallConfig: (config, signal) => this.options.ctx.llm.resolveCallConfig(config, signal),
++            },
++            // /version's update hint: live probe of the (optional) control plane.
++            // `ctx.get` is the official detection API — safe on any scope, undefined
++            // when channel-control is not mounted (headless-without-control or the
++            // check disabled). The probe re-runs on every /version so an HMR reload
++            // of the control plugin is picked up without restarting the bridge.
++            versionInfo: async () => {
++                try {
++                    const control = this.options.ctx.get('channelControl');
++                    return await control?.getUpdateStatus();
++                }
++                catch {
++                    return undefined;
++                }
++            },
++        };
++        this.sessionFactory = new ChannelSessionFactory({
++            ctx: options.ctx,
++            cwd: options.config.cwd,
++            bindingStore: options.bindingStore,
++            agentManager: options.agentManager,
++            workspaceResolver: options.workspaceResolver,
++            commandSetup: this.commandSetup,
++            logger: options.logger,
++        });
++    }
++    /** Per-conversation promise chains; entries self-clean on settle. */
++    chains = new Map();
++    /**
++     * Per-conversation serialization. Each canonical key has an owning promise
++     * chain; `fn` is appended onto the previous entry for that key so it starts
++     * only after the prior one settles, while distinct keys run in parallel. The
++     * returned promise resolves only after THIS operation has been handled; the
++     * chain entry absorbs errors (logged, never rethrown) so ONE failing message
++     * never poisons the conversation chain, while this call still surfaces THIS
++     * operation's error to its await-er (preserving prior rejection semantics).
++     */
++    async enqueueSelf(key, fn) {
++        const prev = this.chains.get(key) ?? Promise.resolve();
++        const task = prev.then(fn);
++        const chain = task.catch((error) => {
++            this.options.logger.error(`[channel-harness] message handling failed for conversation '${key}'`, toLoggableError(error));
++        });
++        this.chains.set(key, chain);
++        void chain.finally(() => {
++            if (this.chains.get(key) === chain)
++                this.chains.delete(key);
++        });
++        await task;
++    }
++    /**
++     * Append work onto the per-conversation chain WITHOUT awaiting its
++     * completion (used by the /stop stop barrier — spec §9). The returned
++     * promise never rejects.
++     */
++    enqueueConversation(key, fn) {
++        const prev = this.chains.get(key) ?? Promise.resolve();
++        const task = prev.then(fn);
++        const chain = task.catch((error) => {
++            this.options.logger.error(`[channel-harness] queued message handling failed for conversation '${key}'`, toLoggableError(error));
++        });
++        this.chains.set(key, chain);
++        void chain.finally(() => {
++            if (this.chains.get(key) === chain)
++                this.chains.delete(key);
++        });
++        return task.catch(() => undefined);
++    }
++    async handleChannelEvent(event) {
++        // Connection/auth state is consumed by the control plane and Web status
++        // surface. It is expected to be frequent during startup/reconnect and is
++        // not an inbound message for the Harness Agent bridge.
++        if (event.type === 'connection.changed' || event.type === 'auth.changed') {
++            return;
++        }
++        if (event.type === 'interaction.received') {
++            const normalized = this.normalizeInteractionIdentity(event);
++            if (await this.enforceInteractionAccessGate(normalized))
++                return;
++            if (await this.options.questionPresenter?.handleChannelEvent(normalized))
++                return;
++            this.options.logger.debug('[channel-harness] ignoring unmatched interaction.received');
++            return;
++        }
++        if (event.type !== 'message.received') {
++            this.options.logger.debug(`[channel-harness] ignoring channel event '${event.type}'`);
++            return;
++        }
++        // The command parser operates on the RAW user text (the concatenated plain
++        // text blocks), never on the '[channel=.. sender=.. message=..] ' metadata
++        // prefix the model-facing converter prepends, and never after a trim (the
++        // official parseCommand requires '/' at byte zero — spec §5).
++        const normalizedEvent = this.normalizeInboundIdentity(event);
++        const text = normalizedEvent.message.content
++            .filter((part) => part.type === 'text')
++            .map((part) => part.text)
++            .join('');
++        // ------------------------------------------------------------------
++        // FAIL-CLOSED ACCESS GATE. Runs BEFORE any side effect:
++        // before conversationKey / parseCommand / /stop / binding writes /
++        // session / workspace / agent. A drop here means NO side effect at all
++        // (incl. /stop fast path — an unauthorized user can never cancel a live
++        // agent or bump the generation).
++        // ------------------------------------------------------------------
++        const accessPolicy = await this.enforceAccessGate(normalizedEvent, text);
++        if (!accessPolicy)
++            return;
++        if (await this.options.questionPresenter?.handleChannelEvent(normalizedEvent))
++            return;
++        const parsed = parseCommand(text);
++        if (parsed &&
++            normalizedEvent.conversation.type === 'group' &&
++            normalizedEvent.sender.id !== accessPolicy.ownerId) {
++            const accessLogger = this.options.accessLogger ?? this.options.logger;
++            accessLogger.info('[channel-access] group command denied', {
++                channel: normalizedEvent.channel,
++                account: normalizedEvent.accountId,
++                conversationType: normalizedEvent.conversation.type,
++                reason: 'command_owner_required',
++            });
++            await this.sendCommandNotice(normalizedEvent, '群聊指令仅所有者可用。');
++            return;
++        }
++        const key = this.conversationKey(normalizedEvent);
++        // P0: /stop is handled on a FAST PATH AND RUNS IMMEDIATELY — it must
++        // NEVER be chained behind queued conversation work (spec §4/§5), because
++        // the whole point is to interrupt an in-flight turn. `handleImmediateStop`
++        // bumps the generation synchronously before its first await, so every
++        // already-queued message (captured with the OLD generation) is invalidated
++        // at its next generation check and can never re-wake the agent.
++        if (parsed?.name === 'stop') {
++            try {
++                await this.handleImmediateStop(normalizedEvent, key, text);
++            }
++            catch (error) {
++                this.options.logger.error(`[channel-harness] /stop handling failed for conversation '${key}'`, toLoggableError(error));
++            }
++            return;
++        }
++        // Barge-in: cancel the live turn (clears inbox) and skip the serial chain
++        // so the newest message is not stuck behind prior setup / queued followups.
++        if (this.options.config.inboundPreempt) {
++            try {
++                await this.preemptConversation(key);
++                const generation = this.generationOf(key);
++                await this.handleQueuedMessage(normalizedEvent, key, text, parsed, generation);
++            }
++            catch (error) {
++                this.options.logger.error(`[channel-harness] preempt message handling failed for conversation '${key}'`, toLoggableError(error));
++                this.traceInbound({
++                    stage: 'preempt_failed',
++                    conversationId: normalizedEvent.conversation.id,
++                    error: error instanceof Error ? error.message : String(error),
++                });
++                await this.notifyHandlingFailure(normalizedEvent);
++            }
++            return;
++        }
++        const generation = this.generationOf(key);
++        await this.enqueueSelf(key, () => this.handleQueuedMessage(normalizedEvent, key, text, parsed, generation).catch(async (error) => {
++            this.traceInbound({
++                stage: 'handling_failed',
++                conversationId: normalizedEvent.conversation.id,
++                error: error instanceof Error ? error.message : String(error),
++            });
++            await this.notifyHandlingFailure(normalizedEvent);
++            throw error;
++        }));
++    }
++    /** Apply the contract's only identity normalization before any side effect. */
++    normalizeInboundIdentity(event) {
++        const senderId = trimBrandedId(event.sender.id);
++        const conversationId = trimBrandedId(event.conversation.id);
++        if (senderId === event.sender.id && conversationId === event.conversation.id) {
++            return event;
++        }
++        return {
++            ...event,
++            sender: { ...event.sender, id: senderId },
++            conversation: { ...event.conversation, id: conversationId },
++        };
++    }
++    normalizeInteractionIdentity(event) {
++        return {
++            ...event,
++            sender: { ...event.sender, id: trimBrandedId(event.sender.id) },
++            conversation: {
++                ...event.conversation,
++                id: trimBrandedId(event.conversation.id),
++            },
++        };
++    }
++    /** Interaction admission reuses Security Gate semantics; the click is activation. */
++    async enforceInteractionAccessGate(event) {
++        const accessLogger = this.options.accessLogger ?? this.options.logger;
++        if (!event.sender.id || event.sender.id === 'unknown') {
++            this.dropInteraction(accessLogger, event, 'unidentified_sender');
++            return true;
++        }
++        if (!event.conversation.id) {
++            this.dropInteraction(accessLogger, event, 'invalid_conversation');
++            return true;
++        }
++        let resolved;
++        try {
++            resolved = await this.options.accessResolver.resolve(event.channel, event.accountId);
++        }
++        catch (error) {
++            this.options.logger.warn('[channel-access] policy resolution failed', toLoggableError(error));
++            return true;
++        }
++        if (resolved.state !== 'present') {
++            this.dropInteraction(accessLogger, event, resolved.state === 'missing' ? 'missing_policy' : 'invalid_policy');
++            return true;
++        }
++        const decision = this.accessController.authorize({
++            conversationType: event.conversation.type,
++            senderId: event.sender.id,
++            conversationId: event.conversation.id,
++            policy: resolved.policy,
++        });
++        if (!decision.authorized) {
++            this.dropInteraction(accessLogger, event, decision.reason);
++            return true;
++        }
++        return false;
++    }
++    dropInteraction(logger, event, reason) {
++        logger.info('[channel-access] interaction dropped', {
++            channel: event.channel,
++            account: event.accountId,
++            conversationType: event.conversation.type,
++            reason,
++        });
++    }
++    /**
++     * One-time Agent-scoped command and model-hook setup. Installed onto an
++     * Agent's scoped context by every create/resolve and by the Session
++     * factory's recreate (borrow + create) so a fresh, resumed OR recreated
++     * session gets the channel commands and channel hooks before any driving
++     * happens. Harness still resolves the Session model at creation/resume.
++     * Channel images are NOT rewritten here: the inbound converter hands raw
++     * images to the Harness Attachment Store and the official image
++     * pipeline owns model-capability projection (vision variant / text-only
++     * deterministic placeholder), so the Agent-scoped history keeps the
++     * original ImageBlock.
++     */
++    // Bound arrow: passed to create/resolve/borrowIfLive as the official
++    // AgentSetup (invoked as a bare setup(agentCtx)), so this must stay the
++    // bridge instance.
++    commandSetup = async (agentCtx) => {
++        const disposeCommands = await installChannelCommands(agentCtx, this.commandDeps);
++        const disposeModelSelection = this.modelSelection.install(agentCtx);
++        if (this.commandSetupsDisposed) {
++            await disposeCommands();
++            disposeModelSelection();
++            throw new Error('channel-harness command setup continued after bridge disposal');
++        }
++        this.commandDisposers.add(disposeCommands);
++        this.modelSelectionDisposers.add(disposeModelSelection);
++        // M4: Agent-scoped read_channel_attachment tool. Registered on the agent's
++        // own scope so it is disposed with the agent. Best-effort: a tool-install
++        // failure must never roll back the agent setup. The tool stays registered
++        // through the provider's OPTIONAL compatibility path while it
++        // is the only generic-attachment reader. The deprecated installTools name
++        // remains a fallback for one cycle; providers with neither hook skip it.
++        if (this.options.fileProvider) {
++            try {
++                await installAttachmentCompatibilityTools(this.options.fileProvider, agentCtx);
++            }
++            catch (error) {
++                this.options.logger.warn('[channel-harness] failed to install read_channel_attachment tool', error);
++            }
++        }
++        // M6: Agent-scoped send_channel_message tool. Only installed when the
++        // durable outbox is wired. Best-effort, mirroring the attachment tool.
++        if (this.options.outbox) {
++            try {
++                await installSendChannelMessageTool(agentCtx, { outbox: this.options.outbox });
++            }
++            catch (error) {
++                this.options.logger.warn('[channel-harness] failed to install send_channel_message tool', error);
++            }
++        }
++    };
++    /** Release this bridge's Agent-scoped command and model-hook registrations. */
++    async disposeCommandSetups() {
++        this.commandSetupsDisposed = true;
++        const commandDisposers = [...this.commandDisposers];
++        this.commandDisposers.clear();
++        const modelDisposers = [...this.modelSelectionDisposers];
++        this.modelSelectionDisposers.clear();
++        await Promise.all([
++            ...commandDisposers.map((dispose) => dispose()),
++            ...modelDisposers.map((dispose) => Promise.resolve(dispose())),
++        ]);
++    }
++    conversationKey(event) {
++        return sessionKey({
++            channelId: event.channel,
++            accountId: event.accountId,
++            conversationId: event.conversation.id,
++            ...(event.conversation.threadId ? { threadId: event.conversation.threadId } : {}),
++        });
++    }
++    /** Conversation identity of an inbound event, as a bindable SessionKeyInput. */
++    conversationInput(event) {
++        return {
++            channelId: event.channel,
++            accountId: event.accountId,
++            conversationId: event.conversation.id,
++            // v3: stable conversation identity captured for the durable binding.
++            conversationType: event.conversation.type,
++            ...(event.sender.id ? { senderId: event.sender.id } : {}),
++            ...(event.conversation.threadId ? { threadId: event.conversation.threadId } : {}),
++        };
++    }
++    /**
++     * Whether the durable session behind an existing binding is MISSING — the
++     * stale condition behind both the EXPLICIT stale-binding repair (/new) and
++     * the loud SessionNotFoundError for every other request. A live agent is
++     * never stale (live-first: no persistence probe), and without a mounted
++     * sessionPersistence there is no durable identity to lose (ephemeral
++     * deployments recreate instead). One ATOMIC probe decides all three cases
++     * (live capability resolved once — no canResume/exists TOCTOU across a
++     * persistence HMR).
++     */
++    async isDurableSessionMissing(binding) {
++        if (this.options.agentManager.getLiveAgent(binding.sessionId))
++            return false;
++        const probe = await this.options.agentManager.probePersisted(binding.sessionId);
++        return probe === 'missing';
++    }
++    /** Bindings without the field predate the stable policy; fail closed. */
++    bindingDurability(binding) {
++        return binding.durability ?? 'durable';
++    }
++    /**
++     * FAIL-CLOSED Access Gate. Returns the validated policy only when the
++     * message is admitted. `undefined` means DROP with NO side effect (agent /
++     * command / session / binding / workspace / generation / /stop fast path).
++     *
++     * Order:
++     *   1. Reserved claim suppression (/dsh-claim never reaches anything).
++     *   2. Identity validation: sender + conversation ids.
++     *   3. Resolve policy (missing/invalid -> drop, fail closed).
++     *   4. Authorize (security gate) + activate (activation gate).
++     *
++     * Logging follows the `channel-access` logger convention: minimal fields
++     * (channel / account / conversationType / reason), never message body,
++     * challenge code, raw payload or tokens.
++     */
++    async enforceAccessGate(event, text) {
++        const accessLogger = this.options.accessLogger ?? this.options.logger;
++        // 1. Reserved owner-claim suppression: /dsh-claim must
++        //    NEVER reach model / command dispatcher / Session / Binding, even when
++        //    no access policy exists. Static drop — no policy read is needed.
++        if (isReservedClaimCommand(text)) {
++            accessLogger.debug('[channel-access] reserved claim message suppressed', {
++                channel: event.channel,
++                account: event.accountId,
++            });
++            return undefined;
++        }
++        // 2. Identity validation: sender.id must be a non-empty string
++        //    and !== 'unknown'; conversation.id must be non-empty.
++        const senderId = event.sender.id;
++        const conversationId = event.conversation.id;
++        if (typeof senderId !== 'string' ||
++            senderId.length === 0 ||
++            senderId === 'unknown') {
++            this.dropInbound(accessLogger, event, 'unidentified_sender');
++            return undefined;
++        }
++        if (typeof conversationId !== 'string' || conversationId.length === 0) {
++            this.dropInbound(accessLogger, event, 'invalid_conversation');
++            return undefined;
++        }
++        // 3. Resolve the policy (fail closed).
++        let resolved;
++        try {
++            resolved = await this.options.accessResolver.resolve(event.channel, event.accountId);
++        }
++        catch (error) {
++            this.options.logger.warn('[channel-access] policy resolution failed', toLoggableError(error));
++            this.traceInbound({
++                stage: 'policy_error',
++                conversationId,
++                error: error instanceof Error ? error.message : String(error),
++            });
++            return undefined;
++        }
++        if (resolved.state === 'missing') {
++            this.dropInbound(accessLogger, event, 'missing_policy');
++            return undefined;
++        }
++        if (resolved.state === 'invalid') {
++            this.dropInbound(accessLogger, event, 'invalid_policy');
++            return undefined;
++        }
++        // 4. Authorize (Security Gate) then activate (Activation Gate).
++        const decision = this.accessController.authorize({
++            conversationType: event.conversation.type,
++            senderId,
++            conversationId,
++            mentionedBot: event.message.activation?.mentionedBot,
++            policy: resolved.policy,
++        });
++        if (!decision.authorized) {
++            this.dropInbound(accessLogger, event, decision.reason);
++            return undefined;
++        }
++        if (!decision.activated) {
++            this.dropInbound(accessLogger, event, decision.reason);
++            return undefined;
++        }
++        this.traceInbound({
++            stage: 'admitted',
++            conversationId,
++            conversationType: event.conversation.type,
++            mentioned: event.message.activation?.mentionedBot === true,
++        });
++        return resolved.policy;
++    }
++    /** Tell the chat that this message was not handled. Best-effort; never throws. */
++    async notifyHandlingFailure(event) {
++        try {
++            await this.sendCommandNotice(event, HANDLING_FAILED_NOTICE);
++        }
++        catch (error) {
++            this.options.logger.warn('[channel-harness] failed to send handling-failure notice', toLoggableError(error));
++        }
++    }
++    /** Append one JSON line next to the telegram receive log (opt-in). Never throws. */
++    traceInbound(entry) {
++        if (!inboundTraceEnabled())
++            return;
++        try {
++            const file = inboundTraceFile(entry);
++            mkdirSync(dirname(file), { recursive: true });
++            const error = typeof entry.error === 'string' ? entry.error.replace(/\s+/g, ' ').slice(0, 240) : undefined;
++            appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...entry, ...(error ? { error } : {}) }) + '\n');
++        }
++        catch {
++            // Tracing must not affect delivery.
++        }
++    }
++    /** Log a fail-closed inbound drop with minimal plan-§42 fields. */
++    dropInbound(accessLogger, event, reason) {
++        accessLogger.info('[channel-access] inbound dropped', {
++            channel: event.channel,
++            account: event.accountId,
++            conversationId: event.conversation.id,
++            conversationType: event.conversation.type,
++            reason,
++        });
++        if (!inboundTraceEnabled())
++            return;
++        try {
++            const file = inboundTraceFile({ channel: event.channel });
+             mkdirSync(dirname(file), { recursive: true });
+             appendFileSync(file, JSON.stringify({
+                 t: new Date().toISOString(),

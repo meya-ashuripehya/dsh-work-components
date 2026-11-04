@@ -39,5 +39,14 @@ export function sanitizeSchema(s) {
   return out
 }
 
-/** 对工具定义列表逐个净化 parameters。 */
-export const sanitizeToolSchemas = (tools) => tools.map((t) => (t && t.parameters ? { ...t, parameters: sanitizeSchema(t.parameters) } : t))
+/** 对工具定义列表逐个净化 parameters / inputSchema / input_schema。 */
+export function sanitizeToolSchemas(tools) {
+  return (Array.isArray(tools) ? tools : []).map((t) => {
+    if (!t || typeof t !== 'object') return t
+    let out = t
+    if (t.parameters) out = { ...out, parameters: sanitizeSchema(t.parameters) }
+    if (t.inputSchema) out = { ...out, inputSchema: sanitizeSchema(t.inputSchema) }
+    if (t.input_schema) out = { ...out, input_schema: sanitizeSchema(t.input_schema) }
+    return out
+  })
+}

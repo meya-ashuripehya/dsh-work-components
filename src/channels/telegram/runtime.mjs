@@ -37,7 +37,7 @@ import { claimPollingToken, releaseAll } from '../../telegram/polling-owners.mjs
 import { dmSenderOf, isUnauthorizedDm, noteDmDiscover } from '../../telegram/dm-discover.mjs'
 import { installBoardsLink, mountBoardsBridge } from './boards-link.mjs'
 import { installCardsLink } from './cards-link.mjs'
-import { installPersonMemoryInject } from '../person-memory-inject.mjs'
+import { installPersonMemoryInject, installAssistantMemoryWrite } from '../person-memory-inject.mjs'
 import { buildChannelMessage, channelMessageIsEmpty } from '../outbound-file.mjs'
 
 installMapPlaceDelivery(harness.ReplyRouter)
@@ -48,6 +48,7 @@ installGroupRoute(harness.AgentRouter)
 installBoardsLink(harness.ReplyContextStore, harness.ChannelHarnessBridge)
 installCardsLink(harness.ChannelHarnessBridge)
 installPersonMemoryInject(harness.ChannelHarnessBridge)
+installAssistantMemoryWrite(harness.ReplyRouter)
 
 export { DENY_MESSAGE, createOwnerGate, resolveAuthorizedIds, setGroupPreset }
 

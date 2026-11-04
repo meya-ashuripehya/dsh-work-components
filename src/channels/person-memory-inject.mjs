@@ -1,5 +1,8 @@
-﻿/**
- * Inject capped [person-memory] summary into channel inbound turns.
+/**
+ * Channel inbound: learn aliases, append JSONL, hang CSM (+ TG person-memory) on
+ * event.`__dshInboundPrefix` then bridge `agent.inject` (form recall), not user message body. Also appends inbound user text to preset JSONL
+ * and patches ReplyRouter.finalize to append assistant replies.
+ *
  * Patches ChannelHarnessBridge.prototype.handleQueuedMessage (same style as cards-link).
  * Also learns Telegram/QQ sender.name into peer-aliases-learned.json for later list/search labels.
  */
@@ -10,8 +13,14 @@ import {
   saveLearnedAlias,
   loadLearnedAliases,
 } from './person-profile.mjs'
-import { QQ_LINGCHAT_FORMAT_HINT } from './qq/lingchat-segments.mjs'
-import { DEFAULT_OWNER_LINK, normalizeConfig } from './cross-session-memory.mjs'
+import { DEFAULT_OWNER_LINK, normalizeConfig, stripHarnessPrefix } from './cross-session-memory.mjs'
+import {
+  writeInboundChannelMessage,
+  writeAssistantChannelMessage,
+  injectForChannel,
+  resolveBindingForEvent,
+  isMasterMemoryEnabled,
+} from './cross-session-memory-write.mjs'
 
 let provider = null
 
@@ -47,7 +56,6 @@ function snapshotFromProvider(event) {
     crossSessionPresets: cfg.crossSessionPresets,
     crossSessionShareGroups: cfg.crossSessionShareGroups,
   })
-  // Prefer normalizeConfig ownerLinks[0] when nested.ownerLinks present
   const norm = normalizeConfig({
     enabled: true,
     ownerLinks: nested.ownerLinks?.length ? nested.ownerLinks : [link],
@@ -57,6 +65,7 @@ function snapshotFromProvider(event) {
     aliases,
     link: norm.ownerLinks[0] || link || DEFAULT_OWNER_LINK,
     learnedFile: raw.learnedFile,
+    config: cfg,
   }
 }
 
@@ -68,8 +77,24 @@ function channelOf(event) {
   return String(event?.channel ?? '').trim().toLowerCase()
 }
 
+function plainUserText(event) {
+  const content = Array.isArray(event?.message?.content) ? event.message.content : []
+  const parts = []
+  for (const b of content) {
+    if (b && b.type === 'text' && b.text) parts.push(String(b.text))
+  }
+  let s = parts.join('').trim()
+  s = s.replace(/^\[person-memory\][^\n]*\n?/m, '')
+  s = s.replace(/^\[reply-format\][^\n]*\n?/m, '')
+  s = s.replace(/^\[cross-session-memory[^\]]*\][^\n]*\n?/m, '')
+  s = stripHarnessPrefix(s)
+  return s.trim()
+}
+
 /**
- * Prepend person-memory text block; learn live sender name.
+ * Learn live sender name; append inbound user line to preset JSONL.
+ * Hang CSM (+ Telegram person-memory) on event.`__dshInboundPrefix`; bridge seeds it via
+ * `agent.inject` with source form `recall` (not merged into the user-authored UserMessage).
  * @returns {object} possibly rewritten event
  */
 export function enrichInboundEvent(event, snap) {
@@ -83,54 +108,46 @@ export function enrichInboundEvent(event, snap) {
   if (liveName) {
     try {
       saveLearnedAlias(channel, senderId || peerId, liveName, snap.learnedFile)
-      // For DMs, also map conversation id (same as sender)
       if (peerId && peerId !== senderId) saveLearnedAlias(channel, peerId, liveName, snap.learnedFile)
     } catch { /* never block delivery */ }
   }
 
-  // QQ: short id+nick is already in harness metadata prefix; skip long [person-memory],
-  // but keep a compact LingChat reply-format reminder for segmented outbound.
-  if (channel === 'qq') {
-    const content = Array.isArray(event.message?.content) ? event.message.content : []
-    const already = content.some(
-      (b) => b && b.type === 'text' && String(b.text || '').includes('[reply-format]'),
-    )
-    if (already) return event
-    return {
-      ...event,
-      message: {
-        ...event.message,
-        content: [{ type: 'text', text: QQ_LINGCHAT_FORMAT_HINT + '\n' }, ...content],
-      },
-    }
+  const binding = resolveBindingForEvent(event)
+  const preset = String(binding?.route?.preset || binding?.preset || '').trim()
+  const sessionId = String(binding?.sessionId || '').trim()
+  const userText = plainUserText(event)
+
+  if (userText && isMasterMemoryEnabled(snap.config || {})) {
+    void writeInboundChannelMessage(event, userText, { binding, preset }).catch(() => {})
   }
 
-  const summary = buildPersonSummary({
-    channel,
-    peerId,
-    conversationType: event?.conversation?.type,
-    senderId,
-    liveName,
-    aliases: snap.aliases,
-    learned: loadLearnedAliases(snap.learnedFile),
-    link: snap.link,
-    enabled: true,
-  })
-  if (!summary) return event
+  const parts = []
+  const inject = preset ? injectForChannel({ preset, sessionId }) : ''
+  if (inject) parts.push(inject.trimEnd())
 
-  const content = Array.isArray(event.message?.content) ? event.message.content : []
-  // Avoid stacking duplicate person-memory blocks if a prior hook already added one
-  const already = content.some(
-    (b) => b && b.type === 'text' && String(b.text || '').includes('[person-memory]'),
-  )
-  if (already) return event
+  // QQ: format constraints stay in Agent preset only. Telegram keeps short person-memory on prefix.
+  if (channel !== 'qq') {
+    const summary = buildPersonSummary({
+      channel,
+      peerId,
+      conversationType: event?.conversation?.type,
+      senderId,
+      liveName,
+      aliases: snap.aliases,
+      learned: loadLearnedAliases(snap.learnedFile),
+      link: snap.link,
+      enabled: true,
+    })
+    if (summary) parts.push(String(summary).trimEnd())
+  }
 
+  const prefixText = parts.filter(Boolean).join('\n')
+  if (!prefixText) return event
+
+  // Do not mutate message.content — bridge injects __dshInboundPrefix as plugin recall context.
   return {
     ...event,
-    message: {
-      ...event.message,
-      content: [{ type: 'text', text: summary + '\n' }, ...content],
-    },
+    __dshInboundPrefix: prefixText,
   }
 }
 
@@ -152,5 +169,36 @@ export function installPersonMemoryInject(ChannelHarnessBridge) {
     return original.call(this, next, key, text, parsed, generation)
   }
   Object.defineProperty(bridge, '__dshPersonMemory', { value: true })
+  return true
+}
+
+/**
+ * Install once on ReplyRouter: after finalize delivers assistant text, append to preset JSONL.
+ */
+export function installAssistantMemoryWrite(ReplyRouter) {
+  const proto = ReplyRouter?.prototype
+  if (!proto || proto.__dshCsmAssistantWrite || typeof proto.finalize !== 'function') {
+    return false
+  }
+  const original = proto.finalize
+  proto.finalize = async function finalize(active, turn) {
+    let text = ''
+    try {
+      text = (active?.textBuffer && active.textBuffer.length > 0) ? active.textBuffer : (active?.finalText || '')
+      if (active?.bufferedSteps?.length) {
+        text = [...active.bufferedSteps, text].filter(Boolean).join('\n\n')
+      }
+    } catch { text = '' }
+    try {
+      await original.call(this, active, turn)
+    } finally {
+      try {
+        if (text && active?.binding) {
+          void writeAssistantChannelMessage(active.binding, text).catch(() => {})
+        }
+      } catch { /* never break delivery */ }
+    }
+  }
+  Object.defineProperty(proto, '__dshCsmAssistantWrite', { value: true })
   return true
 }

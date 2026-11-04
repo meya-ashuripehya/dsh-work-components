@@ -211,7 +211,7 @@ export function isBudgetChatter(m) {
   return false
 }
 
-export function buildPrompt({ seat, seats, userName, rules, messages, maxHistory = 0, mainName, away = [], extraUser, toolsInfo, vision = false, visionRelay = false, imageWindow = IMAGE_WINDOW, attachmentMeta, binned, videoInput = false, contextSummary = '', contextUntilSeq = 0, mcInfo = null }) {
+export function buildPrompt({ seat, seats, userName, rules, messages, maxHistory = 0, mainName, away = [], extraUser, toolsInfo, vision = false, visionRelay = false, imageWindow = IMAGE_WINDOW, attachmentMeta, binned, videoInput = false, contextSummary = '', contextUntilSeq = 0, mcInfo = null, memoryInject = '' }) {
   const inBin = (m) => !!binned && typeof binned.has === 'function' && binned.has(m.id)
   const until = Math.max(0, Math.floor(Number(contextUntilSeq) || 0))
   let log = (messages || []).filter((m) => isPromptCandidate(m, until) && !(m.kind === 'tool' && inBin(m)))
@@ -221,6 +221,10 @@ export function buildPrompt({ seat, seats, userName, rules, messages, maxHistory
   const summary = String(contextSummary || '').trim()
   if (summary) {
     log = [{ kind: 'system', aiVisible: true, aiText: '(earlier conversation summary)\n' + summary + '\n(Earlier messages were compressed into this summary; use the search_history tool to look up exact details from them.)', status: 'ok' }, ...log]
+  }
+  const mem = String(memoryInject || '').trim()
+  if (mem) {
+    log = [{ kind: 'system', aiVisible: true, aiText: mem, status: 'ok' }, ...log]
   }
   const fails = failurePlan(log)
   log = log.filter((m) => !(isFailedTool(m) && fails.get(m.id ?? m.seq) === null))

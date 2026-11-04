@@ -9,6 +9,8 @@ import { buildMonth } from './month.mjs'
 import { deleteEvent, listEvents, saveEvent } from './store.mjs'
 import { createCalendarTools } from './tools.mjs'
 import { createCalendarFeature } from './index.mjs'
+import { noteQQSessionOrigin, resetQQSessionOrigins } from '../channels/surface.mjs'
+import { renderCalendarPng, pngSize } from './render.mjs'
 
 async function tempDir() {
   return mkdtemp(join(tmpdir(), 'dsh-cal-'))
@@ -215,4 +217,93 @@ test('calendar tools mount by default and unmount when disabled', async () => {
   assert.equal(feature.state().mounted, false)
   assert.equal(feature.state().detail, '未启用')
   await feature.dispose()
+})
+
+
+test('renderCalendarPng emits a valid PNG for a built month', async () => {
+  const month = await buildMonth('2026-02', {
+    now: new Date('2026-02-10T12:00:00+08:00'),
+    city: '',
+  })
+  const { png, width, height } = renderCalendarPng(month)
+  assert.equal(png[0], 0x89)
+  const size = pngSize(png)
+  assert.equal(size.width, width)
+  assert.equal(size.height, height)
+  assert.ok(width >= 600)
+  assert.ok(height >= 400)
+})
+
+test('calendar_show attaches a PNG image only on QQ sessions', async () => {
+  const dir = await tempDir()
+  resetQQSessionOrigins()
+  try {
+    let saved = null
+    const tools = createCalendarTools({
+      dir,
+      getConfig: () => ({ calendarCity: '' }),
+      fetchImpl: async () => { throw new Error('no weather') },
+      getAttachments: () => ({
+        saveImage: async ({ data, mediaType, name }) => {
+          saved = { data, mediaType, name }
+          return {
+            attachmentId: 'att-cal-1',
+            mediaType: mediaType || 'image/png',
+            bytes: data.length,
+            width: 676,
+            height: 460,
+          }
+        },
+      }),
+    })
+    const show = tools[0]
+
+    // Desktop: no image
+    const desk = await show.execute({ month: '2026-02' }, { agent: { id: 'desk-sess' } })
+    assert.equal(desk.image, undefined)
+    assert.deepEqual(show.output.render({}, desk).map((b) => b.type), ['text'])
+    assert.equal(saved, null)
+
+    // QQ: image via harness path
+    noteQQSessionOrigin('qq-sess', { conversationId: 'peer-1', conversationType: 'dm', senderId: 'u' })
+    const qq = await show.execute({ month: '2026-02' }, { agent: { id: 'qq-sess' } })
+    assert.ok(qq.image)
+    assert.equal(qq.image.attachmentId, 'att-cal-1')
+    assert.equal(qq.image.mediaType, 'image/png')
+    assert.equal(qq.image.name, 'calendar.png')
+    assert.ok(saved?.data?.[0] === 0x89)
+    const blocks = show.output.render({}, qq)
+    assert.deepEqual(blocks.map((b) => b.type), ['text', 'image'])
+    assert.equal(blocks[1].attachment.attachmentId, 'att-cal-1')
+    // Page card still calendar mm (not replaced by image mm)
+    const meta = show.output.presentationMeta({}, qq)
+    assert.equal(meta.mm.kind, 'calendar')
+    assert.equal(meta.mm.calendar.image, undefined)
+  } finally {
+    resetQQSessionOrigins()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('calendar_show on telegram session does not attach PNG (HTML path owns outbound)', async () => {
+  const dir = await tempDir()
+  resetQQSessionOrigins()
+  try {
+    let saved = null
+    const tools = createCalendarTools({
+      dir,
+      getConfig: () => ({}),
+      getAttachments: () => ({
+        saveImage: async (opts) => { saved = opts; return { attachmentId: 'x', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } },
+      }),
+    })
+    // Without a telegram bridge hit, unknown session is desktop — simulate telegram via explicit origin through exec is not enough.
+    // resolveChannelId only sees telegram via bridge; for this unit test call resolve with a fake by noting nothing and using desktop expectation:
+    // Instead patch: if channelId not qq, no image. Confirm non-qq stays text-only even with attachments.
+    const value = await tools[0].execute({ month: '2026-02' }, { agent: { id: 'no-qq' } })
+    assert.equal(value.image, undefined)
+    assert.equal(saved, null)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

@@ -13,7 +13,7 @@ function helpers() {
   const a = src.indexOf('// <cr-cm-stack-helpers>'), b = src.indexOf('// </cr-cm-stack-helpers>')
   assert.ok(a >= 0 && b > a, 'lib/client.js lacks the <cr-cm-stack-helpers> block')
   const ctx = { window: { localStorage: { store: {}, getItem(k) { return Object.prototype.hasOwnProperty.call(this.store, k) ? this.store[k] : null }, setItem(k, v) { this.store[k] = String(v) } } } }
-  vm.runInNewContext(src.slice(a, b) + '\nthis.h = { CR_CM_GROUP_KEY, CR_CM_PAGE_SIZE, CR_CM_FETCH_LIMIT, crCmLoadGroupBy, crCmSaveGroupBy, crCmNormGroupBy, crCmTypeKey, crCmTypeLabel, crCmRoundKey, crCmRoundLabel, crCmSummary, crCmGroup, crCmSliceGroups, crCmSelState };', ctx)
+  vm.runInNewContext(src.slice(a, b) + '\nthis.h = { CR_CM_GROUP_KEY, CR_CM_PAGE_SIZE, CR_CM_FETCH_LIMIT, crCmLoadGroupBy, crCmSaveGroupBy, crCmNormGroupBy, crCmTypeKey, crCmTypeLabel, crCmRoundKey, crCmRoundLabel, crCmSummary, crCmGroup, crCmSliceGroups, crCmSelState, crCmFitPageSize };', ctx)
   return ctx.h
 }
 
@@ -136,4 +136,22 @@ test('card stacks: crCmSliceGroups pages by groups, clamps page, empty is 1 page
   assert.equal(empty.pages, 1)
   assert.equal(empty.totalGroups, 0)
   assert.deepEqual(empty.groups, [])
+})
+
+test('card stacks: crCmFitPageSize uses viewport, falls back when tiny', () => {
+  const h = helpers()
+  assert.equal(h.crCmFitPageSize(0, 0), h.CR_CM_PAGE_SIZE)
+  assert.equal(h.crCmFitPageSize(20, 20), h.CR_CM_PAGE_SIZE)
+  // ~3 cols × 2 rows for a mid-size list
+  const n = h.crCmFitPageSize(460, 460)
+  assert.ok(n >= 4, 'expected several groups, got ' + n)
+  assert.ok(n !== h.CR_CM_PAGE_SIZE || n === 8)
+  const tall = h.crCmFitPageSize(460, 900)
+  assert.ok(tall >= n, 'taller viewport should fit at least as many')
+})
+
+test('card stacks wiring: dynamic page size + clear group toggle', () => {
+  assert.ok(src.includes('crCmFitPageSize(e.list.clientWidth, e.list.clientHeight)'))
+  assert.ok(src.includes('cr-cm-on'))
+  assert.ok(src.includes('.cr-cm-group .mm-btn.cr-cm-on') || src.includes('.mm-btn.cr-cm-on{background:var(--mm-accent)'))
 })

@@ -26,7 +26,7 @@ const AGGREGATE = '@wsz987/dsh-channels'
 export const QQ_KEYS = [
   'qqEnabled', 'qqAppId', 'qqAppSecretRef', 'qqOwnerOpenId', 'qqAllowFrom',
   'qqGroupPolicy', 'qqGroupIds', 'qqGroupRequireMention',
-  'qqAuthorizedIds', 'qqPreset', 'qqChannelRoutes', 'qqRoutingMode',
+  'qqAuthorizedIds', 'qqSeatId', 'qqPreset', 'qqChannelRoutes', 'qqRoutingMode',
   'qqIncludeMetadataPrefix', 'qqMarkdownSupport', 'qqStreamEnabled', 'qqDebugTrace',
 ]
 
@@ -47,7 +47,8 @@ export function qqSchemaShape(z) {
     qqAuthorizedIds: z.string().default('').description('授权用户 OpenID：只有这些用户触发的回合可以使用会更改电脑的工具。留空时使用所有者 OpenID；两者都空时任何人都不能使用。'),
     qqProactiveSendEnabled: z.boolean().default(false).description('启用主动发送工具 qq_proactive_send（默认关闭）。可发文本，或按 mm_send_file 的方式发一个本地文件。填了私聊预设时，只有使用同一预设的会话能看到该工具；预设留空时只看本开关。'),
     qqProactiveSendAllowlist: z.string().default('').description('允许主动发送的用户 OpenID 或群 group_openid，逗号、空格或换行分隔。不在名单中的目标一律拒绝。与私聊白名单、群白名单、授权用户无关。'),
-    qqPreset: z.string().default('').description('账号 main 的私聊预设 ID。留空沿用全局默认。'),
+    qqSeatId: z.string().default('').description('从席位管理池中选择一个席位（QQ 只跑单席位，不建多 AI 群聊）。留空则回退 qqPreset / 全局默认。'),
+    qqPreset: z.string().default('').description('（兼容旧设置）账号 main 的私聊预设 ID；已选 qqSeatId 时忽略。留空沿用全局默认。'),
     qqChannelRoutes: z.string().default('').description('通道级预设覆盖，形如 qq:预设名（routing.overrides.channel）。留空不覆盖。'),
     qqRoutingMode: z.union(['global', 'channel', 'account', 'conversation']).default('conversation').description('路由模式：按全局 / 通道 / 账号 / 会话选择智能体预设。'),
     qqIncludeMetadataPrefix: z.boolean().default(true).description('入站消息前附加通道元数据前缀（includeMetadataPrefix）。'),
@@ -226,11 +227,16 @@ export function createQQChannel(ctx, getConfig, options = {}) {
         dmAllow = effectiveDmAllow(cfg, String(cfg.qqOwnerOpenId ?? '').trim() ? null : await rt.readAccessPolicy())
       } catch { dmAllow = null }
       if (gen !== s.gen) return
+      const seats = Array.isArray(cfg.chatroomSeats) ? cfg.chatroomSeats : []
+      const lead = rt.accountRouteOf(cfg, seats)
       s.handle = rt.startQQ(ctx, {
         appId,
         appSecret,
         appSecretRef: secretRefOf(cfg),
-        preset: cfg.qqPreset,
+        seatId: cfg.qqSeatId,
+        seats,
+        defaultRoute: lead,
+        preset: lead?.preset || cfg.qqPreset,
         inboundPreempt: true,
         authorizedIds: rt.resolveAuthorizedIds(cfg.qqAuthorizedIds, cfg.qqOwnerOpenId),
         debugTrace: cfg.qqDebugTrace === true,
