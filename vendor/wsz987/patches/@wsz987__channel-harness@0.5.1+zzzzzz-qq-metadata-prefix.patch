@@ -1,12 +1,6 @@
 diff --git a/lib/message-converter.js b/lib/message-converter.js
 --- a/lib/message-converter.js
 +++ b/lib/message-converter.js
-@@ -1,4 +1,4 @@
--/**
-+﻿/**
-  * Inbound conversion: `MessageReceived` -> a Harness `UserMessage`.
-  *
-  * Content is structured-text by default (red line 6): platform parts without
 @@ -55,6 +55,16 @@ async function partsToBlocks(parts, options) {
      return blocks;
  }

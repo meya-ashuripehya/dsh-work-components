@@ -62,7 +62,7 @@ test('无席位和代他人都被拒绝，状态回执不含签名密钥', async
     assert.equal(JSON.stringify(status).includes(KEY), false)
     assert.equal(JSON.stringify(status).includes(fx.runtime.key.toString('base64')), false)
     const members = createMembersTools({ getConfig: () => ({}) })
-    assert.deepEqual(members.map((tool) => tool.name), ['mc_connect', 'mc_observe', 'mc_act', 'mc_cancel', 'mc_status', 'mc_disconnect'])
+    assert.deepEqual(members.map((tool) => tool.name), ['mc_connect', 'mc_observe', 'mc_act', 'mc_cancel', 'mc_status', 'mc_disconnect', 'mc_takeover', 'mc_resume'])
     const act = members.find((tool) => tool.name === 'mc_act')
     assert.deepEqual(Object.keys(act.parameters.properties), ['action', 'params'])
     assert.equal(workModulesStayOffScheduler(), true)

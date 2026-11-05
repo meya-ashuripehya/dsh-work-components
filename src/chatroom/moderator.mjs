@@ -1154,7 +1154,7 @@ export function createModerator({ store, getRoomConfig, resolvePersona = () => '
 
   /**
    * 用户发言。owner：是否为所有者（本机桌面端，或 Telegram 用户 ID 等于设置里的所有者 ID）。
-   * source：'local' | 'telegram'。本地消息同时经接收机器人转发到绑定群。
+   * source：'local' | 'telegram'。本地消息经默认主答席位转发到绑定群（该席位不在群里时由接收机器人代发）。
    */
   async function post(roomId, text, { userName, owner = false, source = 'local', fromId, run = true, attachments, videoLinks } = {}) {
     const t = String(text || '').trim()

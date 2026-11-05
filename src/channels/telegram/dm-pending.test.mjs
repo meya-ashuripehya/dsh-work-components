@@ -283,7 +283,7 @@ test('no command-based authorize path: channel commands and chatroom group comma
   // 聊天室群内指令只有 /bind /unbind
   for (const t of ['/auth', '/allow 1', '/authorize', '/approve 1', '/grant', '/whitelist 1']) assert.equal(parseGroupCommand(t), null)
   assert.equal(parseGroupCommand('/bind').cmd, 'bind')
-  // 只有设置页接口会调用 saveAllowFrom；仓库源码里没有别处写「允许的其他用户 ID」
+  // 只有设置页接口会调用 saveAllowFrom（Telegram 私聊授权，以及 QQ 的同类设置页接口）。聊天指令不写白名单。
   const srcRoot = join(here, '../..')
   const writers = []
   async function walk(d) {
@@ -296,7 +296,7 @@ test('no command-based authorize path: channel commands and chatroom group comma
     }
   }
   await walk(srcRoot)
-  assert.deepEqual(writers.sort(), ['channels/telegram/dm-pending.mjs', 'channels/telegram/index.mjs', 'index.mjs'])
+  assert.deepEqual(writers.sort(), ['channels/qq/index.mjs', 'channels/qq/pending.mjs', 'channels/telegram/dm-pending.mjs', 'channels/telegram/index.mjs', 'index.mjs'])
   const idx = await readFile(join(srcRoot, 'index.mjs'), 'utf8')
   assert.equal((idx.match(/telegramAllowFrom\s*:/g) || []).length, 1) // telegramSave.allowFrom（仅供设置页接口）
 })
