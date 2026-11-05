@@ -297,6 +297,13 @@ try {
   if (!client.includes('dsh-workbench-trust-toggle')) problems.push('lib/client.js lacks the 核验 composer toggle')
 }
 
+
+// Gemini / Vertex：宿主 llm.stream / prepareCall 上折叠元组 items（node:test）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'chatroom', 'schema-sanitize.test.mjs'), join(root, 'src', 'google-schema', 'wrap.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('google schema sanitize tests failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
 // 聊天室：席位迁移 / DSH 目录（服务商、模型、预设人设）/ ctx.llm.stream 调用 / 记录持久化 / 主持顺序、跳过、停止（node:test，模拟 DSH 服务，不联网）。
 try {
   execFileSync(process.execPath, ['--test', join(root, 'src', 'chatroom', 'chatroom.test.mjs'), join(root, 'src', 'chatroom', 'orchestra.test.mjs'), join(root, 'src', 'chatroom', 'main-answer.test.mjs'), join(root, 'src', 'chatroom', 'msg-delete.test.mjs'), join(root, 'src', 'chatroom', 'heartbeat.test.mjs')], { stdio: 'pipe' })

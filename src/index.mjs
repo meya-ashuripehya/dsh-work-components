@@ -75,6 +75,7 @@ import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
 import { createPreCompactionHistoryFeature, createCompanionCompactionFeature } from './session-history/index.mjs'
 import { createGoogleToolCapFeature, GOOGLE_TOOL_CAP_KEYS } from './google-tool-cap/index.mjs'
+import { createGoogleSchemaGuard } from './google-schema/wrap.mjs'
 import { createStickersFeature, handleStickersApi } from './stickers/index.mjs'
 import { createCrossSessionFeature } from './channels/cross-session-feature.mjs'
 import { createProactiveSendFeature } from './channels/proactive-send.mjs'
@@ -659,6 +660,7 @@ export function apply(ctx, config) {
   const preCompactionHistory = createPreCompactionHistoryFeature(ctx, () => current)
   const companionCompaction = createCompanionCompactionFeature(ctx, () => current)
   const googleToolCap = createGoogleToolCapFeature(ctx, () => current)
+  const googleSchemas = createGoogleSchemaGuard(ctx)
   const stickers = createStickersFeature(ctx, () => current)
   const crossSessionMemory = createCrossSessionFeature(ctx, () => current)
   const boards = createBoardsFeature(ctx, () => current)
@@ -718,7 +720,7 @@ export function apply(ctx, config) {
       current = scope.get()
       scope.watch?.((next) => {
         current = next
-        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void googleToolCap.sync(); void stickers.sync(); void crossSessionMemory.sync(); void proactiveSend?.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
+        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void googleToolCap.sync(); void googleSchemas.sync(); void stickers.sync(); void crossSessionMemory.sync(); void proactiveSend?.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
         void (async () => {
           await refreshMcRoomSeats()
           await components.sync()
@@ -799,6 +801,11 @@ export function apply(ctx, config) {
     },
   })
   qqSave.allowFrom = (raw) => applyPatch({ qqAllowFrom: String(raw ?? '') })
+
+  ctx.effect?.(() => {
+    googleSchemas.sync()
+    return () => { googleSchemas.dispose() }
+  }, 'dsh-workbench: google schema sanitize')
   // 主动发送：按会话预设挂工具，白名单在调用时读取。不放进通道重启键，改白名单不必重连。
   proactiveSend = createProactiveSendFeature(ctx, () => current, {
     sendTelegram: (payload) => telegram.sendProactive(payload),
@@ -865,6 +872,7 @@ export function apply(ctx, config) {
   void calendar.sync()
   void notes.sync()
   void googleToolCap.sync()
+  void googleSchemas.sync()
   void stickers.sync()
   void crossSessionMemory.sync()
   void proactiveSend.sync()
@@ -899,7 +907,7 @@ export function apply(ctx, config) {
       try { await notes.dispose() } catch {}
     try { await preCompactionHistory.dispose() } catch {}
       try { await companionCompaction.dispose() } catch {}
-      try { await googleToolCap.dispose() } catch {}
+      try { await googleToolCap.dispose(); try { googleSchemas.dispose() } catch {} } catch {}
       try { await stickers.dispose() } catch {}
       try { await crossSessionMemory.dispose() } catch {}
       try { await proactiveSend.dispose() } catch {}
