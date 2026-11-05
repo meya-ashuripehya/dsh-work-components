@@ -164,8 +164,11 @@ test('moderator: DeepSeek main by default, others polled one at a time, PASS sil
     const msgs = await f.store.readMessages(f.room.id)
     assert.ok(msgs.some((m) => m.speaker.id === 'claude' && m.status === 'pass'))
     assert.ok(!f.relayed.some((r) => /PASS/.test(r.text)))
-    assert.deepEqual(f.relayed.filter((r) => r.seat).map((r) => r.seat), ['deepseek', 'gpt'])
-    assert.equal(f.relayed[0].prefix, 'Shiro') // 本地用户消息经接收机器人转发
+    // 本地用户经默认主答席位转发（前缀仍是用户名）；其后才是各席位自己的回复。
+    assert.equal(f.relayed[0].seat, 'deepseek')
+    assert.equal(f.relayed[0].prefix, 'Shiro')
+    assert.equal(f.relayed[0].text, '你好')
+    assert.deepEqual(f.relayed.slice(1).map((r) => r.seat), ['deepseek', 'gpt'])
     assert.ok(msgs.filter((m) => m.kind === 'seat').every((m) => typeof m.basedOn === 'number'))
     assert.deepEqual(f.typing.slice(0, 2), [['start', 'deepseek'], ['stop', 'deepseek']])
     assert.ok(f.seen.find((x) => x.seat === 'gpt').tools === undefined) // 无 runCursor 时不给工具

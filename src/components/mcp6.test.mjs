@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import fusion, { probe as fusionProbe, DEFAULT_URL as FUSION_URL } from './fusion/index.mjs'
 import freecad, { planFor as freecadPlan, probe as freecadProbe } from './freecad/index.mjs'
 import matlab, { planFor as matlabPlan } from './matlab/index.mjs'
@@ -62,8 +62,12 @@ test('matlab: exe path or PATH lookup, README flags, existing mode drops root/fo
   assert.deepEqual(p.config.args, ['--matlab-session-mode=auto', '--matlab-root=C:\\Program Files\\MATLAB\\R2026a', '--initial-working-folder=D:\\proj', '--matlab-display-mode=nodesktop', '--disable-telemetry=true'])
   const e = matlabPlan({ matlabEnabled: true, matlabServerPath: 'x.exe', matlabRoot: 'R', matlabSessionMode: 'existing', matlabTelemetry: true }, { exists: () => true })
   assert.deepEqual(e.config.args, ['--matlab-session-mode=existing'])
-  const found = matlabPlan({ matlabEnabled: true }, { exists: (f) => /matlab-mcp-server/.test(f) && f.startsWith('C:\\bin'), env: { PATH: 'C:\\bin' } })
+  // PATH 按当前平台分隔符切开（Windows `;`，Linux `:`）。盘符路径里的 `:` 不能拿来当 Linux 分隔符。
+  const binDir = process.platform === 'win32' ? 'C:\\bin' : '/opt/matlab/bin'
+  const exeName = process.platform === 'win32' ? 'matlab-mcp-server-windows-x64.exe' : 'matlab-mcp-server'
+  const found = matlabPlan({ matlabEnabled: true }, { exists: (f) => f === join(binDir, exeName), env: { PATH: ['/usr/bin', binDir].join(delimiter) } })
   assert.equal(found.ok, true); assert.equal(found.source, 'system')
+  assert.equal(found.config.command, join(binDir, exeName))
   assert.match(matlab.note(), /MathWorks 软件许可协议/)
 })
 

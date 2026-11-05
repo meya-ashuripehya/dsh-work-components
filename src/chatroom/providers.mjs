@@ -7,6 +7,7 @@
  * seat.reasoningEffort 原样作为 GenerateOptions.reasoningEffort；tools 给出时收集 tool-call 块（toolCalls），由房间执行。
  */
 import { randomUUID } from 'node:crypto'
+import { sanitizeGoogleRequest } from '../google-schema/wrap.mjs'
 
 export class ProviderError extends Error {
   constructor(message, { aborted, code } = {}) { super(message); this.aborted = !!aborted; this.code = code }
@@ -143,7 +144,8 @@ export async function callSeat({ seat, prompt, llm, maxTokens, signal, onDelta, 
     if (cap > 0) req.maxTokens = cap
     if (seat.reasoningEffort) req.reasoningEffort = seat.reasoningEffort
     if (Array.isArray(tools) && tools.length) req.tools = tools
-    const stream = llm.stream(req)
+    // Google / Vertex 拒绝数组形式的 items；其它服务商保持原工具对象引用。
+    const stream = llm.stream(sanitizeGoogleRequest(req))
     for await (const c of stream) {
       if (c.type === 'text-delta') { if (c.text) { state.text += c.text; onDelta?.(c.text) } }
       else if (c.type === 'reasoning-delta') {

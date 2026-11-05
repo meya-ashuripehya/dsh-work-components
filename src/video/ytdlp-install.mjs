@@ -5,7 +5,7 @@
  *     的跳转目标（…/releases/tag/<版本>）。程序与校验文件都从 github.com/…/releases/download/<版本>/ 下载，不经 API；
  *   - 代理：与其他下载相同（设置「下载代理」，留空时用环境变量 HTTPS_PROXY / HTTP_PROXY）；
  *   - 校验：同一版本的 SHA2-256SUMS，sha256 不一致即删除并报错；
- *   - 位置：<数据目录>/bin/yt-dlp(.exe)，标记文件 <数据目录>/bin/yt-dlp.json（版本、sha256、来源、时间）；
+ *   - 位置：<数据目录>/bin/yt-dlp(.exe)，标记文件 <数据目录>/bin/yt-dlp.json（版本、sha256、来源、时间、安装平台）；
  *   - 先写临时文件，校验通过后再替换，旧版本在失败时保留。
  * 只能由设置页（本机桌面端 = 所有者）触发；没有注册为 AI 工具。
  */
@@ -46,12 +46,18 @@ export function ytdlpBinPath(root, platform = process.platform) {
 }
 const markerPath = (root) => join(ytdlpBinDir(root), 'yt-dlp.json')
 
-/** 已下载的副本：{ version, sha256, url, installedAt, path } 或 null（程序缺失也算未安装）。 */
-export function readYtdlpInstalled(root) {
+/**
+ * 已下载的副本：{ version, sha256, url, installedAt, path } 或 null（程序缺失也算未安装）。
+ * 二进制文件名按标记里的安装平台解析（win32 为 yt-dlp.exe），避免在 Linux 上读 Windows 安装结果时对 null 取 version。
+ * 显式传入 platform 时优先于标记。
+ */
+export function readYtdlpInstalled(root, platform) {
   let m
   try { m = JSON.parse(readFileSync(markerPath(root), 'utf8')) } catch { return null }
-  const path = ytdlpBinPath(root)
-  if (!m || !m.version || !existsSync(path)) return null
+  if (!m || !m.version) return null
+  const plat = platform || (typeof m.platform === 'string' && m.platform) || process.platform
+  const path = ytdlpBinPath(root, plat)
+  if (!existsSync(path)) return null
   return { version: String(m.version), sha256: m.sha256 || '', url: m.url || '', installedAt: m.installedAt || '', path }
 }
 
@@ -149,7 +155,7 @@ export function createYtdlpInstaller({ download = httpDownload, redirect = resol
       const dest = ytdlpBinPath(rootDir(), platform)
       await rm(dest, { force: true })
       await rename(tmp, dest)
-      const info = { version: tag, sha256: got, url, asset, via, installedAt: new Date().toISOString() }
+      const info = { version: tag, sha256: got, url, asset, via, platform, installedAt: new Date().toISOString() }
       await writeFile(markerPath(rootDir()), JSON.stringify(info, null, 2) + '\n', 'utf8')
       try { onInstalled?.(info) } catch {}
       return { ...info, path: dest }
