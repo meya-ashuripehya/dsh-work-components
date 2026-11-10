@@ -237,7 +237,7 @@ try {
 
 // Google/Vertex tool-cap: discovery selection + prepared.stream wrap (node:test).
 try {
-  execFileSync(process.execPath, ['--test', join(root, 'src', 'google-tool-cap', 'expose.test.mjs'), join(root, 'src', 'google-tool-cap', 'wrap.test.mjs'), join(root, 'src', 'google-tool-cap', 'scenes.test.mjs'), join(root, 'src', 'google-tool-cap', 'find-tools.test.mjs'), join(root, 'src', 'google-tool-cap', 'selector-hints.test.mjs')], { stdio: 'pipe' })
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'google-tool-cap', 'expose.test.mjs'), join(root, 'src', 'google-tool-cap', 'wrap.test.mjs'), join(root, 'src', 'google-tool-cap', 'scenes.test.mjs'), join(root, 'src', 'google-tool-cap', 'groups.test.mjs'), join(root, 'src', 'google-tool-cap', 'find-tools.test.mjs'), join(root, 'src', 'google-tool-cap', 'selector-hints.test.mjs'), join(root, 'src', 'chatroom', 'group-suite.test.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push('src/google-tool-cap failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
 }

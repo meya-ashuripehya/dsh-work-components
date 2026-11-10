@@ -75,6 +75,7 @@ import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
 import { createPreCompactionHistoryFeature, createCompanionCompactionFeature } from './session-history/index.mjs'
 import { createGoogleToolCapFeature, GOOGLE_TOOL_CAP_KEYS } from './google-tool-cap/index.mjs'
+import { labelsFromRegistration } from './google-tool-cap/groups.mjs'
 import { createGoogleSchemaGuard } from './google-schema/wrap.mjs'
 import { createStickersFeature, handleStickersApi } from './stickers/index.mjs'
 import { createCrossSessionFeature } from './channels/cross-session-feature.mjs'
@@ -659,7 +660,8 @@ export function apply(ctx, config) {
   const notes = createNotesFeature(ctx, () => current)
   const preCompactionHistory = createPreCompactionHistoryFeature(ctx, () => current)
   const companionCompaction = createCompanionCompactionFeature(ctx, () => current)
-  const googleToolCap = createGoogleToolCapFeature(ctx, () => current)
+  const groupLabels = labelsFromRegistration(COMPONENTS)
+  const googleToolCap = createGoogleToolCapFeature(ctx, () => current, { groupLabels })
   const googleSchemas = createGoogleSchemaGuard(ctx)
   const stickers = createStickersFeature(ctx, () => current)
   const crossSessionMemory = createCrossSessionFeature(ctx, () => current)
@@ -687,6 +689,7 @@ export function apply(ctx, config) {
     onChatsChanged: () => { void telegram.sync() },
     onMembersChanged: () => refreshMcRoomSeats(),
     resolveMcInfo: createMcPresenceResolver({ getConfig: () => current }),
+    groupLabels,
   })
   // 「多模态 › 视频理解」：聊天室直接读本组件的设置；会话工具用本组件的密钥 videoGeminiKey，代理沿用聊天室的 Gemini 路由
   const videoGemini = { resolveKey: async () => resolveVideoKey(current), fetch: () => chatroom.gemini?.fetch?.() }

@@ -13,7 +13,7 @@ export const OPEN_CARD_NAMES = new Set([OPEN_CARD_NAME, READ_RESULT_NAME])
 
 export const FIND_TOOLS = {
   name: FIND_TOOLS_NAME,
-  description: 'Search the world\'s console (the DSH tool catalog) for tools that can do what you need (files, web, apps, MCP servers, etc.). Describe the capability in plain words. Up to 3 matching tools are added to the room toolset (shared by everyone in the room) and become callable from your next step. Tools already in the toolset are listed in your tools; call them directly instead of searching again. Whenever none of your currently available tools exactly matches the task, call find_tools first to check whether another suitable tool exists, before answering without a tool, guessing, or saying you can\'t do it.',
+  description: 'Search the world\'s console (the DSH tool catalog) for tools that can do what you need (files, web, apps, MCP servers, etc.). An exact service, MCP namespace, or tool-group name (case-insensitive, ignoring surrounding spaces) adds every enabled tool in that group that this turn may use. Any other query adds at most 3 matching tools. Tools already in the toolset are listed in your tools; call them directly instead of searching again. Whenever none of your currently available tools exactly matches the task, call find_tools first to check whether another suitable tool exists, before answering without a tool, guessing, or saying you can\'t do it.',
   parameters: {
     type: 'object',
     properties: { query: { type: 'string', description: 'What you need a tool for, e.g. "read a local text file" or "search GitHub issues".' } },
@@ -69,7 +69,11 @@ export function listCatalog(tools) {
   for (const s of list) {
     if (!s || typeof s.name !== 'string' || isCatalogExcluded(s.name) || seen.has(s.name)) continue
     seen.add(s.name)
-    out.push({ name: s.name, description: String(s.description || ''), parameters: s.parameters && typeof s.parameters === 'object' ? s.parameters : { type: 'object', properties: {} } })
+    const row = { name: s.name, description: String(s.description || ''), parameters: s.parameters && typeof s.parameters === 'object' ? s.parameters : { type: 'object', properties: {} } }
+    for (const key of ['serverName', 'namespace', 'group', 'serverTitle', 'serverLabel', 'groupTitle', 'groupLabel']) {
+      if (s[key] != null && String(s[key]).trim()) row[key] = String(s[key])
+    }
+    out.push(row)
   }
   return out
 }

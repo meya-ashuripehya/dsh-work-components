@@ -262,6 +262,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
       return { messages: await store.readMessages(roomId), binned: Object.keys((meta && meta.cardBin) || {}) }
     },
     getUserName: () => String(roomConfig().userName || '用户'),
+    groupLabels: () => options.groupLabels || [],
   }))
 
   function credentials() {
