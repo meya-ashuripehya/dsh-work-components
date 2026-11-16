@@ -13,6 +13,9 @@ describe('scenes routing', () => {
   it('mcpServerOf parses mcp__desktop__click', () => {
     assert.equal(mcpServerOf('mcp__desktop__click'), 'desktop')
     assert.equal(mcpServerOf('bash'), '')
+    assert.equal(mcpServerOf('mcp__figma_desktop__click'), 'figma_desktop')
+    assert.equal(mcpServerOf('mcp__chrome-devtools__evaluate'), 'chrome-devtools')
+    assert.equal(mcpServerOf('mcp__Figma__get'), 'figma')
   })
 
   it('desktop-ui query matches desktop scene and demotes windows', () => {

@@ -517,6 +517,14 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 
 按版本从新到旧整理，依据 git 标签、提交记录与 [GitHub Releases](https://github.com/meya-ashuripehya/dsh-work-components/releases)。
 
+### 0.4.4-beta.1（预览版，2026-11-16）
+
+- 修改：设置页再次隐藏「游戏」分组中的 Minecraft、文明 VI、视觉入口（实现仍保留在仓库中，去掉 hidden 即可恢复）；本预览以 npm `beta` 标签发布，不移动 `latest`。
+- 新增：「通道 › QQ」、Telegram / QQ 主动发送、跨会话记忆、Google 工具查找、表情包、陪伴压缩指令，以及席位管理（设置页默认隐藏）。
+- 新增：沉浸工具（指定预设的前台会话只看到「门」，办事交给后台助手）；通道过程提示可按设置隐藏。
+- 修复：Gemini / Vertex 工具 schema 净化，QQ 通道元数据 / harness 与检查脚本问题，以及 yt-dlp 安装平台标记等。
+- 说明：本预览包含 0.4.3 之后已合入 main 的改动，以及与通道和工具查找相关的待发布整理。Minecraft / 文明 VI / 视觉在本机上的后续实现未纳入本预览。
+
 ### 0.4.3（2026-10-16）
 
 - 修复：Gmail 组件移除旧版邮件中转模式（地址和密码留空时沿用本机已保存的邮箱）；现在必须在设置中填写 Gmail 地址和应用专用密码。之前靠留空沿用的用户，组件会提示「请填写 Gmail 地址和应用专用密码」。

@@ -12,7 +12,7 @@
 import { PASS_TOKEN, isPass, stripSelfPrefix, parseOwnerCommand } from './directives.mjs'
 import { cardLine, cardTitle } from './tool-results.mjs'
 import { hiddenFromAi } from './card-bin.mjs'
-import { isPromptCandidate } from './ctx-compress.mjs'
+import { contextWindow } from './read-context.mjs'
 import { stepCountsLine } from './cursor.mjs'
 import { planImageWindow, attachmentLine, IMAGE_WINDOW, VIDEO_SNAPSHOT_KEYS } from './attachments.mjs'
 
@@ -212,9 +212,8 @@ export function isBudgetChatter(m) {
 }
 
 export function buildPrompt({ seat, seats, userName, rules, messages, maxHistory = 0, mainName, away = [], extraUser, toolsInfo, vision = false, visionRelay = false, imageWindow = IMAGE_WINDOW, attachmentMeta, binned, videoInput = false, contextSummary = '', contextUntilSeq = 0, mcInfo = null, memoryInject = '' }) {
-  const inBin = (m) => !!binned && typeof binned.has === 'function' && binned.has(m.id)
   const until = Math.max(0, Math.floor(Number(contextUntilSeq) || 0))
-  let log = (messages || []).filter((m) => isPromptCandidate(m, until) && !(m.kind === 'tool' && inBin(m)))
+  let log = contextWindow(messages, { untilSeq: until, binned, limit: maxHistory })
   // Recent window only (chatroomMaxHistory is the window size; 0 = no window cap).
   if (maxHistory > 0 && log.length > maxHistory) log = log.slice(-maxHistory)
   // At most one rolling total summary, before the recent window.

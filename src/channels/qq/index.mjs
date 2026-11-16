@@ -298,6 +298,9 @@ export function createQQChannel(ctx, getConfig, options = {}) {
 
   const api = {
     sync,
+    async pauseBindings() { s.key = null; ++s.gen; await stopHandle() },
+    /** Binding storage is cached by the live harness; reload after an external control-plane update. */
+    async refreshBindings() { s.key = null; await stopHandle(); return sync() },
     resync() { if (s.handle) return Promise.resolve(); s.key = null; return sync() },
     detectConflict: () => detectConflict(ctx),
 

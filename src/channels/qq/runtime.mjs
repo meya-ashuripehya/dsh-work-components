@@ -24,6 +24,8 @@ import { Config as QQConfig, QQAdapter } from '@wsz987/channel-qq'
 import { join } from 'node:path'
 import { DENY_MESSAGE, createOwnerGate, installOwnerGate, setActiveGate, clearActiveGate, resolveAuthorizedIds } from './owner-gate.mjs'
 import { installPersonMemoryInject, installAssistantMemoryWrite } from '../person-memory-inject.mjs'
+import { installProcessHide } from '../process-hide.mjs'
+import { registerOwnerGate as registerImmersiveGate } from '../../immersive/bridge.mjs'
 import { MAIN_ACCOUNT, accountRouteOf } from './accounts.mjs'
 export { accountRouteOf, routeFromSeat } from './accounts.mjs'
 import { buildReplayEvent, notePendingDiscover, pendingInfoOfEvent } from '../../qq/pending-discover.mjs'
@@ -35,6 +37,7 @@ installOwnerGate(harness.ReplyContextStore)
 installQQSessionOriginLink(harness.ReplyContextStore)
 installPersonMemoryInject(harness.ChannelHarnessBridge)
 installAssistantMemoryWrite(harness.ReplyRouter)
+installProcessHide(harness.ReplyRouter)
 
 export { DENY_MESSAGE, createOwnerGate, resolveAuthorizedIds }
 
@@ -48,6 +51,7 @@ export const ACCOUNT_ID = 'main'
 /** 冒烟 / 检查用：产物里至少要带上这些标记。 */
 export const PATCH_MARKERS = {
   ownerGate: harness.ReplyContextStore?.prototype?.__dshOwnerGate === true,
+  processHide: harness.ReplyRouter?.prototype?.__dshProcessHide === true,
   harnessPreempt: Object.prototype.hasOwnProperty.call(harness.Config({}), 'inboundPreempt'),
   harnessSegments: typeof harness.ReplyRouter?.prototype?.flushProcess === 'function',
   channelIdQQ: CHANNEL_ID === 'qq',
@@ -396,8 +400,14 @@ export function startQQ(ctx, options) {
             getAgent: (sessionId) => { try { return c.agents?.get?.(sessionId) } catch { return undefined } },
           })
           setActiveGate(gate)
+          // 沉浸模式（主产物）要在这一轮判断「是不是所有者」：通道产物的闸门状态只在本文件里，经 globalThis 桥交出去。
+          const offImmersiveGate = registerImmersiveGate(gate)
           const offGuard = c.tools.guard((exec) => gate.check(exec))
-          c.effect?.(() => () => { try { offGuard?.() } catch { /* ignore */ } clearActiveGate(gate) })
+          c.effect?.(() => () => {
+            try { offGuard?.() } catch { /* ignore */ }
+            try { offImmersiveGate() } catch { /* ignore */ }
+            clearActiveGate(gate)
+          })
 
           const baseCreate = (signal) => c.channels.createAdapterContext({ channelId: CHANNEL_ID, signal })
           mountChannelAdapter(c, adapter, (signal) => {

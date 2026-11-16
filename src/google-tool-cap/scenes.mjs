@@ -50,12 +50,16 @@ export function matchScenes(query, opts = {}) {
 }
 
 /**
- * MCP server id from tool name: mcp__desktop__click → desktop
+ * MCP server id from a registered tool name.
+ * Form is `mcp__<server>__<tool>`. The server segment may contain `_` and `-`
+ * (`mcp__figma_desktop__click`, `mcp__chrome-devtools__evaluate`). The separator
+ * is the first `__` after the `mcp__` prefix. The id is lowercased so `Figma`
+ * and `figma` are one namespace.
  * @param {string} name
  */
 export function mcpServerOf(name) {
-  const m = String(name || '').match(/^mcp__([^_]+)__/)
-  return m ? m[1] : ''
+  const m = /^mcp__(.+?)__(.+)$/i.exec(String(name || ''))
+  return m ? m[1].toLowerCase() : ''
 }
 
 /**

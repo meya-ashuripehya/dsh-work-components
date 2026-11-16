@@ -32,10 +32,10 @@ test('selector: parses JSON, drops unknown names, caps at 3, tolerates fences / 
 
 test('catalog excludes room-internal and session-bound tools', () => {
   const tools = { schemas: () => [{ name: 'find_tools' }, { name: 'read_file', description: 'r', parameters: { type: 'object' } }, { name: 'ask_user_question' }, { name: 'read_file' }, { name: 'mcp__gamebot-minecraft__gamebot_connect', description: 'legacy' }, { name: 'mc_connect', description: 'npc', parameters: { type: 'object' } }] }
-  assert.deepEqual(listCatalog(tools).map((t) => t.name), ['read_file', 'mc_connect'])
+  assert.deepEqual(listCatalog(tools).map((t) => t.name), ['read_file'])
 })
 
-test('member turns always see mc_* and never the legacy gamebot bridge', async () => {
+test('room turns see only read-only Minecraft tools and cannot take over game actions', async () => {
   const dir = await tmp()
   try {
     const tk = createChatroomTools({
@@ -44,7 +44,7 @@ test('member turns always see mc_* and never the legacy gamebot bridge', async (
         schemas: () => [
           { name: 'web_search', description: 'search', parameters: { type: 'object', properties: {} } },
           { name: 'mcp__gamebot-minecraft__gamebot_connect', description: 'legacy', parameters: { type: 'object', properties: {} } },
-          { name: 'mc_connect', description: 'connect your npc', parameters: { type: 'object', properties: {} } },
+          ...['mc_observe', 'mc_status', 'mc_act', 'mc_takeover'].map((name) => ({ name, parameters: { type: 'object', properties: {} } })),
           { name: 'run_shell', description: 'shell', parameters: { type: 'object', properties: {} } },
         ],
       }),
@@ -53,12 +53,14 @@ test('member turns always see mc_* and never the legacy gamebot bridge', async (
     })
     await tk.toolsets.add('room', ['mcp__gamebot-minecraft__gamebot_connect', 'run_shell', 'web_search'], { max: 12 })
     const member = (await tk.schemas('room', { owner: false })).map((t) => t.name)
-    assert.ok(member.includes('mc_connect'))
+    assert.ok(member.includes('mc_observe'))
+    assert.ok(!member.includes('mc_act') && !member.includes('mc_takeover'))
     assert.ok(member.includes('web_search'))
     assert.ok(!member.includes('run_shell'))
     assert.ok(!member.some((name) => name.startsWith('mcp__gamebot')))
     const owner = (await tk.schemas('room', { owner: true })).map((t) => t.name)
-    assert.ok(owner.includes('mc_connect'))
+    assert.ok(owner.includes('mc_status'))
+    assert.ok(!owner.includes('mc_act') && !owner.includes('mc_takeover'))
     assert.ok(owner.includes('run_shell'))
     assert.ok(!owner.some((name) => name.startsWith('mcp__gamebot')))
   } finally { await rm(dir, { recursive: true, force: true }) }
@@ -103,7 +105,7 @@ test('gate: local = owner, telegram only the owner id; non-owner only gets OPEN_
   assert.equal(denyReason('run_shell', { owner: true, inToolset: true }), null)
   assert.match(denyReason('run_shell', { owner: true, inToolset: false }), /find_tools/)
   assert.match(denyReason('mcp__gamebot-minecraft__gamebot_connect', { owner: true, inToolset: true }), /mc_/)
-  assert.equal(denyReason('mc_act', { owner: false, inToolset: false, gameTurn: false }), null)
+  assert.match(denyReason('mc_act', { owner: true, inToolset: true, gameTurn: false }), /房间轮聊不直接执行/)
   assert.deepEqual(allowedNames(['web_search', 'mcp__gamebot-minecraft__gamebot_observe', 'run_shell'], true), ['web_search', 'run_shell'])
 })
 

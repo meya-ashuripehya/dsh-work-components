@@ -12,6 +12,13 @@ const root = resolve(import.meta.dirname, '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const problems = []
 
+// Continuous Minecraft autonomy, joining, privacy, and model/tool boundaries.
+try {
+  execFileSync(process.execPath, ['--test', ...['mc-phases.test.mjs', 'mc-autonomy.test.mjs', 'mc-action-verification.test.mjs', 'mc-runtime-state.test.mjs', 'members.test.mjs'].map((name) => join(root, 'src', 'components', 'gamebot', name))], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('Minecraft autonomy failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((line) => /^not ok|Error|assert/i.test(line)).slice(0, 12).join('\n'))
+}
+
 const entries = [
   'lib/index.mjs',
   'lib/local-loader-worker.mjs',
@@ -237,9 +244,15 @@ try {
 
 // Google/Vertex tool-cap: discovery selection + prepared.stream wrap (node:test).
 try {
-  execFileSync(process.execPath, ['--test', join(root, 'src', 'google-tool-cap', 'expose.test.mjs'), join(root, 'src', 'google-tool-cap', 'wrap.test.mjs'), join(root, 'src', 'google-tool-cap', 'scenes.test.mjs'), join(root, 'src', 'google-tool-cap', 'find-tools.test.mjs'), join(root, 'src', 'google-tool-cap', 'selector-hints.test.mjs')], { stdio: 'pipe' })
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'google-tool-cap', 'expose.test.mjs'), join(root, 'src', 'google-tool-cap', 'wrap.test.mjs'), join(root, 'src', 'google-tool-cap', 'scenes.test.mjs'), join(root, 'src', 'google-tool-cap', 'groups.test.mjs'), join(root, 'src', 'google-tool-cap', 'find-tools.test.mjs'), join(root, 'src', 'google-tool-cap', 'selector-hints.test.mjs'), join(root, 'src', 'chatroom', 'group-suite.test.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push('src/google-tool-cap failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
+}
+// 沉浸工具（door + 后台助手）：角色收敛 / 访客开放集合 / 助手会话池 / 请求改写 / 通道过程隐藏（node:test，假宿主）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'immersive', 'policy.test.mjs'), join(root, 'src', 'immersive', 'wrap.test.mjs'), join(root, 'src', 'immersive', 'helper.test.mjs'), join(root, 'src', 'immersive', 'immersive.test.mjs'), join(root, 'src', 'channels', 'process-hide.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/immersive failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^\s*not ok|Error|assert/i.test(l)).slice(0, 20).join('\n'))
 }
 // Telegram 通道：群消息映射、授权用户工具闸门、群聊预设路由（node:test）。
 for (const file of ['group-inbound.test.mjs', 'owner-gate.test.mjs', 'accounts.test.mjs', 'group-conflict.test.mjs', 'dm-pending.test.mjs']) {

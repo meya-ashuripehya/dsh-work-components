@@ -8,7 +8,8 @@
  */
 import { defineTool } from '../../vendor/dsh-tools/schema.js'
 import { selectTools, listCatalog, lexicalCurrentMatch } from '../chatroom/tool-selector.mjs'
-import { matchScenes, annotateCatalog, lexicalSceneMatch, suiteNamesForScenes } from './scenes.mjs'
+import { matchScenes, annotateCatalog, lexicalSceneMatch, suiteNamesForScenes, SUITE_CAP } from './scenes.mjs'
+import { exactGroupMatch, declarationRoom, declarationLimitNote } from './groups.mjs'
 
 export const SESSION_FIND_TOOLS_NAME = 'find_tools'
 
@@ -17,7 +18,8 @@ export const SESSION_FIND_TOOLS = {
   description:
     'Search the DSH tool catalog (including MCP servers) for tools that match a capability. ' +
     'Use when none of your currently listed tools cover the task — especially specialized desktop UI, browser, or OS tools that may be hidden under the Google 512-tool cap. ' +
-    'Describe what you need in plain words. Matching tools are pinned for this session and become callable on the next step. When the query matches a scene (e.g. browser/desktop/windows), the full preferServers suite is pinned; otherwise up to 3 tools from LLM/lexical pick. ' +
+    'Describe what you need in plain words. An exact service, MCP namespace, or tool-group name (case-insensitive, ignoring surrounding spaces) pins every enabled tool in that group. A scene query (browser/desktop/windows) pins that scene\'s preferServers suite. Any other query pins up to 3 tools. ' +
+    'Pins that do not fit in the provider functionDeclarations cap are not added; the reply lists only tools actually pinned. ' +
     'Prefer calling find_tools before claiming a capability is unavailable.',
   parameters: {
     type: 'object',
@@ -76,14 +78,56 @@ export function createSessionFindTools(deps) {
 
     const sessionId = (deps.getSessionId?.(exec) ?? callerSessionId(exec)) || undefined
     const current = deps.pins.list(sessionId)
+    let raw = []
+    try { const s = toolsSvc?.schemas?.(); if (Array.isArray(s)) raw = s } catch { raw = [] }
+    const limit = declarationRoom(raw.length ? raw : catalog)
+    const labels = typeof deps.groupLabels === 'function' ? deps.groupLabels() : (deps.groupLabels || [])
+    const allow = typeof deps.allow === 'function' ? deps.allow : null
+
+    const exact = exactGroupMatch(query, catalog, { labels, allow })
+    if (exact?.matched) {
+      if (exact.ambiguous?.length) {
+        return {
+          text: `"${query}" matches more than one registered group (${exact.ambiguous.join(', ')}). Nothing was pinned. Query one server name.`,
+          ok: true,
+          query,
+          tools: [],
+          ambiguous: exact.ambiguous,
+          limit,
+        }
+      }
+      if (!exact.tools.length) {
+        const why = exact.denied.length
+          ? `${exact.denied.length} enabled tool(s) in this group are not permitted in this turn and were not pinned.`
+          : 'No enabled tools from this group are registered.'
+        return {
+          text: `"${exact.server}" is a registered group. ${why}`,
+          ok: true,
+          query,
+          tools: [],
+          denied: exact.denied,
+          server: exact.server,
+          limit,
+        }
+      }
+      return pinSelection({
+        tools: exact.tools,
+        reason: `exact group: ${exact.server}`,
+        scenes: [],
+        denied: exact.denied,
+      })
+    }
+
     const scenes = matchScenes(query, { current })
     const { catalog: annotated, hints } = annotateCatalog(catalog, scenes)
 
-    // Scene hit → pin full preferServers suite (bypass maxPerFind / top-3).
+    // Scene hit → pin that scene's preferServers suite (still not an exact namespace match).
     const suite = suiteNamesForScenes(catalog, scenes)
     let sel = { tools: [], reason: '', error: '' }
     if (scenes.length && suite.length) {
-      sel = { tools: suite, reason: 'scene suite expand', error: '' }
+      const uncapped = suiteNamesForScenes(catalog, scenes, Number.MAX_SAFE_INTEGER)
+      const capped = uncapped.length > suite.length ? ` (SUITE_CAP ${SUITE_CAP}; ${uncapped.length - suite.length} more not included)` : ''
+      sel = { tools: suite, reason: 'scene suite expand' + capped, error: '' }
     } else {
       const finder = deps.getFinder?.() || {}
       const llm = deps.getLlm?.()
@@ -124,33 +168,59 @@ export function createSessionFindTools(deps) {
         query,
         tools: [],
         scenes: scenes.map((s) => s.id),
+        limit,
       }
     }
 
-    const { added, pins } = deps.pins.add(sessionId, sel.tools)
-    const byName = new Map(catalog.map((t) => [t.name, t]))
-    const lines = sel.tools.map((n) => {
-      const d = String(byName.get(n)?.description || '').replace(/\s+/g, ' ').slice(0, 240)
-      const pin = added.includes(n) ? ' (newly pinned)' : ' (already pinned)'
-      return `- ${n}${pin}: ${d}`
-    })
-    const sceneNote = scenes.length
-      ? `\nScene routing: ${scenes.map((s) => s.id).join(', ')} — specialists preferred over overlapping generalists.`
-      : ''
-    const text =
-      `Pinned for this session (${pins.length} total). Call them on the next step:` +
-      `\n${lines.join('\n')}` +
-      (sel.reason ? `\nReason: ${sel.reason}` : '') +
-      sceneNote
+    return pinSelection({ tools: sel.tools, reason: sel.reason, scenes, denied: [] })
 
-    return {
-      text,
-      ok: true,
-      query,
-      tools: sel.tools,
-      added,
-      pins,
-      scenes: scenes.map((s) => s.id),
+    function pinSelection({ tools, reason, scenes, denied }) {
+      const admission = deps.pins.add(sessionId, tools, { max: limit.room, fill: true })
+      const accepted = admission.accepted
+      const deniedNote = denied?.length ? `\nNot included (${denied.length}): not permitted in this turn.` : ''
+      const limitNote = declarationLimitNote({ ...limit, omitted: admission.omitted.length })
+      if (!accepted.length) {
+        return {
+          text: `No tools pinned for "${query.slice(0, 120)}".${deniedNote}${limitNote ? '\n' + limitNote : ''}${reason ? '\nReason: ' + reason : ''}`,
+          ok: true,
+          query,
+          tools: [],
+          added: [],
+          omitted: admission.omitted,
+          denied: denied || [],
+          pins: admission.pins,
+          scenes: scenes.map((s) => s.id),
+          limit,
+        }
+      }
+      const byName = new Map(catalog.map((t) => [t.name, t]))
+      const lines = accepted.map((n) => {
+        const d = String(byName.get(n)?.description || '').replace(/\s+/g, ' ').slice(0, 240)
+        const pin = admission.added.includes(n) ? ' (newly pinned)' : ' (already pinned)'
+        return `- ${n}${pin}: ${d}`
+      })
+      const sceneNote = scenes.length
+        ? `\nScene routing: ${scenes.map((s) => s.id).join(', ')} — specialists preferred over overlapping generalists.`
+        : ''
+      const text =
+        `Pinned for this session (${admission.pins.length} total). Call them on the next step:` +
+        `\n${lines.join('\n')}` +
+        (reason ? `\nReason: ${reason}` : '') +
+        sceneNote +
+        deniedNote +
+        (limitNote ? `\n${limitNote}` : '')
+      return {
+        text,
+        ok: true,
+        query,
+        tools: accepted,
+        added: admission.added,
+        omitted: admission.omitted,
+        denied: denied || [],
+        pins: admission.pins,
+        scenes: scenes.map((s) => s.id),
+        limit,
+      }
     }
   }
 

@@ -1,6 +1,7 @@
 /**
  * 聊天室工具发现（find_tools）与执行：
- *   - find_tools → DSH DeepSeek 服务商选出 ≤3 个工具 → 加入房间工具集（共享、持久、LRU）。
+ *   - find_tools → 查询若精确等于已注册的服务 / MCP namespace / 工具组名，加入该组里本回合有权使用的全部已启用工具；
+ *     否则由 DSH DeepSeek 服务商选出 ≤3 个工具。两者都加入房间工具集（共享、持久）。
  *   - 工具集中的工具直接经宿主工具注册表执行（tools.get(name).execute），所有者门禁见 ./tool-gate.mjs。
  *   - 每次调用 = 一张卡片（全文存文件，消息带标题 + 预览）；其他成员只看到卡片标题，open_card（旧名 read_tool_result）分页打开。
  *   - search_history（./history-search.mjs）为房间级内置只读工具：与 web_search 一样是默认工具，只查当前房间的聊天记录。
@@ -9,6 +10,8 @@
  */
 import { FIND_TOOLS, OPEN_CARD, FIND_TOOLS_NAME, OPEN_CARD_NAMES, listCatalog, selectTools, lexicalCurrentMatch, summarizeResult, isSessionImageTool } from './tool-selector.mjs'
 import { matchScenes, annotateCatalog, lexicalSceneMatch } from '../google-tool-cap/scenes.mjs'
+import { exactGroupMatch } from '../google-tool-cap/groups.mjs'
+import { VERTEX_FUNCTION_DECLARATIONS_CAP } from '../google-tool-cap/expose.mjs'
 import { createToolsets } from './toolset.mjs'
 import { createToolResults, previewText, charsForTokens, TOOL_DEFAULTS, cardTitle, inlineResult, isBlankResult } from './tool-results.mjs'
 import { isOwnerOnlyTool } from '../channels/telegram/owner-gate.mjs'
@@ -174,7 +177,23 @@ export function clampRenderSize(args) {
   return args
 }
 
-export function createChatroomTools({ roomDir, getTools, getLlm, getSettings, providers, getSeats, getDefaultMain, getSessionId = async () => '', readRoom = null, getUserName = () => '用户', attachments = null, attachmentsEnabled = () => !!attachments, describe, watchVideo, videoEnabled = () => typeof watchVideo === 'function' }) {
+/**
+ * 聊天室 schemas() 里除工具集以外固定带上的声明数量。
+ * 工具集本身的硬上限是 functionDeclarations 512 减去这份预留，避免把全套工具无声裁进 toolsetMax。
+ */
+export function chatroomPinBudget({ history = false, attachments = 0, owner = false, gameTurn = false, webDefaults = 0 } = {}) {
+  let reserved = 2
+  if (history) reserved += 1
+  reserved += Math.max(0, Number(attachments) || 0)
+  reserved += Math.max(0, Number(webDefaults) || 0)
+  reserved += MC_MEMBER_TOOLS.length
+  if (gameTurn) reserved += GAME_ACTION_TOOLS.size
+  else if (owner) reserved += GAME_OWNER_TOOLS.size + GAME_ACTION_TOOLS.size
+  const cap = VERTEX_FUNCTION_DECLARATIONS_CAP
+  return { cap, reserved, room: Math.max(0, cap - reserved) }
+}
+
+export function createChatroomTools({ roomDir, getTools, getLlm, getSettings, providers, getSeats, getDefaultMain, getSessionId = async () => '', readRoom = null, getUserName = () => '用户', attachments = null, attachmentsEnabled = () => !!attachments, describe, watchVideo, videoEnabled = () => typeof watchVideo === 'function', groupLabels = () => [] }) {
   const toolsets = createToolsets(roomDir)
   const attachTools = attachments ? createAttachmentTools({ store: attachments, describe, watch: watchVideo }) : null
   const videoOn = () => typeof watchVideo === 'function' && videoEnabled?.() !== false
@@ -245,6 +264,61 @@ export function createChatroomTools({ roomDir, getTools, getLlm, getSettings, pr
     }
   }
 
+  async function admitExactGroup(roomId, query, cat, { owner, gameTurn, seat }) {
+    let labels = []
+    try {
+      const v = typeof groupLabels === 'function' ? groupLabels() : groupLabels
+      if (Array.isArray(v)) labels = v
+    } catch { labels = [] }
+    const exact = exactGroupMatch(query, cat, {
+      labels,
+      allow: (name) => allowedNames([name], !!owner).includes(name),
+    })
+    if (!exact?.matched) return null
+    const pack = (modelText, data) => ({ isError: false, modelText, room: { tool: FIND_TOOLS_NAME, text: modelText, data } })
+    if (exact.ambiguous?.length) {
+      const modelText = `「${query}」对应多个已注册工具组（${exact.ambiguous.join('、')}），没有加入任何工具。请改用其中一个服务器名。`
+      return pack(modelText, { ok: true, query, tools: [], ambiguous: exact.ambiguous })
+    }
+    if (!exact.tools.length) {
+      const why = exact.denied.length
+        ? `有 ${exact.denied.length} 个已启用工具，但本回合没有使用权限，未加入。`
+        : '当前没有已启用的工具，未加入。'
+      const modelText = `「${exact.server}」是已注册的工具组。${why}`
+      return pack(modelText, { ok: true, query, tools: [], denied: exact.denied, server: exact.server })
+    }
+    const attachN = attachOn() ? ATTACHMENT_TOOLS.filter((t) => t.name !== WATCH_VIDEO_NAME || videoOn()).length : 0
+    const webDefaults = ['web_search', 'web_fetch'].filter((n) => cat.some((t) => t.name === n)).length
+    const budget = chatroomPinBudget({ history: historyOn(), attachments: attachN, owner: !!owner, gameTurn: !!gameTurn, webDefaults })
+    const s = settings()
+    const added = await toolsets.add(roomId, exact.tools, { max: s.toolsetMax, by: seat?.id || '', exact: true, hardMax: budget.room })
+    const held = await toolsets.list(roomId)
+    const heldSet = new Set(held.map((x) => x.name))
+    const callable = exact.tools.filter((n) => heldSet.has(n))
+    const omitted = exact.tools.filter((n) => !heldSet.has(n))
+    const byName = new Map(cat.map((t) => [t.name, t]))
+    const lines = callable.map((n) => `- ${n}: ${String(byName.get(n)?.description || '').replace(/\s+/g, ' ').slice(0, 240)}`)
+    const limitNote = omitted.length
+      ? `\n平台上限：functionDeclarations ${budget.cap}，固定声明预留 ${budget.reserved} 个，工具集最多 ${budget.room} 个。本组 ${exact.tools.length} 个里实际加入 ${callable.length} 个，未加入 ${omitted.length} 个（未加入的当前不能调用）。`
+      : ''
+    const denyNote = exact.denied.length ? `\n权限：${exact.denied.length} 个工具本回合不可用，未加入。` : ''
+    const modelText = callable.length
+      ? `已加入房间工具集（按名称「${exact.server}」，${callable.length} 个可调用，工具集共 ${held.length}）。下一步即可直接调用：\n${lines.join('\n')}\n理由：exact group: ${exact.server}${denyNote}${limitNote}`
+      : `「${exact.server}」匹配到 ${exact.tools.length} 个工具，但没有一个能加入工具集。${denyNote}${limitNote}`
+    return pack(modelText, {
+      ok: true,
+      query,
+      tools: callable,
+      omitted,
+      denied: exact.denied,
+      evicted: added.evicted,
+      toolsetSize: held.length,
+      server: exact.server,
+      reason: `exact group: ${exact.server}`,
+      limit: budget,
+    })
+  }
+
   /**
    * 执行一个工具调用。返回 { modelText, isError, room: { tool, text, data } | null }。
    */
@@ -266,10 +340,12 @@ export function createChatroomTools({ roomDir, getTools, getLlm, getSettings, pr
     if (name === FIND_TOOLS_NAME) {
       const query = String(args.query || '').trim()
       if (!query) return { isError: true, modelText: 'find_tools 需要 query。', room: null }
-      const st = await finderStatus()
-      if (!st.ready) return { isError: true, modelText: `find_tools 不可用：${st.problem}`, room: { tool: FIND_TOOLS_NAME, text: `find_tools 不可用：${st.problem}`, data: { ok: false, query } } }
       const cat = catalog()
       if (!cat.length) return { isError: true, modelText: 'DSH 工具目录为空或不可读。', room: null }
+      const exactReply = await admitExactGroup(roomId, query, cat, { owner, gameTurn, seat, signal })
+      if (exactReply) return exactReply
+      const st = await finderStatus()
+      if (!st.ready) return { isError: true, modelText: `find_tools 不可用：${st.problem}`, room: { tool: FIND_TOOLS_NAME, text: `find_tools 不可用：${st.problem}`, data: { ok: false, query } } }
       const current = await roomToolNames(roomId, cat)
       // Scene / exclusivity: stop overlapping generalists (windows) from shadowing specialists (desktop)
       const scenes = matchScenes(query, { current })
@@ -296,12 +372,18 @@ export function createChatroomTools({ roomDir, getTools, getLlm, getSettings, pr
       const builtin = sel.tools.filter(isDefaultRoomTool)
       const toAdd = sel.tools.filter((n) => !isDefaultRoomTool(n) && !currentSet.has(n))
       if (!sel.tools.length) return { isError: false, modelText: `没有找到合适的工具${sel.error ? '（' + sel.error + '）' : ''}。可换一种说法再试。`, room: { tool: FIND_TOOLS_NAME, text: `查找「${query.slice(0, 60)}」：没有合适的工具`, data: { ok: true, query, tools: [] } } }
-      const r = toAdd.length ? await toolsets.add(roomId, toAdd, { max: s.toolsetMax, by: seat?.id || '' }) : { added: [], evicted: [] }
+      const webDefaults = ['web_search', 'web_fetch'].filter((n) => cat.some((t) => t.name === n)).length
+      const budget = chatroomPinBudget({ history: historyOn(), attachments: attachOn() ? ATTACHMENT_TOOLS.filter((t) => t.name !== WATCH_VIDEO_NAME || videoOn()).length : 0, owner: !!owner, gameTurn: !!gameTurn, webDefaults })
+      const r = toAdd.length ? await toolsets.add(roomId, toAdd, { max: s.toolsetMax, by: seat?.id || '', hardMax: budget.room }) : { added: [], evicted: [], accepted: [], omitted: [] }
+      const heldNow = await toolsets.list(roomId)
+      const heldSet = new Set(heldNow.map((x) => x.name))
+      const listed = sel.tools.filter((n) => isDefaultRoomTool(n) || heldSet.has(n))
       const byName = new Map(cat.map((t) => [t.name, t]))
-      const lines = sel.tools.map((n) => `- ${n}${builtin.includes(n) ? ' (built-in default, always available)' : ''}${!owner && !isOpen(n) ? '（本回合不可用：仅所有者发起的任务可用）' : ''}: ${String(byName.get(n)?.description || '').replace(/\s+/g, ' ').slice(0, 240)}`)
-      const total = (await toolsets.list(roomId)).length
-      const modelText = `已加入房间工具集（${total}/${s.toolsetMax}），下一步即可直接调用：\n${lines.join('\n')}${r.evicted.length ? `\n（因上限移出：${r.evicted.join('、')}）` : ''}${sel.reason ? `\n理由：${sel.reason}` : ''}${available.length ? `\nAlready in your toolset: ${available.join(', ')} — call it directly.` : ''}`
-      return { isError: false, modelText, room: { tool: FIND_TOOLS_NAME, text: `查找「${query.slice(0, 60)}」→ ${sel.tools.join('、')}${r.evicted.length ? `（移出 ${r.evicted.join('、')}）` : ''}`, data: { ok: true, query, tools: sel.tools, available, evicted: r.evicted, toolsetSize: total } } }
+      const lines = listed.map((n) => `- ${n}${builtin.includes(n) ? ' (built-in default, always available)' : ''}${!owner && !isOpen(n) ? '（本回合不可用：仅所有者发起的任务可用）' : ''}: ${String(byName.get(n)?.description || '').replace(/\s+/g, ' ').slice(0, 240)}`)
+      const total = heldNow.length
+      const dropped = sel.tools.filter((n) => !listed.includes(n))
+      const modelText = `已加入房间工具集（${total}/${s.toolsetMax}），下一步即可直接调用：\n${lines.join('\n')}${r.evicted.length ? `\n（因上限移出：${r.evicted.join('、')}）` : ''}${dropped.length ? `\n未加入（当前不能调用）：${dropped.join('、')}` : ''}${sel.reason ? `\n理由：${sel.reason}` : ''}${available.length ? `\nAlready in your toolset: ${available.join(', ')} — call it directly.` : ''}`
+      return { isError: false, modelText, room: { tool: FIND_TOOLS_NAME, text: `查找「${query.slice(0, 60)}」→ ${listed.join('、')}${r.evicted.length ? `（移出 ${r.evicted.join('、')}）` : ''}`, data: { ok: true, query, tools: listed, available, evicted: r.evicted, omitted: dropped, toolsetSize: total } } }
     }
     if (name === SEARCH_HISTORY_NAME) {
       if (!historyOn()) return { isError: true, modelText: 'search_history is not available here.', room: null }

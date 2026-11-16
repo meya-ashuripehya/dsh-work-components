@@ -38,6 +38,8 @@ import { dmSenderOf, isUnauthorizedDm, noteDmDiscover } from '../../telegram/dm-
 import { installBoardsLink, mountBoardsBridge } from './boards-link.mjs'
 import { installCardsLink } from './cards-link.mjs'
 import { installPersonMemoryInject, installAssistantMemoryWrite } from '../person-memory-inject.mjs'
+import { installProcessHide } from '../process-hide.mjs'
+import { registerOwnerGate as registerImmersiveGate } from '../../immersive/bridge.mjs'
 import { buildChannelMessage, channelMessageIsEmpty } from '../outbound-file.mjs'
 
 installMapPlaceDelivery(harness.ReplyRouter)
@@ -49,6 +51,7 @@ installBoardsLink(harness.ReplyContextStore, harness.ChannelHarnessBridge)
 installCardsLink(harness.ChannelHarnessBridge)
 installPersonMemoryInject(harness.ChannelHarnessBridge)
 installAssistantMemoryWrite(harness.ReplyRouter)
+installProcessHide(harness.ReplyRouter)
 
 export { DENY_MESSAGE, createOwnerGate, resolveAuthorizedIds, setGroupPreset }
 
@@ -64,6 +67,7 @@ export const PATCH_MARKERS = {
   mapPlace: harness.ReplyRouter?.prototype?.__dshMapPlace === true,
   calendarDelivery: harness.ReplyRouter?.prototype?.__dshCalendar === true,
   ownerGate: harness.ReplyContextStore?.prototype?.__dshOwnerGate === true,
+  processHide: harness.ReplyRouter?.prototype?.__dshProcessHide === true,
   groupRoute: harness.AgentRouter?.prototype?.__dshGroupRoute === true,
   boardsLink: harness.ReplyContextStore?.prototype?.__dshBoardsLink === true && harness.ChannelHarnessBridge?.prototype?.__dshBoardsInbound === true,
   cardsLink: harness.ChannelHarnessBridge?.prototype?.__dshCardsInbound === true,
@@ -497,8 +501,14 @@ export function startTelegram(ctx, options) {
             getAgent: (sessionId) => { try { return c.agents?.get?.(sessionId) } catch { return undefined } },
           })
           setActiveGate(gate)
+          // 沉浸模式（主产物）要在这一轮判断「是不是所有者」：通道产物的闸门状态只在本文件里，经 globalThis 桥交出去。
+          const offImmersiveGate = registerImmersiveGate(gate)
           const offGuard = c.tools.guard((exec) => gate.check(exec))
-          c.effect?.(() => () => { try { offGuard?.() } catch { /* ignore */ } clearActiveGate(gate) })
+          c.effect?.(() => () => {
+            try { offGuard?.() } catch { /* ignore */ }
+            try { offImmersiveGate() } catch { /* ignore */ }
+            clearActiveGate(gate)
+          })
           // 棋类 / 牌类：按收到消息的机器人把图片发回去。
           const upstreams = new Map(entries.map((e) => [e.id, e.adapter.upstream]))
           const offBoards = mountBoardsBridge(upstreams)

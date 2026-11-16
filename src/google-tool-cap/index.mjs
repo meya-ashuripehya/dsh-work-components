@@ -49,7 +49,7 @@ function resolveMarkAgentLoopRequest() {
   }
 }
 
-export function createGoogleToolCapFeature(ctx, getConfig) {
+export function createGoogleToolCapFeature(ctx, getConfig, extras = {}) {
   const log = ctx.logger ?? console
   const pins = createPinStore()
   const state = { status: 'off', detail: '未启用', gen: 0, fork: null }
@@ -99,6 +99,7 @@ export function createGoogleToolCapFeature(ctx, getConfig) {
         getFinder: finderConfig,
         getSessionId: (exec) => exec?.agent?.id || exec?.sessionId || exec?.session?.id,
         maxPerFind: 3,
+        groupLabels: () => extras.groupLabels || [],
       })
       tools.register(findTool)
       registeredTool = findTool

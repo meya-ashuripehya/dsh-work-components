@@ -61,7 +61,7 @@ import { mountSessionControls, handleSessionApi } from './session-controls/index
 import { roomConflictMessage } from './channels/telegram/group-conflict.mjs'
 import { createTelegramChannel, telegramSchemaShape, TELEGRAM_BOTS_KEY } from './channels/telegram/index.mjs'
 import { createQQChannel, qqSchemaShape } from './channels/qq/index.mjs'
-import { aliasPatchFromBots, migrateTelegramBots, syncAliasesIntoBots } from './channels/telegram/accounts.mjs'
+import { aliasPatchFromBots, migrateTelegramBots, resolveChannelAccounts, syncAliasesIntoBots } from './channels/telegram/accounts.mjs'
 import { classifyPreview, loadLocalFile, mmFileBlock, registerFilePreview, streamFilePreview, textPreview } from './channels/telegram/files.mjs'
 import { extractContentPreview } from './channels/telegram/office-preview.mjs'
 import { createMapFeature } from './map/index.mjs'
@@ -75,10 +75,13 @@ import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
 import { createPreCompactionHistoryFeature, createCompanionCompactionFeature } from './session-history/index.mjs'
 import { createGoogleToolCapFeature, GOOGLE_TOOL_CAP_KEYS } from './google-tool-cap/index.mjs'
+import { labelsFromRegistration } from './google-tool-cap/groups.mjs'
 import { createGoogleSchemaGuard } from './google-schema/wrap.mjs'
 import { createStickersFeature, handleStickersApi } from './stickers/index.mjs'
 import { createCrossSessionFeature } from './channels/cross-session-feature.mjs'
 import { createProactiveSendFeature } from './channels/proactive-send.mjs'
+import { createImmersiveFeature } from './immersive/index.mjs'
+import { listChannelBindings, listSessionChoices, rebindChannelConversation } from './channels/session-binding.mjs'
 import { handleBoardsApi, handleBoardsPage } from './boards/api.mjs'
 import { createBoardsFeature } from './boards/index.mjs'
 import { createGamebotMembersFeature } from './components/gamebot/members-tools.mjs'
@@ -347,6 +350,16 @@ export const SettingsSchema = z.object({
   googleToolCapEnabled: z.boolean().default(true).description('启用 Google/Vertex 工具查找（discovery）。开启（默认）：工具超过 512 时只暴露核心非 MCP + find_tools + 会话钉选，避免 Vertex functionDeclarations 上限 INVALID_ARGUMENT。关闭：恢复预 discovery 行为，原样传入全部可用工具；工具很多时可能再次触发 Vertex 512 上限（400）。'),
   stickersEnabled: z.boolean().default(true).description('启用表情包工具：sticker_search / sticker_save / sticker_send。本地维护标签化图片库，发送时按普通图片出站。默认开启。关闭后卸下工具，已保存的表情包仍保留。'),
   stickersDefaultPackId: z.string().default('').description('导入/保存未指定包时使用的默认表情包 id；留空则使用名为「默认」的包。'),
+  immersiveEnabled: z.boolean().default(false).description('沉浸工具（默认关闭）：让纯对话预设的角色在不跳戏的前提下用上全部工具。前台角色在模型请求里只看到一把「门」（errand），不再看到工具清单；办事交给隐藏的后台助手会话（拿真正的工具，含你装的任何 MCP），结果当作一段普通的话还回去，由角色用自己的口吻转述。陌生人触发时只用后台助手的「访客」档，只放行 owner-gate 开放集合里的无副作用工具；改本机的事仍只给所有者。预设锁在会话上，本功能不改会话预设，是在请求层收敛工具。'),
+  immersivePresets: z.string().default('qq-bare').description('沉浸前台预设：这些预设的会话只看到「门」，逗号/空格分隔。默认 qq-bare（纯对话）。'),
+  immersiveHelperPreset: z.string().default('qq-tools-only').description('后台助手使用的预设（需带全套工具插件）。默认 qq-tools-only。助手会话在会话列表里可见：「后台助手（所有者）」「后台助手（访客）」。'),
+  immersiveKeepTools: z.string().default('').description('前台角色除了「门」以外直接保留的工具名，逗号/空格分隔。留空 = 表情包两件套 sticker_search、sticker_send；填 none 表示一个都不留。依赖当前会话上下文的工具（如 group_memory）需要放在这里，后台助手拿不到会话上下文。'),
+  immersiveHint: z.string().default('').description('追加到前台角色系统提示末尾的说明（对方看不到）：告诉模型它有 errand 这个真实功能、什么时候该调、不要在剧情里假装做、不要向对方提起。纯对话预设不带任何工具使用指引，不补这一段模型基本不会去调。留空 = 用内置说明；填 none = 不追加；填别的 = 用你自己的文字。'),
+  immersiveErrandTimeoutSec: z.number().default(90).description('单件差事的总时限（秒，含排队），10–600，默认 90。超时取消并让角色收到一句「没办成」。'),
+  immersiveHelperMaxTurns: z.number().default(30).description('每个后台助手会话办满多少件差事后换新会话，5–200，默认 30。旧会话保留在会话列表里。'),
+  immersiveHideProcess: z.boolean().default(true).description('沉浸前台会话不对外显示工具调用提示与思考过程（QQ / Telegram）。默认开启。'),
+  immersiveHelperProvider: z.string().default('').description('可选：后台助手使用的模型供应商。留空沿用 DSH 默认模型。'),
+  immersiveHelperModel: z.string().default('').description('可选：后台助手使用的模型。留空沿用 DSH 默认模型；工具调用多时建议选更稳的模型。'),
   crossSessionMemoryEnabled: z.boolean().default(true).description('总开关：挂载 cross_session_list / cross_session_search，并在 QQ/Telegram 入站时注入短 [person-memory] 称呼摘要。默认开启。关闭后卸下工具并停止摘要。哪些智能体预设参与记忆圈，由席位池中各席位的 crossSessionMemoryEnabled 决定。'),
   crossSessionOwnerTelegramIds: z.string().default('').description('身份关联用的 Telegram 用户 ID（OwnerLink），逗号/空格分隔。用于跨通道识别同一主人。留空使用内置默认（Shiro: 6153059771）。'),
   crossSessionOwnerQqOpenIds: z.string().default('').description('身份关联用的 QQ OpenID（OwnerLink），逗号/空格分隔。用于跨通道识别同一主人。留空使用内置默认（Shiro: B4C6E62A8A0919E62678494F20F30530）。'),
@@ -659,9 +672,11 @@ export function apply(ctx, config) {
   const notes = createNotesFeature(ctx, () => current)
   const preCompactionHistory = createPreCompactionHistoryFeature(ctx, () => current)
   const companionCompaction = createCompanionCompactionFeature(ctx, () => current)
-  const googleToolCap = createGoogleToolCapFeature(ctx, () => current)
+  const groupLabels = labelsFromRegistration(COMPONENTS)
+  const googleToolCap = createGoogleToolCapFeature(ctx, () => current, { groupLabels })
   const googleSchemas = createGoogleSchemaGuard(ctx)
   const stickers = createStickersFeature(ctx, () => current)
+  const immersive = createImmersiveFeature(ctx, () => current, { dir: join(dataDir(), 'immersive'), pins: googleToolCap.pins })
   const crossSessionMemory = createCrossSessionFeature(ctx, () => current)
   const boards = createBoardsFeature(ctx, () => current)
   const cards = createCardsFeature(ctx, () => current)
@@ -687,6 +702,7 @@ export function apply(ctx, config) {
     onChatsChanged: () => { void telegram.sync() },
     onMembersChanged: () => refreshMcRoomSeats(),
     resolveMcInfo: createMcPresenceResolver({ getConfig: () => current }),
+    groupLabels,
   })
   // 「多模态 › 视频理解」：聊天室直接读本组件的设置；会话工具用本组件的密钥 videoGeminiKey，代理沿用聊天室的 Gemini 路由
   const videoGemini = { resolveKey: async () => resolveVideoKey(current), fetch: () => chatroom.gemini?.fetch?.() }
@@ -720,7 +736,7 @@ export function apply(ctx, config) {
       current = scope.get()
       scope.watch?.((next) => {
         current = next
-        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void googleToolCap.sync(); void googleSchemas.sync(); void stickers.sync(); void crossSessionMemory.sync(); void proactiveSend?.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
+        void map.sync(); void gptImage.sync(); void video.sync(); void balance.sync(); void calendar.sync(); void notes.sync(); void preCompactionHistory.sync(); void companionCompaction.sync(); void googleToolCap.sync(); void googleSchemas.sync(); void stickers.sync(); void immersive.sync(); void crossSessionMemory.sync(); void proactiveSend?.sync(); void boards.sync(); void cards.sync(); void minecraftMembers.sync(); void mcControl.sync()
         void (async () => {
           await refreshMcRoomSeats()
           await components.sync()
@@ -874,6 +890,7 @@ export function apply(ctx, config) {
   void googleToolCap.sync()
   void googleSchemas.sync()
   void stickers.sync()
+  void immersive.sync()
   void crossSessionMemory.sync()
   void proactiveSend.sync()
   void boards.sync()
@@ -909,6 +926,7 @@ export function apply(ctx, config) {
       try { await companionCompaction.dispose() } catch {}
       try { await googleToolCap.dispose(); try { googleSchemas.dispose() } catch {} } catch {}
       try { await stickers.dispose() } catch {}
+      try { await immersive.dispose() } catch {}
       try { await crossSessionMemory.dispose() } catch {}
       try { await proactiveSend.dispose() } catch {}
       try { await boards.dispose() } catch {}
@@ -995,6 +1013,7 @@ export function apply(ctx, config) {
             await companionCompaction.sync()
             await googleToolCap.sync()
             await stickers.sync()
+            await immersive.sync()
             await crossSessionMemory.sync()
             await proactiveSend.sync()
             await boards.sync()
@@ -1132,6 +1151,38 @@ export function apply(ctx, config) {
           if (sub === '/dsh/efforts' && req.method === 'GET') {
             const q = url.searchParams
             return sendJson(res, 200, { ok: true, ...await reasoningEfforts(dshCatalog, q.get('provider') || '', q.get('model') || '') })
+          }
+          if (sub === '/channel-bindings' && req.method === 'GET') {
+            const channel = url.searchParams.get('channel') || ''
+            const account = url.searchParams.get('account') || ''
+            if (channel !== 'telegram' && channel !== 'qq') return sendJson(res, 400, { ok: false, error: '未知通道' })
+            const accounts = channel === 'telegram'
+              ? resolveChannelAccounts(current).map((a) => ({ id: a.id, name: a.name, preset: a.preset || '', provider: a.provider || '', model: a.model || '' }))
+              : [{ id: 'main', name: 'QQ', preset: current.qqPreset || '', provider: '', model: '' }]
+            const bindings = await listChannelBindings(channel, account)
+            const sessions = await listSessionChoices({ includeArchived: url.searchParams.get('archived') === '1' })
+            // A projection may be pruned while its durable binding still exists. Keep the current
+            // value selectable so opening the panel can never silently clear that association.
+            for (const binding of bindings) {
+              if (!sessions.some((session) => session.id === binding.sessionId)) {
+                sessions.push({ id: binding.sessionId, title: '当前绑定的会话（元数据不可用）', preset: binding.route?.preset || '', cwd: '', archived: false, lastPromptAt: 0, unavailable: true })
+              }
+            }
+            return sendJson(res, 200, { ok: true, accounts, bindings, sessions })
+          }
+          if (sub === '/channel-bindings/rebind' && req.method === 'POST') {
+            if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
+            const body = JSON.parse(await readBody(req) || '{}')
+            // Both harnesses cache and persist the same file. Drain them before updating it.
+            await Promise.all([telegram.pauseBindings(), qq.pauseBindings()])
+            let result
+            try {
+              result = await rebindChannelConversation({ key: body.key, sessionId: body.sessionId })
+            } finally {
+              await Promise.all([telegram.refreshBindings(), qq.refreshBindings()])
+            }
+            // FileBindingStore is cached in a running harness. Restart only the affected channel after an atomic update.
+            return sendJson(res, 200, { ok: true, ...result })
           }
           if (sub === '/telegram/bots' || sub.startsWith('/telegram/bots/')) {
             if (await telegram.handleApi(req, res, sub, { sendJson, readBody })) return

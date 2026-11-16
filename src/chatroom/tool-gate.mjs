@@ -21,13 +21,16 @@ export const isOpen = (name) => isOpenTool(String(name || ''))
 export const GAME_OWNER_TOOLS = new Set(['board_open', 'board_close', 'board_reset', 'card_open', 'card_close', 'card_reset'])
 /** 看局面、走子、提示：按座位校验，不再经由 OPEN_TOOLS 放行。 */
 export const GAME_ACTION_TOOLS = new Set(['board_look', 'board_play', 'board_hint', 'card_look', 'card_play'])
-/** 聊天室成员各自的 Minecraft NPC。身份在工具内部核对，不看所有者。 */
-export const MC_MEMBER_TOOLS = [
+/** 房间只读世界状态；动作由游戏自主循环或显式手动接管驱动。 */
+export const MC_MEMBER_TOOLS = ['mc_observe', 'mc_status']
+const MC_CONTROL_TOOLS = new Set([
   'mc_connect', 'mc_observe', 'mc_act', 'mc_cancel', 'mc_status', 'mc_disconnect',
   'mc_blueprint_submit', 'mc_blueprint_preview', 'mc_task_claim', 'mc_task_continue',
   'mc_work_stop', 'mc_work_status', 'mc_conflict_decide', 'mc_material_claim', 'mc_work_resolve',
-]
+  'mc_takeover', 'mc_resume',
+])
 const MC_MEMBER_TOOL_SET = new Set(MC_MEMBER_TOOLS)
+export const isMinecraftMutation = (name) => MC_CONTROL_TOOLS.has(String(name || '')) && !MC_MEMBER_TOOL_SET.has(String(name || ''))
 
 export function isLegacyGamebotTool(name) {
   return String(name || '').startsWith('mcp__gamebot-')
@@ -40,7 +43,7 @@ export function isGameTool(name) {
 
 /** 本回合可暴露给模型的工具名。 */
 export function allowedNames(names, owner) {
-  return (names || []).filter((n) => !isLegacyGamebotTool(n) && (owner || isOpen(n) || (owner && isGameTool(n))))
+  return (names || []).filter((n) => !isLegacyGamebotTool(n) && !isMinecraftMutation(n) && (owner || isOpen(n) || (owner && isGameTool(n))))
 }
 
 /**
@@ -50,7 +53,7 @@ export function allowedNames(names, owner) {
  */
 export function denyReason(name, { owner, inToolset, gameTurn = false } = {}) {
   const n = String(name || '')
-  if (isLegacyGamebotTool(n)) return 'Minecraft 成员 NPC 请用 mc_connect、mc_observe、mc_act、mc_cancel、mc_status、mc_disconnect，不要用旧的 gamebot MCP 桥。'
+  if (isLegacyGamebotTool(n) || isMinecraftMutation(n)) return '房间只能使用 mc_observe 和 mc_status 查看 Minecraft；任务会作为游戏决策记忆，房间轮聊不直接执行游戏动作。'
   if (MC_MEMBER_TOOL_SET.has(n)) return null
   if (GAME_OWNER_TOOLS.has(n)) {
     if (!owner) return '只有所有者可以开局、结束或重开。'
