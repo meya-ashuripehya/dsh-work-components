@@ -44,7 +44,7 @@
 - 跨会话记忆用进程内句柄让宿主包和通道包看到同一组开关。这个句柄不存放对话正文或凭据。同伴搜索留在调用方预设圈内。
 - 会话采样为 DeepSeek 官方和 DeepSeek 账号的消息调用保存每个会话的 `temperature` 和 `top_p`。其他供应商不在范围内。跨站采样请求会被拒绝。
 - `describe_video` 和 `watch_video` 把长视频分段（默认 10 分钟、重叠 5 秒、最多同时两个 Gemini 请求），再映射回原时间轴。缓存只存分段参数、模型名和凭据哈希，不存密钥明文。文件会送到 Google。YouTube 链接原样传递，不下载。
-- GameBot 仍随包提供。本树的 Minecraft 自主代码包括公开世界记忆、运行状态、动作核对、导航、资源动作、语义感知和玩家私聊，以及 NeoForge 桥源码。公开记忆记录器不写私聊回合。本轮没有跑真实 Minecraft，也没有跑 UIA。`scripts/mc-live-*.mjs` 是开发脚本：进入源码快照，不进入 npm tarball。
+- GameBot 仍随包提供。本树的 Minecraft 自主代码包括公开世界记忆、运行状态、动作核对、导航、资源动作、语义感知和玩家私聊，以及 NeoForge 桥源码。公开记忆记录器不写私聊回合。设置页不显示 Minecraft 与文明 VI。视觉桌面驱动、其设置项和截图依赖已删除。本轮没有跑真实 Minecraft，也没有跑 UIA。`scripts/mc-live-*.mjs` 是开发脚本：进入源码快照，不进入 npm tarball。
 - 设置响应把已保存的密钥字段换成 `__dsh_secret_saved__`。空字符串不是这个掩码。这不是静态加密。设置、已下载工具和 GameBot 数据仍在 `$DSH_HOME/data/dsh-work-components/`，卸载包不会删这个目录。
 
 ## 不进入候选快照

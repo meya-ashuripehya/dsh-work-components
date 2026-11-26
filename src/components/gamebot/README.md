@@ -8,7 +8,7 @@
 
 隔离验收脚本 `node scripts/mc-autonomy-live.mjs <输出目录> [运行秒数]` 默认 600 秒，允许 1–1800 秒；到期停止控制循环并回收测试 body 与模型进程。正式宿主联调同样应设置有界测试及结束停用检查。
 
-- `index.mjs` — 三张游戏卡（`gamebot-minecraft` / `gamebot-civilization` / `gamebot-vision`）与共享 Python 环境的准备
+- `index.mjs` — 两张游戏卡（`gamebot-minecraft` / `gamebot-civilization`，设置页隐藏）与共享 Python 环境的准备
 - `process.mjs` — 共享 REST body 的启停（引用计数；只杀本插件拉起的进程；退出钩子在插件生命周期里注册）。启动时把 `data/member-token` 的路径放进 `GAMEBOT_MEMBER_TOKEN_FILE`。令牌不打印。复用外部 body 时成员接口返回 503，需要从工作台重启。
 - `members.mjs` / `members-tools.mjs` — 成员连接、观察、动作与接管接口。房间轮聊只开放 `mc_observe`、`mc_status`；其他控制工具保留给显式手动接管。调用者来自席位，不来自参数。
 - `fields.mjs` — 每张卡的设置字段（`lib/client.js` 里的字段由 `scripts/gen-gamebot-fields.mjs` 生成）
@@ -18,7 +18,7 @@
 
 ## 使用
 
-1. 设置页 →「游戏」→ 任一游戏卡 → 打开「启用」。没有「下载安装」：第一次启用时自动用托管的 uv 建 Python 3.12 venv，并**从 PyPI 下载安装依赖**（约半分钟到几分钟，走设置里的下载代理）。装好后写 `.dsh-gamebot-ready.json`；中途失败下次会重建。
+1. Minecraft 与文明 VI 不在设置页显示。启用键仍是 `gamebot-minecraftEnabled` / `gamebot-civilizationEnabled`。没有「下载安装」：第一次启用时自动用托管的 uv 建 Python 3.12 venv，并**从 PyPI 下载安装依赖**（约半分钟到几分钟，走设置里的下载代理）。装好后写 `.dsh-gamebot-ready.json`；中途失败下次会重建。
 2. 启用后自动启动 REST（默认 `http://127.0.0.1:8766`）并挂载该游戏的 MCP 桥
 3. 关闭全部游戏卡 → 停止我们拉起的 body；插件停用 / 卸载时同样会停掉
 

@@ -3,7 +3,7 @@ from gamebot.contracts.models import ActionRequest, Capability, Observation
 
 
 def test_action_capability_map_covers_basic_and_semantic():
-    for action in ("say", "run_command", "query_state", "move_to", "craft", "vision_click"):
+    for action in ("say", "run_command", "query_state", "move_to", "craft", "place_block"):
         assert action in ACTION_REQUIRED_CAPABILITY
 
 

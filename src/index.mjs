@@ -327,9 +327,8 @@ export const SettingsSchema = z.object({
   comfyuiEnabled: z.boolean().default(false).description('启动官方 Comfy MCP（comfy-mcp）；需本机 ComfyUI / comfy-cli。'),
   comfyuiPackage: z.string().default('comfy-mcp').description('Comfy MCP 的 pip 包名（入口 comfy-mcp），「下载安装」时安装到 tools/comfyui。'),
   comfyuiBin: z.string().default('').description('comfy-cli 的 comfy 可执行文件路径，作为 COMFY_BIN 传给服务器；留空时用环境变量 COMFY_BIN。'),
-  'gamebot-minecraftEnabled': z.boolean().default(false).description('启用 GameBot · Minecraft（共享 body + 仅 Minecraft 的 MCP）。每次启动默认关闭。'),
-  'gamebot-civilizationEnabled': z.boolean().default(false).description('启用 GameBot · 文明 VI（共享 body + 仅文明的 MCP）。每次启动默认关闭。'),
-  'gamebot-visionEnabled': z.boolean().default(false).description('启用 GameBot · 视觉（共享 body + 仅视觉桌面的 MCP）。每次启动默认关闭。'),
+  'gamebot-minecraftEnabled': z.boolean().default(false).description('启用 GameBot · Minecraft（共享 body + 仅 Minecraft 的 MCP）。每次启动默认关闭。设置页不显示该卡。'),
+  'gamebot-civilizationEnabled': z.boolean().default(false).description('启用 GameBot · 文明 VI（共享 body + 仅文明的 MCP）。每次启动默认关闭。设置页不显示该卡。'),
   gamebotUrl: z.string().default('http://127.0.0.1:8766').description('GameBot REST 地址（/health、/v1/...）；可跨重启记住。'),
   gamebotRoot: z.string().default('').description('可选：外部 GameBot 目录（含 pyproject.toml + src/gamebot）；留空用插件内嵌 src/components/gamebot。填写时也会从它的 data/game-configs.json 一次性导入旧设置。'),
   nodePath: z.string().default('').description('node 可执行文件（npm 取同目录）。插件 tools/node 里有 Node.js 时优先用它；否则用这里的路径，留空时用 PATH 里的 node，再退回 DSH 自带的运行时。'),
@@ -457,7 +456,7 @@ function pickLocalEnabled(from) {
 
 
 /** Game-group enable keys: session-only. URL/root still persist. */
-const EPHEMERAL_ENABLED_KEYS = ['gamebot-minecraftEnabled', 'gamebot-civilizationEnabled', 'gamebot-visionEnabled', 'gamebotEnabled']
+const EPHEMERAL_ENABLED_KEYS = ['gamebot-minecraftEnabled', 'gamebot-civilizationEnabled', 'gamebotEnabled']
 
 function withEphemeralEnabledOff(value) {
   const out = { ...(value || {}) }

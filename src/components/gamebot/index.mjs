@@ -38,10 +38,6 @@ export const GAMES = {
     title: '文明 VI',
     summary: 'Civilization VI 陪玩：经 civ6-mcp 读取局面、TRIXCompanion 模组（玩家操作后评论）。',
   },
-  vision: {
-    title: '视觉',
-    summary: '视觉桌面驱动（截图 + 键鼠）：只处理启动器、菜单、设置页，不用于主循环。',
-  },
 }
 
 export function bundledRoot() {
@@ -97,8 +93,8 @@ function gameUrl(cfg) {
   return String(cfg.gamebotUrl || DEFAULT_URL).trim() || DEFAULT_URL
 }
 
-/** pyproject.toml 里 [project].dependencies 与 optional vision（pip 回退路径用；uv 路径直接读 pyproject）。 */
-function pyprojectDeps(root, extras = ['vision']) {
+/** pyproject.toml 里 [project].dependencies（pip 回退路径用；uv 路径直接读 pyproject）。 */
+function pyprojectDeps(root, extras = []) {
   const text = readFileSync(join(root, 'pyproject.toml'), 'utf8')
   const list = (block) => [...String(block || '').matchAll(/"([^"]+)"/g)].map((m) => m[1])
   // 数组以单独一行的 ] 结束（元素里可能有 uvicorn[standard] 这样的 ]）。
@@ -150,7 +146,7 @@ async function pickSystemPython(log) {
  * 共享 Python 环境（首次启用时自动执行，不是用户可见的「下载安装」）：
  *  1. uv：插件自管 tools/uv → 设置里的 uvPath → 系统 uv；都没有就下载插件自管的 uv（GitHub Release）。
  *  2. uv venv --python 3.12（插件自管的 Python，必要时由 uv 下载到 tools/python）。
- *  3. uv pip install -r pyproject.toml --extra vision：从 PyPI 装依赖（GameBot 代码本身走 PYTHONPATH，不安装）。
+ *  3. uv pip install -r pyproject.toml：从 PyPI 装依赖（GameBot 代码本身走 PYTHONPATH，不安装）。
  *  uv 整条路径失败时退回系统 Python 3.10–3.12 + pip。成功后写 READY_MARKER。
  */
 export async function installShared(cfg, task) {
@@ -178,7 +174,7 @@ export async function installShared(cfg, task) {
     task.step(`正在创建 Python ${PYTHON_VERSION} 环境`)
     await run(uv, ['venv', '--python', PYTHON_VERSION, '--no-project', venv], { cwd: state, env, onLine: task.log })
     task.step('正在下载依赖：GameBot Python 包')
-    await run(uv, ['pip', 'install', '--python', py, '-r', join(root, 'pyproject.toml'), '--extra', 'vision'], { cwd: state, env, onLine: task.log })
+    await run(uv, ['pip', 'install', '--python', py, '-r', join(root, 'pyproject.toml')], { cwd: state, env, onLine: task.log })
     via = `uv + Python ${PYTHON_VERSION}`
   } catch (error) {
     task.log(`uv 环境准备失败，改用系统 Python：${error?.message ?? error}`)

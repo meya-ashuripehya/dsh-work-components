@@ -23,11 +23,6 @@ dev = [
     "httpx==0.28.1",
     "jsonschema==4.23.0",
 ]
-vision = [
-    "mss==10.1.0",
-    "pyautogui==0.9.54",
-    "pillow==10.3.0",
-]
 
 [project.scripts]
 gamebot-mcp = "gamebot.mcp_bridge:main"

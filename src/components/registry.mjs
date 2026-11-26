@@ -42,7 +42,6 @@ import ghidra from './ghidra/index.mjs'
 import ilspy from './ilspy/index.mjs'
 import gamebotMinecraft from './gamebot-minecraft/index.mjs'
 import gamebotCivilization from './gamebot-civilization/index.mjs'
-import gamebotVision from './gamebot-vision/index.mjs'
 import * as officeMod from './office/index.mjs'
 import * as blenderMod from './blender/index.mjs'
 import * as unityMod from './unity/index.mjs'
@@ -76,7 +75,6 @@ import * as ghidraMod from './ghidra/index.mjs'
 import * as ilspyMod from './ilspy/index.mjs'
 import * as gamebotMinecraftMod from './gamebot-minecraft/index.mjs'
 import * as gamebotCivilizationMod from './gamebot-civilization/index.mjs'
-import * as gamebotVisionMod from './gamebot-vision/index.mjs'
 
 /** 上游贡献目标仓库（提交 PR / compare 用）。 */
 export const CONTRIBUTE_REPO = 'meya-ashuripehya/dsh-work-components'
@@ -116,7 +114,6 @@ const BUNDLED_ENTRIES = [
   { component: ilspy, mod: ilspyMod },
   { component: gamebotMinecraft, mod: gamebotMinecraftMod },
   { component: gamebotCivilization, mod: gamebotCivilizationMod },
-  { component: gamebotVision, mod: gamebotVisionMod },
 ]
 
 function tagBundled(component, mod) {

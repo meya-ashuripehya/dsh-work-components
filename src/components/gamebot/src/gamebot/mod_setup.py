@@ -13,18 +13,6 @@ from gamebot.config_store import get_game_config, save_game_config
 
 def describe_mod(game: str) -> Dict[str, Any]:
     cfg = get_game_config(game)
-    if cfg.game == "vision":
-        return {
-            "ok": True,
-            "needs_mod": False,
-            "installed": True,
-            "source_ready": True,
-            "mods_dir": "",
-            "path": "",
-            "examples": [],
-            "detected": [],
-            "message": "视觉不使用游戏模组。",
-        }
     if cfg.game == "civilization":
         status = inspect_civ_mod(cfg.config)
         hints = civ_location_hints()
@@ -42,8 +30,6 @@ def describe_mod(game: str) -> Dict[str, Any]:
 def install_for_game(game: str, mods_dir: str = "") -> Dict[str, Any]:
     cfg = get_game_config(game)
     chosen = (mods_dir or "").strip()
-    if cfg.game == "vision":
-        raise ValueError("视觉不需要植入模组")
     if cfg.game == "civilization":
         overlay = dict(cfg.config)
         if chosen:

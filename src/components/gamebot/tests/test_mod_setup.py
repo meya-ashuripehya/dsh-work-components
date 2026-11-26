@@ -13,7 +13,7 @@ def config_file(tmp_path, monkeypatch):
     return path
 
 
-def test_location_examples_and_vision_skips_mod(client, config_file):
+def test_location_examples_and_removed_vision_game(client, config_file):
     minecraft = client.get("/v1/games/minecraft/mod")
     assert minecraft.status_code == 200
     body = minecraft.json()
@@ -24,9 +24,7 @@ def test_location_examples_and_vision_skips_mod(client, config_file):
     assert all(item["selectable"] is False for item in body["examples"])
 
     vision = client.get("/v1/games/vision/mod")
-    assert vision.status_code == 200
-    assert vision.json()["needs_mod"] is False
-    assert vision.json()["installed"] is True
+    assert vision.status_code == 404
 
 
 def test_minecraft_install_copies_jar_without_marking_config_saved(client, config_file, tmp_path, monkeypatch):

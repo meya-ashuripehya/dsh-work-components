@@ -5,7 +5,7 @@ FastAPI/anyio stack (official `mcp` package needs anyio>=4.5).
 
 Env:
   GAMEBOT_URL  base URL, default http://127.0.0.1:8766
-  GAMEBOT_GAME optional game scope (minecraft / civilization / vision): only that
+  GAMEBOT_GAME optional game scope (minecraft / civilization): only that
                game's sessions/configs are reachable; game args are fixed.
 
 Protocol: MCP JSON-RPC over stdio with Content-Length framing
@@ -503,7 +503,6 @@ _ALIASES = {
     "minecraft": "minecraft", "mc": "minecraft",
     "civilization": "civilization", "civ": "civilization", "civ6": "civilization",
     "civilization-vi": "civilization", "civilization_vi": "civilization",
-    "vision": "vision", "desktop": "vision", "vision_desktop": "vision",
 }
 
 

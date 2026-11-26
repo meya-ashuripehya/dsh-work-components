@@ -93,12 +93,6 @@ export const GAME_FIELDS = {
     { cfg: 'CIV_DSH_SESSION', label: '文明 DSH 会话 id', kind: 'text', def: '', desc: '可选：经 DSH 宿主内的陪玩桥把评论写入这个会话（不直接写会话文件）；留空不写。' },
     ...llmBlock(BASE_LLM),
   ],
-  vision: [
-    { cfg: 'monitor', label: '显示器编号', kind: 'text', def: '1' },
-    { cfg: 'max_px', label: '截图最长边（px）', kind: 'text', def: '1280' },
-    { cfg: 'settle_s', label: '动作后等待（秒）', kind: 'text', def: '0.15' },
-    { cfg: 'evidence_dir', label: '截图证据目录', kind: 'text', def: '', desc: '留空不保存。' },
-  ],
 }
 
 export const settingKey = (game, cfg) => `gb_${game}_${cfg}`

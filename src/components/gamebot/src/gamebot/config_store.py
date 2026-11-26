@@ -183,20 +183,6 @@ DEFAULT_GAME_CONFIGS: Dict[str, GameConfig] = {
             **DEFAULT_LLM_CONFIG,
         },
     ),
-    "vision": GameConfig(
-        game="vision",
-        title="视觉",
-        description="只处理启动器、菜单、设置页；不用于战斗或路径主循环。",
-        driver="vision_desktop",
-        config={
-            "backend": "vision_desktop",
-            "monitor": "1",
-            "max_px": "1280",
-            "settle_s": "0.15",
-            "evidence_dir": "",
-            "WIZARD_SAVED": "0",
-        },
-    ),
 }
 
 
@@ -358,8 +344,6 @@ def _normalize_game(game: str) -> str:
         return "minecraft"
     if key in ("civ", "civilization-vi", "civilization_vi"):
         return "civilization"
-    if key in ("desktop", "vision_desktop"):
-        return "vision"
     return key
 
 

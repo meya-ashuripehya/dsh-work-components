@@ -41,12 +41,6 @@ MOD_CREATE = "minecraft.mod.create"
 MOD_AE2 = "minecraft.mod.ae2"
 MOD_BOTANIA = "minecraft.mod.botania"
 
-# 视觉
-VISION_OBSERVE = "vision.desktop.observe"
-VISION_CLICK = "vision.desktop.click"
-VISION_TYPE = "vision.desktop.type"
-VISION_CONFIRM = "vision.desktop.confirm"
-
 # 文明6陪玩
 CIV_STATE_READ = "civilization.state.read"
 CIV_SAFE_ACTION = "civilization.action.safe"
@@ -80,9 +74,6 @@ ACTION_REQUIRED_CAPABILITY = {
     "break_block": BREAK_BLOCK,
     "attack_entity": ENTITY_ATTACK,
     "find_item": CONTAINER_FIND_ITEM,
-    "vision_observe": VISION_OBSERVE,
-    "vision_click": VISION_CLICK,
-    "vision_type": VISION_TYPE,
 }
 
 BASIC_ACTIONS = ("say", "run_command", "query_state")
@@ -106,4 +97,3 @@ SEMANTIC_ACTIONS = (
     "attack_entity",
     "find_item",
 )
-VISION_ACTIONS = ("vision_observe", "vision_click", "vision_type")

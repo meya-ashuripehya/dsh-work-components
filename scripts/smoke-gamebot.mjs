@@ -1,6 +1,6 @@
 /**
  * Smoke: built-in GameBot game cards end to end (no DSH host).
- *  - launch() all three games concurrently → one shared body (prepares <dataDir>/gamebot/.venv on first run)
+ *  - launch() both games concurrently → one shared body (prepares <dataDir>/gamebot/.venv on first run)
  *  - a saved mineflayer driver is sent as minaret when no external bridge (GAMEBOT_MINECRAFT_BRIDGE_DIR) exists
  *  - card settings reach the body (PATCH /v1/games/<game>) — secrets compared, never printed
  *  - per-game MCP tools/list via the exact stdio plan launch() returned
@@ -24,7 +24,7 @@ delete process.env.GAMEBOT_MINECRAFT_BRIDGE_DIR
 const imp = (p) => import(pathToFileURL(join(pluginRoot, p)).href)
 const { RuntimeSettingsSchema } = await imp('lib/index.mjs')
 const { bodyOwned, bodyUsers } = await imp('src/components/gamebot/process.mjs')
-const GAMES = ['minecraft', 'civilization', 'vision']
+const GAMES = ['minecraft', 'civilization']
 const comps = Object.fromEntries(await Promise.all(GAMES.map(async (g) => [g, (await imp(`src/components/gamebot-${g}/index.mjs`)).component])))
 
 const fail = (m) => { console.error('FAIL:', m); cleanup(); process.exit(1) }
@@ -37,19 +37,17 @@ console.log('defaults: every game off =', GAMES.every((g) => base[`gamebot-${g}E
 const card = {
   ...base,
   gamebotUrl: url,
-  'gamebot-minecraftEnabled': true, 'gamebot-civilizationEnabled': true, 'gamebot-visionEnabled': true,
+  'gamebot-minecraftEnabled': true, 'gamebot-civilizationEnabled': true,
   gb_minecraft_driver: 'mineflayer', gb_minecraft_MC_USERNAME: 'SmokeBot',
   gb_minecraft_LLM_PROVIDER: 'custom', gb_minecraft_LLM_API_KEY: secret,
   gb_civilization_CIV_POLL_INTERVAL_S: '7', gb_civilization_LLM_MODEL: 'smoke-model',
-  gb_vision_max_px: '999',
 }
 const expect = {
   minecraft: { driver: 'minaret', MC_USERNAME: 'SmokeBot', MC_DRIVER: 'neoforge_ws' },
   civilization: { CIV_POLL_INTERVAL_S: '7', LLM_MODEL: 'smoke-model' },
-  vision: { max_px: '999' },
 }
 
-console.log(`[1] launch() all three concurrently on ${url}`)
+console.log(`[1] launch() both concurrently on ${url}`)
 const plans = Object.fromEntries(await Promise.all(GAMES.map(async (g) => [g, await comps[g].launch(card)])))
 for (const g of GAMES) if (!plans[g].ok) fail(`${g} launch: ${plans[g].reason}`)
 console.log('    users', bodyUsers(), 'owned', bodyOwned(), 'health', await up())
@@ -73,9 +71,9 @@ for (const g of GAMES) {
   if (r.hasListGames || r.keyMasked === 'LEAK') fail(`${g} scope`)
 }
 
-console.log('[4] disable minecraft + vision → body stays; disable civilization → body stops')
-const off = (g) => ({ ...card, 'gamebot-minecraftEnabled': false, 'gamebot-visionEnabled': false, 'gamebot-civilizationEnabled': g !== 'civilization' ? true : false })
-await comps.minecraft.launch(off()); await comps.vision.launch(off())
+console.log('[4] disable minecraft → body stays; disable civilization → body stops')
+const off = (g) => ({ ...card, 'gamebot-minecraftEnabled': false, 'gamebot-civilizationEnabled': g !== 'civilization' })
+await comps.minecraft.launch(off())
 await new Promise((r) => setTimeout(r, 600))
 if (!(await up())) fail('body stopped too early')
 console.log('    users', bodyUsers(), 'health', true)

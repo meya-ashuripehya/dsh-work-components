@@ -44,7 +44,7 @@ English: a DeepSeek Harness plugin that mounts MCP servers for work software. We
 
 组件依赖的运行时（uv + Python，或 Node.js）与各上游 MCP 包，都可以在设置页「下载安装」到插件数据目录的 `tools/`（见下文「数据目录」）。**新鲜安装时所有工作组件 MCP 与会话控制均默认关闭**（`*Enabled: false`），装好后在管理页逐个打开「启用」才会挂载对应 MCP。具体安装、桥接、端口与项目侧配置都在设置 UI 里完成，本 README 不重复操作步骤。
 
-已内嵌：GameBot（`src/components/gamebot/`）。桌面经纪人 exe 不在 npm 包内。开发目录里已有 `broker/dist` 时直接使用；否则只能在设置页「下载安装」。仓库里的 `broker-manifest.json` 是无哈希模板，设置页下载会拒绝它。`publish.yml` 在同一个 tag 里编译 exe、写入哈希、上传 Release，再发布对应的 npm 包。本地构建需要 .NET SDK 8+（`npm run build:desktop`）。
+已内嵌：GameBot（`src/components/gamebot/`，Minecraft 与文明 VI 不在设置页显示）。桌面经纪人 exe 不在 npm 包内。开发目录里已有 `broker/dist` 时直接使用；否则只能在设置页「下载安装」。仓库里的 `broker-manifest.json` 是无哈希模板，设置页下载会拒绝它。`publish.yml` 在同一个 tag 里编译 exe、写入哈希、上传 Release，再发布对应的 npm 包。本地构建需要 .NET SDK 8+（`npm run build:desktop`）。
 
 ### DeepSlate（Minecraft 结构渲染）
 
@@ -229,7 +229,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Gmail / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / Termalin / KiCad / Fusion / FreeCAD / MATLAB / ESP-IDF / 串口 / Rhino / Altium / FFmpeg / Obsidian / REA 逆向分析 / DeepSlate / Cursor / Ghidra / ILSpy（仓库自带，标题旁不另挂徽标） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
 | 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
-| 游戏 | Minecraft / 文明 VI / 视觉（徽标「已验证」与「实验性」，**默认关闭**） | 未启动 / 已启动 / 出错… | 共享 GameBot REST + 按游戏 MCP；仓库自带无需下载，首次启用准备 Python 环境 |
+| 游戏 | 棋类 / 牌类 | 未启用 / 已启用 | 由当前会话里的 AI 应着。Minecraft 与文明 VI 的实现仍在仓库中，设置页不显示 |
 | 游戏 | 牌类 | 未启用 / 已启用 | `card_open` 等；右侧牌桌；RLCard 在设置页按需下载，每种牌单独核对规则，不随包分发 |
 | 通用 | 桌面控制 / 会话控制 / uv / Node.js / 下载代理 | 已连接 / 可用 / 未安装 / 已设置… | 桌面控制随插件提供，打开「启用」即可；其余为会话能力、运行时与代理 |
 | 基础工具 | 添加工作组件 | 提示词工具 | Token 声明 + 可复制 AI 提示词：写成**本地**模块（不装进 `tools/`）。选型**功能最全优先**；应补可配置/必填参数（中文 label）；本地阶段 `keys` + `launch`/`spec` 硬编码默认，拟议 schema 写注释；自定义键未进 schema 前不持久化。模块就位后重启 DSH，再在设置页下载安装。 |
@@ -510,18 +510,19 @@ npm run build:desktop  # dotnet publish 到 broker/dist。不进 git，也不进
 
 ## 游戏 · GameBot
 
-「游戏」分组（Minecraft / 文明 VI / 视觉）标为**实验性**（与会话控制相同的「实验性」徽标样式）。GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层，不单独出卡片），设置页「游戏」分组**按游戏分卡**：
+设置页「游戏」分组对外显示棋类和牌类。Minecraft 与文明 VI 仍内嵌在仓库中，设置页不显示这两张卡；打开实验性条目也不会把它们显示出来。视觉桌面驱动已删除。
 
-| 卡片 | 组件 id / MCP serverName | 启用键 |
-|---|---|---|
-| Minecraft | `gamebot-minecraft` | `gamebot-minecraftEnabled` |
-| 文明 VI | `gamebot-civilization` | `gamebot-civilizationEnabled` |
-| 视觉 | `gamebot-vision` | `gamebot-visionEnabled` |
+GameBot（REST body + MCP 桥）内嵌在 `src/components/gamebot/`（共享层，不单独出卡片）：
 
-- **每次应用/会话启动全部默认关闭**，需重新启用；共享的 `gamebotUrl` / `gamebotRoot` 会记住。
+| 卡片 | 组件 id / MCP serverName | 启用键 | 设置页 |
+|---|---|---|---|
+| Minecraft | `gamebot-minecraft` | `gamebot-minecraftEnabled` | 不显示 |
+| 文明 VI | `gamebot-civilization` | `gamebot-civilizationEnabled` | 不显示 |
+
+- **每次应用/会话启动全部默认关闭**；共享的 `gamebotUrl` / `gamebotRoot` 会记住。
 - **共享 body**：任一游戏启用 → 自动启动一个 REST body（默认 `http://127.0.0.1:8766`）；全部关闭 → 停止（只停本插件拉起的进程）。
 - **按游戏的 MCP**：每张卡一个 MCP 服务器（工具前缀 `mcp__gamebot-<game>__`），桥带 `GAMEBOT_GAME=<game>`：游戏参数固定、只列该游戏会话、拒绝其他游戏的 session、去掉 `list_games`、`get_game` 结果里的密钥打码。
-- **仓库自带、实验性**：游戏卡没有「下载安装」。设置页标题旁有徽标「已验证」（随仓分发）与「实验性」（尚未完全验证）。首次启用任一游戏时自动准备共享 Python 环境 `<数据目录>/gamebot/.venv`：用插件托管的 uv（没有就先装进 `tools/uv`）建 Python 3.12 venv，再**从 PyPI 下载安装** `pyproject.toml` 里的依赖（fastapi、uvicorn、httpx、websockets、pydantic、mss、Pillow、numpy 等，约半分钟到几分钟，走设置里的下载代理）；GameBot 代码本身随包提供，不再安装。装好后写 `.dsh-gamebot-ready.json` 标记；装到一半失败下次会重建。uv 不可用时退回本机 Python 3.10–3.12 + pip。
+- **仓库自带**：游戏卡没有「下载安装」。首次启用时自动准备共享 Python 环境 `<数据目录>/gamebot/.venv`：用插件托管的 uv（没有就先装进 `tools/uv`）建 Python 3.12 venv，再**从 PyPI 下载安装** `pyproject.toml` 里的依赖（fastapi、uvicorn、httpx、websockets、pydantic 等，约半分钟到几分钟，走设置里的下载代理）；GameBot 代码本身随包提供，不再安装。装好后写 `.dsh-gamebot-ready.json` 标记；装到一半失败下次会重建。uv 不可用时退回本机 Python 3.10–3.12 + pip。
 - **设置页是唯一来源**：每张卡包含该游戏在 GameBot 里的全部配置（驱动、地址、端口、目录、决策 / 聊天模型、服务商、密钥、人设、记忆…，键名 `gb_<game>_<配置键>`）。启用或保存时通过 `PATCH /v1/games/<game>` 下发到 body。密钥字段留空 = 保持 GameBot 已存的该服务商密钥；人设留空 = GameBot 默认。填写了 `gamebotRoot`（外部 GameBot 目录）时，首次加载会从它的 `data/game-configs.json` 一次性导入。
 - GameBot 自带的网页设置前端（`/ui`）已移除，body 只提供 REST。
 - Minecraft 只提供 minaret（NeoForge 模组 WebSocket）驱动。Mineflayer 驱动需要的 Node 桥（`minecraft-bridge`，依赖 mineflayer）不随包发布，所以设置页不显示；要用的话自备桥目录（`server.js` + `npm install`），设置环境变量 `GAMEBOT_MINECRAFT_BRIDGE_DIR` 指向它。
@@ -542,7 +543,7 @@ Minecraft 自主陪玩：选择席位只登记资格；使用游戏内 `/minaret
 - 桌面控制：只有用户点击「下载安装」才下载。固定 HTTPS、SHA-256 与 SHA-512，校验失败不替换已有程序。v0.4.4 的 Release 文件尚未上传。
 - 更新：npm 更新先核对 `dist.integrity`（SHA-512）、包名和版本，通过后才调用 `dsh plugin add`。失败不写 profile。uv 改为钉死具体 tag 并核对上游 `.sha256`。
 - 兼容：`engines.dsh` 与可选 peer 只声明 `@deepseek-ai/dsh@0.2.2-rc.5`。官方门控不把 `optional` 当豁免，因此这不是「全部 0.2.x 已验证」。`0.2.1-rc.5` 不再在声明里。
-- 功能集合还包括当前工作区里尚未单独发布的通道与跨会话记忆、DeepSeek 会话采样、长视频分段，以及 Minecraft 自主陪玩和 NeoForge 桥的改动。细节见上面两份更新日志。真实宿主、浏览器和 UIA 没有在本轮运行。
+- 功能集合还包括当前工作区里尚未单独发布的通道与跨会话记忆、DeepSeek 会话采样、长视频分段，以及 Minecraft 自主陪玩和 NeoForge 桥的改动。设置页不显示 Minecraft 与文明 VI；GameBot 视觉桌面驱动已删除。细节见上面两份更新日志。真实宿主、浏览器和 UIA 没有在本轮运行。
 
 ### 0.4.4-beta.1（预览版，2026-11-16）
 
