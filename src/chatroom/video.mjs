@@ -117,14 +117,33 @@ export function bilibiliLink(raw) {
   return { id: m[1], url: `https://www.bilibili.com/video/${m[1]}${p && /^\d+$/.test(p) ? `?p=${p}` : ''}` }
 }
 /** 文本中的视频链接（去重，最多 3 个）：[{ kind: 'youtube' | 'bilibili', id, url }]。 */
+export function shortVideoLink(raw) {
+  let u
+  try { u = new URL(String(raw || '').trim().replace(/\\([:/.])/g, '$1')) } catch { return null }
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password) return null
+  const host = u.hostname.toLowerCase()
+  const douyin = /^(?:www\.|www\.ies)?douyin\.com$/.test(host) || host === 'iesdouyin.com'
+  const tiktok = /^(?:www\.|m\.)?tiktok\.com$/.test(host)
+  const kind = douyin || host === 'v.douyin.com' ? 'douyin' : 'tiktok'
+  const m = douyin ? u.pathname.match(/^\/(?:video|share\/video)\/(\d+)\/?$/) : tiktok ? u.pathname.match(/^\/@[^/]+\/video\/(\d+)\/?$/) : null
+  if (m) return { kind, id: m[1], url: kind === 'douyin' ? `https://www.douyin.com/video/${m[1]}` : `https://www.tiktok.com${u.pathname.replace(/\/$/, '')}` }
+  if (host === 'v.douyin.com' || /^(?:vm|vt)\.tiktok\.com$/.test(host) || (tiktok && u.pathname.startsWith('/t/'))) {
+    const token = u.pathname.match(/^\/(?:t\/)?([A-Za-z0-9_-]{4,80})\/?$/)?.[1]
+    if (token) return { kind, id: `share-${token}`, url: `https://${host}${u.pathname.replace(/\/?$/, '/')}` }
+  }
+  return null
+}
+
+export const videoLinkLabel = (kind) => ({ youtube: 'YouTube', bilibili: '哔哩哔哩', tiktok: 'TikTok', douyin: '抖音' })[kind] || '视频'
+
 export function findVideoLinks(text, max = 3) {
   const out = []
   const seen = new Set()
-  for (const m of String(text || '').matchAll(/https?:\/\/[^\s<>"'，。！？、）)\]]+/gi)) {
+  for (const m of String(text || '').replace(/\\([:/.])/g, '$1').matchAll(/https?:\/\/[^\s<>"'，。！？、）)\]]+/gi)) {
     const raw = m[0]
     const yt = youtubeLink(raw)
     const bl = yt ? null : bilibiliLink(raw)
-    const hit = yt ? { kind: 'youtube', ...yt } : (bl ? { kind: 'bilibili', ...bl } : null)
+    const hit = yt ? { kind: 'youtube', ...yt } : (bl ? { kind: 'bilibili', ...bl } : shortVideoLink(raw))
     if (!hit || seen.has(hit.url)) continue
     seen.add(hit.url)
     out.push(hit)
@@ -366,8 +385,11 @@ export const DESCRIBE_VIDEO_PROMPT = [
 ].join('\n')
 
 export async function describeVideo(o) {
-  const r = await generateWithVideo({ ...o, system: VIDEO_SYSTEM, prompt: DESCRIBE_VIDEO_PROMPT, maxTokens: o.maxTokens || 4096 })
-  return r.ok ? { ...r, text: r.text.slice(0, DESCRIBE_MAX_CHARS) } : r
+  const prompt = o.prompt || DESCRIBE_VIDEO_PROMPT
+  const r = await generateWithVideo({ ...o, system: o.system || VIDEO_SYSTEM, prompt, maxTokens: o.maxTokens || 4096 })
+  if (!r.ok) return r
+  const cap = o.maxChars == null ? DESCRIBE_MAX_CHARS : Number(o.maxChars)
+  return { ...r, text: Number.isFinite(cap) && cap >= 0 ? r.text.slice(0, cap) : r.text }
 }
 
 export function rangeLabel({ start, end } = {}) {
@@ -380,9 +402,11 @@ export function rangeLabel({ start, end } = {}) {
 export async function askVideo(o) {
   const q = String(o.question || '').replace(/\s+/g, ' ').trim().slice(0, 1000)
   const range = rangeLabel(o)
-  const prompt = `A housemate asks about this video${range ? ` (only the part ${range})` : ''}:\n${q}\n\nAnswer in the language of the question. Mark what you saw or heard with timestamps like [m:ss] (relative to the full video). If the video doesn't show it, say so plainly.`
-  const r = await generateWithVideo({ ...o, system: VIDEO_SYSTEM, prompt, maxTokens: o.maxTokens || 4096 })
-  return r.ok ? { ...r, text: r.text.slice(0, ANSWER_MAX_CHARS) } : r
+  const prompt = o.prompt || `A housemate asks about this video${range ? ` (only the part ${range})` : ''}:\n${q}\n\nAnswer in the language of the question. Mark what you saw or heard with timestamps like [m:ss] (relative to the full video). If the video doesn't show it, say so plainly.`
+  const r = await generateWithVideo({ ...o, system: o.system || VIDEO_SYSTEM, prompt, maxTokens: o.maxTokens || 4096 })
+  if (!r.ok) return r
+  const cap = o.maxChars == null ? ANSWER_MAX_CHARS : Number(o.maxChars)
+  return { ...r, text: Number.isFinite(cap) && cap >= 0 ? r.text.slice(0, cap) : r.text }
 }
 
 /** watch_video 缓存键：附件 / 链接 + 问题 + 范围。 */

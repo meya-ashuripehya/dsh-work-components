@@ -16,6 +16,16 @@ from gamebot.session import manager
 AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 MEMBER_SESSION = re.compile(r"^minecraft-([a-z0-9][a-z0-9-]{0,31})$")
 _TOKEN_HEADER = "X-Gamebot-Member-Token"
+_eligible_members: Optional[set] = None
+_control_states: Dict[str, Dict[str, Any]] = {}
+
+
+async def update_control_state(member_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    obs = await observe_member(member_id)
+    if state.get("world_id") != obs.extras.get("world_id"):
+        raise ValueError("stale world")
+    _control_states[member_id] = dict(state)
+    return {"ok": True}
 
 
 def valid_member_id(member_id: str) -> bool:
@@ -83,11 +93,17 @@ def session_config_for(member_id: str, display_name: Optional[str] = None) -> Di
 
 def ensure_member_session(member_id: str, display_name: Optional[str] = None):
     session_id = member_session_id(member_id)
+    try:
+        return manager.get(session_id).session
+    except KeyError:
+        pass
     config = session_config_for(member_id, display_name)
     return manager.upsert("minecraft", "minaret", config, session_id=session_id)
 
 
 async def connect_member(member_id: str, display_name: Optional[str] = None) -> Observation:
+    if _eligible_members is not None and member_id not in _eligible_members:
+        raise ValueError("该 Minecraft 席位未选择或已停用")
     session = ensure_member_session(member_id, display_name)
     return await manager.connect(session.id)
 
@@ -106,6 +122,8 @@ async def observe_member(member_id: str) -> Observation:
 
 
 async def act_member(member_id: str, request: ActionRequest) -> ActionResult:
+    if _eligible_members is not None and member_id not in _eligible_members:
+        raise ValueError("该 Minecraft 席位未选择或已停用")
     session_id = member_session_id(member_id)
     try:
         manager.get(session_id)
@@ -117,16 +135,27 @@ async def act_member(member_id: str, request: ActionRequest) -> ActionResult:
             raise ValueError(f"{key} does not match this member")
         params.pop(key, None)
     cleaned = ActionRequest(action=request.action, params=params, require_confirm=request.require_confirm)
+    obs = await manager.observe(session_id)
+    for key, actual in (("world_id", obs.extras.get("world_id")), ("dimension", (obs.extras.get("minecraft") or {}).get("player", {}).get("dimension"))):
+        if params.get(key) is not None and params[key] != actual:
+            return ActionResult(ok=False, action=request.action, error=f"stale {key}")
+    if obs.extras.get("joined") is False:
+        return ActionResult(ok=False, action=request.action, error="请先在游戏中使用 /minaret agent spawn 加入")
     return await manager.act(session_id, cleaned)
 
 
-async def cancel_member(member_id: str, target_request_id: str) -> Dict[str, Any]:
+async def cancel_member(member_id: str, target_request_id: str, world_id: Optional[str] = None) -> Dict[str, Any]:
     session_id = member_session_id(member_id)
     rec = manager.get(session_id)
     backend = getattr(rec.driver, "_minaret", None)
     if backend is None or not hasattr(backend, "cancel_action"):
         raise RuntimeError("this session has no Minaret backend")
-    await backend.cancel_action(target_request_id)
+    if world_id is not None and backend.snapshot_fields().get("world_id") != world_id:
+        return {"ok": False, "error": "stale world"}
+    if target_request_id == "*":
+        await backend.cancel_pending_actions()
+    else:
+        await backend.cancel_action(target_request_id)
     return {"ok": True, "member_id": member_id, "target_request_id": target_request_id}
 
 
@@ -157,10 +186,20 @@ async def status_member(member_id: str) -> Dict[str, Any]:
         "last_error": obs.last_error,
         "agent_id": (obs.extras or {}).get("agent_id"),
         "username": obs.username,
+        "world_id": obs.extras.get("world_id"),
+        "joined": bool(obs.extras.get("joined")),
+        "task": (obs.extras.get("minecraft") or {}).get("task"),
+        "autonomy": _control_states.get(member_id) if _control_states.get(member_id, {}).get("world_id") == obs.extras.get("world_id") else None,
     }
 
 
 async def reconcile_members(member_ids: List[str], names: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    global _eligible_members
+    _eligible_members = set(member_ids)
+    for session in manager.list_sessions():
+        mid = member_id_from_session(session.id)
+        if mid and mid not in _eligible_members:
+            await manager.disconnect(session.id)
     names = names or {}
 
     async def one(member_id: str) -> Dict[str, Any]:

@@ -399,11 +399,45 @@ test('enrichInboundEvent hangs person-memory on inbound prefix, keeps body', () 
     aliases: [],
     link: DEFAULT_CONFIG.ownerLinks[0],
     learnedFile: join(tmpdir(), 'dsh-learned-missing.json'),
-    config: { crossSessionMemoryEnabled: false },
+    config: { crossSessionMemoryEnabled: true },
   })
   assert.match(String(out.__dshInboundPrefix || ''), /\[person-memory\]/)
   assert.match(String(out.__dshInboundPrefix || ''), /name=Shiro/)
   const texts = out.message.content.filter((b) => b?.type === 'text').map((b) => b.text)
   assert.equal(texts.join(''), 'hello')
   assert.ok(!texts.some((t) => String(t).includes('[person-memory]')), 'must not prepend onto message body')
+})
+
+
+test('searchPeers does not read a session outside the caller preset circle', () => {
+  let reads = 0
+  const bindings = {
+    'telegram:main:owner': {
+      channelId: 'telegram', accountId: 'main', conversationId: 'owner',
+      conversationType: 'dm', senderId: 'owner', sessionId: 'session-owner',
+      durability: 'durable', route: { preset: 'lingsnow' }, schemaVersion: 3, updatedAt: 1,
+    },
+    'telegram:main:other': {
+      channelId: 'telegram', accountId: 'main', conversationId: 'other',
+      conversationType: 'dm', senderId: 'other', sessionId: 'session-other',
+      durability: 'durable', route: { preset: 'chatgpt' }, schemaVersion: 3, updatedAt: 2,
+    },
+  }
+  const result = searchPeers({ query: 'secret-phrase', sessionId: 'session-other' }, {
+    bindings,
+    callerSessionId: 'session-owner',
+    config: DEFAULT_CONFIG,
+    findSessionLogPath: () => { reads++; return null },
+  })
+  assert.equal(result.error, true)
+  assert.match(result.text, /not in your Memory Circle/)
+  assert.equal(reads, 0)
+  assert.equal(JSON.stringify(result).includes('secret-phrase'), false)
+})
+
+test('enrichInboundEvent respects a disabled master switch even when called directly', () => {
+  const event = { channel: 'qq', conversation: { id: 'test', type: 'dm' }, sender: { id: 'test', name: 'test' }, message: { content: [{ type: 'text', text: 'hello' }] } }
+  const out = enrichInboundEvent(event, { config: { crossSessionMemoryEnabled: false } })
+  assert.equal(out, event)
+  assert.equal(out.__dshInboundPrefix, undefined)
 })

@@ -27,7 +27,7 @@ export async function modelForSeat(cfg, memberId, root) {
   const reasoningEffort = String(seat?.reasoningEffort || agent?.reasoningEffort || '')
   if (!profileId) {
     if (!provider || !model) return { error: '这个席位还没有服务商或档案' }
-    return { provider, model, reasoningEffort, persona: '', name, profileId: '' }
+    return { provider, model, reasoningEffort, persona: String(seat?.persona || ''), name, profileId: '' }
   }
   let profile
   try {
@@ -42,7 +42,7 @@ export async function modelForSeat(cfg, memberId, root) {
     provider: resolved.provider,
     model: resolved.model,
     reasoningEffort: resolved.reasoningEffort || '',
-    persona: resolved.personaAppend || '',
+    persona: [resolved.personaAppend, seat?.persona].filter(Boolean).join('\n'),
     name,
     profileId: profile.id,
   }

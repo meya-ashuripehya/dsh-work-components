@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.trix.gamebot.bridge.entity.AgentEntity;
+import com.trix.gamebot.bridge.action.MovementGeometry;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
@@ -30,6 +31,32 @@ public final class ServerSnapshotService {
     public static final double PLAYER_RANGE = 64.0;
 
     private ServerSnapshotService() {
+    }
+
+    /** Bounded local surface suggestions, not a claim that navigation will succeed. */
+    public static JsonArray standableGoals(AgentEntity agent, JsonArray blocks) {
+        JsonArray goals = new JsonArray();
+        if (!(agent.level() instanceof ServerLevel level) || blocks == null) return goals;
+        List<Vec3> points = new ArrayList<>();
+        for (JsonElement element : blocks) {
+            JsonObject block = element.getAsJsonObject();
+            JsonObject pos = block.getAsJsonObject("pos");
+            BlockPos support = new BlockPos(pos.get("x").getAsInt(), pos.get("y").getAsInt(), pos.get("z").getAsInt());
+            double dx = support.getX() + 0.5 - agent.getX(), dz = support.getZ() + 0.5 - agent.getZ();
+            // Stay within four blocks, outside the arrival radius; consider nearby heights only.
+            if (dx * dx + dz * dz < 4 || dx * dx + dz * dz > 16 || Math.abs(support.getY() - agent.getY()) > 3) continue;
+            Vec3 feet = MovementGeometry.standingSurface(level, agent, support);
+            if (feet != null && Math.abs(feet.y - agent.getY()) <= 2 && !points.contains(feet)) points.add(feet);
+        }
+        points.sort(Comparator.comparingDouble(p -> p.distanceToSqr(agent.position())));
+        for (Vec3 feet : points.subList(0, Math.min(24, points.size()))) {
+            JsonObject goal = new JsonObject(), position = new JsonObject();
+            position.addProperty("x", feet.x); position.addProperty("y", feet.y); position.addProperty("z", feet.z);
+            goal.add("position", position);
+            goal.addProperty("path_checked", false);
+            goals.add(goal);
+        }
+        return goals;
     }
 
     public static JsonObject player(AgentEntity agent) {
@@ -77,6 +104,9 @@ public final class ServerSnapshotService {
         JsonObject out = new JsonObject();
         out.add("slots", slots);
         out.add("counts", counts);
+        out.addProperty("capacity", AgentEntity.SLOT_COUNT);
+        out.addProperty("used_slots", java.util.stream.IntStream.range(0, inventory.getContainerSize()).filter(i -> !inventory.getItem(i).isEmpty()).count());
+        out.addProperty("pickup_error", agent.pickupError());
         return out;
     }
 
@@ -85,6 +115,7 @@ public final class ServerSnapshotService {
     }
 
     public static final class NearbyScan {
+        public List<BlockPos> source = List.of();
         public final JsonArray blocks;
         public final boolean truncated;
 
@@ -125,6 +156,7 @@ public final class ServerSnapshotService {
                 .thenComparingInt(sample -> sample.pos.getY())
                 .thenComparingInt(sample -> sample.pos.getX())
                 .thenComparingInt(sample -> sample.pos.getZ()));
+        List<BlockPos> source = found.stream().map(BlockSample::pos).toList();
         boolean truncated = found.size() > MAX_BLOCKS;
         if (truncated) {
             found = found.subList(0, MAX_BLOCKS);
@@ -133,7 +165,7 @@ public final class ServerSnapshotService {
         for (BlockSample sample : found) {
             array.add(blockView(level, agent.position(), sample));
         }
-        return new NearbyScan(array, truncated);
+        NearbyScan scan = new NearbyScan(array, truncated); scan.source=source; return scan;
     }
 
     public static JsonArray nearbyPlayers(AgentEntity agent) {

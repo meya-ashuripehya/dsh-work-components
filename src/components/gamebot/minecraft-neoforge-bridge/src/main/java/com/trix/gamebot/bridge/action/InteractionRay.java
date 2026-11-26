@@ -14,7 +14,7 @@ public final class InteractionRay {
     public static boolean canSee(AgentEntity agent, BlockPos pos, Vec3 hit) {
         BlockHitResult clip = agent.level().clip(new ClipContext(
                 agent.getEyePosition(),
-                hit,
+                hit.add(hit.subtract(agent.getEyePosition()).normalize().scale(1.0E-4)),
                 ClipContext.Block.COLLIDER,
                 ClipContext.Fluid.NONE,
                 agent

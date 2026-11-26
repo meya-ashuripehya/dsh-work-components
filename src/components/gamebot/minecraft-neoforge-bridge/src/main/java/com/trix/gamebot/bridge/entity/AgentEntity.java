@@ -31,6 +31,54 @@ public class AgentEntity extends PathfinderMob {
     private double lookY;
     private double lookZ;
     private boolean lookAtActive;
+    private final com.google.gson.JsonArray recentPickups = new com.google.gson.JsonArray();
+    private long pickupSequence;
+    private boolean pickupError;
+    private final java.util.Map<java.util.UUID, Long> ownDrops = new java.util.LinkedHashMap<>();
+    public void deferOwnPickup(java.util.UUID id) {
+        ownDrops.put(id, level().getGameTime() + 1200);
+        while (ownDrops.size() > 256) ownDrops.remove(ownDrops.keySet().iterator().next());
+    }
+    public boolean defersPickup(java.util.UUID id) {
+        Long until = ownDrops.get(id);
+        if (until != null && until <= level().getGameTime()) { ownDrops.remove(id); return false; }
+        return until != null;
+    }
+    public void recordPickupError() { pickupError = true; }
+    public boolean pickupError() { return pickupError; }
+
+    public boolean handLocked() { return handLocked; }
+    public void storeOffhand(ItemStack stack) { offhand = stack.copy(); setItemSlot(EquipmentSlot.OFFHAND, offhand.copy()); }
+    @Override
+    protected net.minecraft.world.InteractionResult mobInteract(net.minecraft.world.entity.player.Player player, InteractionHand hand) {
+        if (hand != InteractionHand.MAIN_HAND) return net.minecraft.world.InteractionResult.PASS;
+        if (!level().isClientSide) {
+            if (handLocked) { player.displayClientMessage(Component.literal("正在操作物品，请稍后打开物品栏"), true); return net.minecraft.world.InteractionResult.CONSUME; }
+            player.openMenu(new net.minecraft.world.SimpleMenuProvider((id, inv, viewer) ->
+                new net.minecraft.world.inventory.ChestMenu(net.minecraft.world.inventory.MenuType.GENERIC_9x4, id, inv, inventory, 4) {
+                    @Override public boolean stillValid(net.minecraft.world.entity.player.Player viewer) {
+                        return AgentEntity.this.isAlive() && viewer.distanceToSqr(AgentEntity.this) <= 64 && !handLocked;
+                    }
+                }, Component.literal(agentName + " 的物品栏")));
+        }
+        return net.minecraft.world.InteractionResult.sidedSuccess(level().isClientSide);
+    }
+    public void equipInventorySlot(int slot) {
+        if (handLocked) throw new IllegalStateException("hand transaction in progress");
+        if (slot < 0 || slot >= SLOT_COUNT) throw new IllegalArgumentException("inventory slot");
+        if (slot < 9) selectSlot(slot);
+        else {
+            ItemStack previous = inventory.getItem(selectedSlot);
+            inventory.setItem(selectedSlot, inventory.getItem(slot)); inventory.setItem(slot, previous); refreshHands();
+        }
+    }
+    public void recordPickup(String item, int count) {
+        pickupError = false;
+        var row = new com.google.gson.JsonObject(); row.addProperty("id", ++pickupSequence);
+        row.addProperty("item_id", item); row.addProperty("count", count); row.addProperty("game_time", level().getGameTime());
+        recentPickups.add(row); while (recentPickups.size() > 20) recentPickups.remove(0);
+    }
+    public com.google.gson.JsonArray recentPickups() { return recentPickups.deepCopy(); }
 
     public AgentEntity(EntityType<? extends AgentEntity> type, Level level) {
         super(type, level);

@@ -125,7 +125,9 @@ export function videoLine(a, { mode = 'stub', who = '' } = {}) {
   const dur = Number(a.durationSec) > 0 ? ' ' + videoClock(a.durationSec) : (a.link ? '' : ' ' + formatBytes(a.bytes))
   const head = `${label}${dur}${who ? ', ' + who : ''}`
   if (mode === 'real') return `[${head} — attached below; you are watching it yourself]`
-  const desc = a.description ? String(a.description).replace(/\s+/g, ' ').trim().slice(0, 2000) : ''
+  const rawDesc = a.description ? String(a.description) : ''
+  const descCap = /## 片段 \d+/.test(rawDesc) ? 24000 : 2000
+  const desc = rawDesc.replace(/\s+/g, ' ').trim().slice(0, descCap)
   if (desc) return `[${head} · 内容描述：${desc}] (Gemini watched it and wrote this, not you; watch_video("${a.id}", question) asks Gemini about details or a time range)`
   if (a.videoStatus === 'pending') return `[${head}; Gemini is still watching it] (watch_video("${a.id}", question) can ask about it)`
   if (a.videoStatus === 'failed') return `[${head}] (Gemini was asked to watch it at the world's console and this sheet came back blank; watch_video("${a.id}", question) can try again)`

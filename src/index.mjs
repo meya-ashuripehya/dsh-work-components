@@ -17,7 +17,7 @@
  *  3a. 网关核验（通用）：聊天输入栏「核验」开关（按会话保存）；开启后每回合的模型调用经 llm/stream 只读采集，
  *     用设置页下载到 <数据目录>/tools/llm-gateway-bench 的 llm-gateway-bench（未下载时不显示开关，下载后无需重启）判定回包模型、流式真实性、Token 计数、中文完整性、缓存，
  *     结果在 /dsh-workbench/api/trust/*，客户端在「用量」右侧显示。
- *  3. 会话控制（通用）：撤回 / 重试（按回合就地截断多帧 zstd，保留连续 seq，并清投影缓存）、熔断（取消；自动熔断再截掉失败尾轮）；API 在 /dsh-workbench/api/session/*。
+ *  3. 会话控制（通用）：撤回 / 重试（按回合就地截断多帧 zstd，保留连续 seq，并清投影缓存）、熔断（取消；自动熔断再截掉失败尾轮）、按会话的 temperature / top_p（只注入 DeepSeek 官方普通对话）；API 在 /dsh-workbench/api/session/*。
  *  4. 多模态图片：`mm_send_image`（本地文件 → attachments.saveImage → Host attachmentId）。model 侧 render 只发 text+image（DeepSeek Messages 拒 type:'mm'）；MmCard 数据走 presentationMeta.mm，客户端用 meta / image fallback。
  *     本地文件：`mm_send_file` 走同一套 MmCard。图片复用 kind:image，视频为 kind:video，其余为 kind:document。PDF、Markdown、Word、Excel、PowerPoint 抽出正文放进卡片。模型只看到文字；Telegram 仍按文档发送。群聊里只有授权用户能调用。
  *     地图工具（默认关闭）：设置页保存高德 Key 后注册 geo_resolve / place_search / place_detail / route / weather / map_card。
@@ -68,12 +68,13 @@ import { createMapFeature } from './map/index.mjs'
 import { createGptImageFeature, handleGptImageApi } from './gpt-image/index.mjs'
 import { createVideoFeature, handleVideoApi, migrateVideoKeys, createYtdlpInstaller, ytdlpCandidates, resolveVideoKey } from './video/index.mjs'
 import { createYtdlp } from './chatroom/ytdlp.mjs'
+import { createBrowserVideo } from './video/browser-video.mjs'
 import { balanceSchemaShape, createBalanceFeature, handleBalanceApi } from './balance/index.mjs'
 import { handleCalendarApi } from './calendar/api.mjs'
 import { createCalendarFeature } from './calendar/index.mjs'
 import { handleNotesApi } from './notes/api.mjs'
 import { createNotesFeature } from './notes/index.mjs'
-import { createPreCompactionHistoryFeature, createCompanionCompactionFeature } from './session-history/index.mjs'
+import { createPreCompactionHistoryFeature, createCompanionCompactionFeature, companionStatusBadge } from './session-history/index.mjs'
 import { createGoogleToolCapFeature, GOOGLE_TOOL_CAP_KEYS } from './google-tool-cap/index.mjs'
 import { labelsFromRegistration } from './google-tool-cap/groups.mjs'
 import { createGoogleSchemaGuard } from './google-schema/wrap.mjs'
@@ -100,6 +101,9 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { imageSize } from 'image-size'
+import { SECRET_MASK, maskSecretFields } from './settings-mask.mjs'
+
+export { SECRET_MASK }
 
 export { COMPONENTS, componentById, createComponentManager, contributeInfo, localComponentsDir, CONTRIBUTE_COMPARE_URL, dataDir, dirSize, killProcessesUnder, managedPaths, settingsFilePath, toolsDir }
 
@@ -238,6 +242,24 @@ export const SettingsSchema = z.object({
   reaGhidraInstallDir: z.string().default('').description('可选。本机 Ghidra 安装目录（GHIDRA_INSTALL_DIR）；留空则不启用 Ghidra。Windows 上 Ghidra 支持为实验性（只读）。'),
   reaJavaHome: z.string().default('').description('可选。Ghidra 所需的 64 位 JDK 21+ 目录（JAVA_HOME）；java/javac 已在 PATH 时可留空。'),
   reaProvider: z.string().default('').description('可选。原生分析引擎：ghidra / hopper / ida（REA_ANALYSIS_PROVIDER）；留空自动选择。'),
+  cursorEnabled: z.boolean().default(false).description('启动 Cursor 委派 MCP（cursor-delegate-mcp，经 ACP 调用本机 cursor-agent）。'),
+  cursorPackage: z.string().default('cursor-delegate-mcp').description('Cursor 委派 MCP 的 npm 包（可带版本），「下载安装」时安装到 tools/cursor。'),
+  cursorAgentCommand: z.string().default('').description('cursor-agent 可执行文件路径（ACP_AGENT_COMMAND）。留空按 PATH 解析。'),
+  cursorAgentArgs: z.string().default('').description('传给 cursor-agent 的启动参数（ACP_AGENT_ARGS）。留空用上游默认 acp。'),
+  cursorTranscript: z.string().default('').description('可选。ACP 转录文件绝对路径（CURSOR_DELEGATE_TRANSCRIPT）。'),
+  cursorHandshakeMs: z.string().default('').description('可选。ACP 握手超时毫秒（CURSOR_DELEGATE_HANDSHAKE_MS）。留空用上游默认。'),
+  cursorHardCapMs: z.string().default('').description('单次委派硬上限毫秒（CURSOR_DELEGATE_HARD_CAP_MS）。留空用上游默认 3600000。'),
+  cursorIdleMs: z.string().default('').description('无输出空闲超时毫秒（CURSOR_DELEGATE_IDLE_MS）。留空或 0 表示不启用。'),
+  cursorLogSize: z.string().default('').description('ACP 日志保留条数（ACP_LOG_SIZE）。留空用上游默认。'),
+  ghidraEnabled: z.boolean().default(false).description('启动 Ghidra 逆向 MCP（pyghidra-mcp，无头，不需要 Ghidra GUI 常开）。'),
+  ghidraPackage: z.string().default('pyghidra-mcp').description('Ghidra MCP 的 PyPI 包名，「下载安装」时安装到 tools/ghidra。'),
+  ghidraInstallDir: z.string().default('').description('Ghidra 根目录（GHIDRA_INSTALL_DIR，内含 support/analyzeHeadless）。留空读环境变量。'),
+  ghidraProjectPath: z.string().default('').description('Ghidra 项目目录或 .gpr 文件（--project-path）。留空用上游默认。'),
+  ghidraProjectName: z.string().default('').description('Ghidra 项目名（--project-name）。留空用上游默认 my_project。'),
+  ghidraInputPaths: z.string().default('').description('启动时导入的二进制，多个用分号分隔。留空则用 import_binary 按需导入。'),
+  ghidraWaitForAnalysis: z.string().default('').description('填 1 则等分析完成后再对外服务（--wait-for-analysis）。留空则后台分析。'),
+  ilspyEnabled: z.boolean().default(false).description('启动 ILSpy MCP，把 .NET 程序集反编译成 C# / IL。无下载步骤，需本机已有 ILSpy.Mcp.exe。'),
+  ilspyCommand: z.string().default('').description('ILSpy.Mcp.exe 绝对路径。留空用 %USERPROFILE%\\Tools\\ilspy-mcp\\ILSpy.Mcp.exe。'),
   godotProject: z.string().default('').description('Godot 项目目录（含 project.godot）；「安装插件到项目」把同版本插件装进它的 addons/godot_ai。'),
 
   windowsEnabled: z.boolean().default(false).description('启动 Windows-MCP（控制本机桌面：窗口、键鼠、截图、文件系统等；仅 Windows）。'),
@@ -245,7 +267,7 @@ export const SettingsSchema = z.object({
     .description('stdio：由本插件拉起 windows-mcp（推荐）；http：连接已在运行的 Windows-MCP HTTP 服务（如计划任务 127.0.0.1:18765）。'),
   windowsUrl: z.string().default('http://127.0.0.1:18765/mcp').description('HTTP 模式下的 Windows-MCP 地址（streamable-http）。'),
   windowsPackage: z.string().default('windows-mcp').description('Windows-MCP 的 pip 包名（入口 windows-mcp），「下载安装」时安装到 tools/windows。'),
-  desktopEnabled: z.boolean().default(false).description('启动桌面控制（按控件操作键鼠和截图；仅 Windows）。插件自带，打开即可，无需下载。不含文件、注册表和 PowerShell。'),
+  desktopEnabled: z.boolean().default(false).description('启动桌面控制（按控件操作键鼠和截图；仅 Windows）。需先下载并校验经纪人，默认关闭。不含文件、注册表和 PowerShell。'),
   desktopDock: z.boolean().default(false).description('右侧停靠：开启后，本窗口以最小宽度停靠于屏幕右侧，当前操作的窗口自动铺满左侧。关闭后恢复各窗口原有位置。'),
   notionEnabled: z.boolean().default(false).description('启动官方 Notion MCP（经 mcp-remote OAuth 桥；首次连接会弹出授权页）。'),
   notionUrl: z.string().default('https://mcp.notion.com/mcp').description('Notion MCP 远程地址。'),
@@ -339,8 +361,14 @@ export const SettingsSchema = z.object({
   videoMaxHeight: z.string().default('480').description('服务账号模式下载视频的清晰度上限（像素高度），默认 480。API Key 模式忽略。'),
   videoBaseUrl: z.string().default('').description('Gemini API 的 Base URL。留空时使用 Google AI Studio 默认地址 https://generativelanguage.googleapis.com；可填写兼容的代理或网关地址（http/https，末尾斜杠会被去掉，无效时回落到默认地址）。密钥只放在 x-goog-api-key 请求头中。'),
   videoModel: z.string().default('gemini-3.8-flash').description('视频理解模型，默认 gemini-3.8-flash（Gemini API generateContent）。'),
-  videoYoutube: z.boolean().default(true).description('处理 YouTube 公开链接（直接交给 Gemini，不下载）。默认开启。'),
-  videoBilibili: z.boolean().default(true).description('处理哔哩哔哩链接：需 yt-dlp（查找顺序：设置中的路径 → PATH → 设置页「下载 yt-dlp」下载的副本），下载后按普通视频处理（单个不超过 25 MB）。默认开启。'),
+  videoAutoSegment: z.boolean().default(true).description('长视频自动分段。默认开启。按时长切成数段再交给 Gemini，合并后仍按原视频时间轴标注。YouTube 公开链接仍直接交给 Gemini，不下载、不分段。'),
+  videoSegmentSeconds: z.natural().min(30).max(3600).default(600).description('每段目标时长（秒），30–3600，默认 600。'),
+  videoSegmentOverlapSeconds: z.natural().min(0).max(120).default(5).description('相邻段重叠（秒），0–120，默认 5，且小于每段时长。'),
+  videoDownloadMaxMb: z.natural().min(25).max(8192).default(4096).description('原始视频下载上限（MB），25–8192，默认 4096。上传分段仍遵守各入口上限：会话 200 MB、哔哩哔哩与聊天室 25 MB、服务账号未配置存储桶时 20 MB。普通附件上限仍是 25 MB。'),
+  videoYoutube: z.boolean().default(true).description('处理 YouTube 公开链接（直接交给 Gemini，不下载、不分段）。默认开启。'),
+  videoTiktok: z.boolean().default(true).description('通过 Chrome 浏览器加载 TikTok 视频、提取媒体地址并流式下载，不使用 yt-dlp；下载沿用插件代理。自动分段开启时原始文件默认不超过 4096 MB，上传分段仍不超过会话 200 MB 或聊天室 25 MB。默认开启。'),
+  videoDouyin: z.boolean().default(true).description('通过 Chrome 浏览器加载抖音视频、提取媒体地址并直连下载，不使用 yt-dlp。自动分段开启时原始文件默认不超过 4096 MB，上传分段仍不超过会话 200 MB 或聊天室 25 MB。验证需在浏览器完成后重试。默认开启。'),
+  videoBilibili: z.boolean().default(true).description('处理哔哩哔哩链接：需 yt-dlp（查找顺序：设置中的路径 → PATH → 设置页「下载 yt-dlp」下载的副本）。自动分段开启时先下载（默认不超过 4096 MB）再切成不超过 25 MB 的片段；关闭自动分段时单个不超过 25 MB。默认开启。'),
     videoYtdlpPath: z.string().default('').description('可选：yt-dlp 程序的完整路径。留空时先找 PATH，再用设置页下载到数据目录 bin/ 的副本。'),
   calendarEnabled: z.boolean().default(true).description('启用日历工具（公历、农历、节气、法定节假日、日程、天气预报）。默认开启。关闭后卸下工具，已保存的日程仍保留。'),
   notesEnabled: z.boolean().default(false).description('启用笔记工具：智能体把总结出的要点与知识库中没有的新知识按「类型 › 类别 › 笔记」三级整理，并在后续任务中检索复用。默认关闭。关闭后卸下工具，已保存的笔记仍保留。'),
@@ -448,14 +476,9 @@ export const Config = RuntimeSettingsSchema
 export const SECRET_KEYS = Object.entries(SettingsSchema.dict || {})
   .filter(([, s]) => s?.meta?.role === 'secret')
   .map(([k]) => k)
-/** Stand-in returned for a saved secret. Posting it back means "keep the saved value"; '' clears it. */
-export const SECRET_MASK = '__dsh_secret_saved__'
-
 /** Copy of settings safe to send to the browser: saved secrets become SECRET_MASK. */
 export function maskSecrets(value) {
-  const out = { ...(value || {}) }
-  for (const k of SECRET_KEYS) if (typeof out[k] === 'string' && out[k] !== '') out[k] = SECRET_MASK
-  return out
+  return maskSecretFields(value, SECRET_KEYS)
 }
 
 /** Drop masked secrets from an incoming patch so the saved value stays. */
@@ -695,7 +718,9 @@ export function apply(ctx, config) {
     }
     try { setBoundRoomSeatIds(await chatroom.memberSeatIdsOf(id)) } catch { setBoundRoomSeatIds(undefined) }
   }
+  const browserVideo = createBrowserVideo({ getTools: () => ctx.tools, getConfig: () => current })
   const chatroom = createChatroomFeature(ctx, () => current, {
+    browserVideo,
     ytdlp: sharedYtdlp,
     saveSeats: (seats) => applyPatch({ [CHATROOM_SEATS_KEY]: seats }),
     savePatch: (patch) => applyPatch(patch),
@@ -706,7 +731,7 @@ export function apply(ctx, config) {
   })
   // 「多模态 › 视频理解」：聊天室直接读本组件的设置；会话工具用本组件的密钥 videoGeminiKey，代理沿用聊天室的 Gemini 路由
   const videoGemini = { resolveKey: async () => resolveVideoKey(current), fetch: () => chatroom.gemini?.fetch?.() }
-  const video = createVideoFeature(ctx, () => current, { getGemini: () => videoGemini, ytdlp: sharedYtdlp, installer: ytdlpInstaller })
+  const video = createVideoFeature(ctx, () => current, { getGemini: () => videoGemini, browserVideo, ytdlp: sharedYtdlp, installer: ytdlpInstaller })
   // Minecraft「绑定聊天室」：保存 Minecraft 卡片或启用 Minecraft 时对齐绑定房间与席位池（见 components/gamebot/room-bind.mjs）。
   const mcRoom = createMinecraftRoomBinding({
     getConfig: () => current,
@@ -786,6 +811,10 @@ export function apply(ctx, config) {
     }
   }
   const settingsPersisted = () => scope !== null || filePersist
+  function companionPayload() {
+    const runtime = companionCompaction.state()
+    return { ...runtime, badge: companionStatusBadge(runtime, current) }
+  }
 
   /** 程序内写设置（不经设置页表单）：ctx.settings 范围或数据目录 settings.json。 */
   async function applyPatch(patch) {
@@ -887,6 +916,8 @@ export function apply(ctx, config) {
   void balance.sync()
   void calendar.sync()
   void notes.sync()
+  void preCompactionHistory.sync()
+  void companionCompaction.sync()
   void googleToolCap.sync()
   void googleSchemas.sync()
   void stickers.sync()
@@ -957,7 +988,7 @@ export function apply(ctx, config) {
           const url = new URL(req.url ?? '/', 'http://local')
           const sub = url.pathname.slice(API_PREFIX.length) || '/'
           if (sub === '/settings' && req.method === 'GET') {
-            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await qq.decorateSettings(await telegram.decorateSettings(maskSecrets(current), SECRET_MASK), SECRET_MASK) })
+            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), companionCompaction: companionPayload(), value: await qq.decorateSettings(await telegram.decorateSettings(maskSecrets(current), SECRET_MASK), SECRET_MASK) })
           }
           if (sub === '/settings' && req.method === 'POST') {
             if (req.headers['sec-fetch-site'] === 'cross-site') return sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
@@ -1020,7 +1051,7 @@ export function apply(ctx, config) {
             await cards.sync()
             await minecraftMembers.sync()
             await mcControl.sync()
-            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), value: await qq.decorateSettings(await telegram.decorateSettings(maskSecrets(current), SECRET_MASK), SECRET_MASK) })
+            return sendJson(res, 200, { ok: true, persisted: settingsPersisted(), settingsFile: scope ? null : settingsFilePath(), secretMask: SECRET_MASK, showExperimental: showExperimental(), companionCompaction: companionPayload(), value: await qq.decorateSettings(await telegram.decorateSettings(maskSecrets(current), SECRET_MASK), SECRET_MASK) })
           }
           if (sub === '/gamebot/minecraft/room' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, rooms: await mcRoom.rooms(), bound: String(current[MC_ROOM_KEY] || ''), last: mcRoom.last() })
@@ -1059,6 +1090,7 @@ export function apply(ctx, config) {
               localComponentsDir: localComponentsDir(),
               contributeCompareUrl: CONTRIBUTE_COMPARE_URL,
               components: [...await components.list(), await telegram.item(), await qq.item()],
+              companionCompaction: companionPayload(),
             })
           }
           const addon = /^\/components\/([\w-]+)\/addon$/.exec(sub)
@@ -1218,7 +1250,7 @@ export function apply(ctx, config) {
             if (handled !== false) return
           }
           if (sub.startsWith('/session')) {
-            const handled = await handleSessionApi(ctx, sessionControls.circuit, req, res, sub, { sendJson, readBody, getConfig: () => current })
+            const handled = await handleSessionApi(ctx, sessionControls.circuit, req, res, sub, { sendJson, readBody, getConfig: () => current, sampling: sessionControls.sampling })
             if (handled !== false) return
           }
           return sendJson(res, 404, { ok: false, error: 'not found' })

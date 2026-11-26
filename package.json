@@ -1,7 +1,7 @@
 {
   "name": "dsh-work-components",
-  "version": "0.4.4-beta.1",
-  "description": "DSH 工作组件插件：在「工作组件」设置页统一挂载并管理控制其他工作软件的 MCP 服务器（Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / 桌面控制 / Notion / Gmail / Cloudflare / GitHub / ComfyUI / FFmpeg / Obsidian / REA 逆向分析），另含按游戏分卡的 GameBot（Minecraft / 文明 VI / 视觉）、会话控制、「通道」分组的 Telegram 和多模态工具 mm_send_image。",
+  "version": "0.4.4",
+  "description": "DSH 工作组件插件：在「工作组件」设置页统一挂载并管理控制其他工作软件的 MCP 服务器（Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / 桌面控制 / Notion / Gmail / Cloudflare / GitHub / ComfyUI / FFmpeg / Obsidian / REA 逆向分析 / Cursor / Ghidra / ILSpy），另含按游戏分卡的 GameBot（Minecraft / 文明 VI / 视觉）、会话控制、「通道」分组的 Telegram 和多模态工具 mm_send_image。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -52,18 +52,15 @@
     "src/components/gamebot/minecraft-neoforge-bridge/**",
     "!src/components/gamebot/minecraft-neoforge-bridge/build/**",
     "!src/components/gamebot/minecraft-neoforge-bridge/.gradle/**",
+    "!src/components/gamebot/minecraft-neoforge-bridge/.eclipse/**",
     "!src/components/gamebot/minecraft-neoforge-bridge/src/test/**",
     "src/components/gamebot/protocol/minaret/**",
     "src/components/gamebot/docs/*.md",
     "src/components/gamebot/src/gamebot/adapters/civilization/*.mjs",
     "src/components/gamebot/src/gamebot/adapters/civilization/mod/TRIXCompanion/**",
-    "src/components/desktop/**",
-    "!src/components/desktop/**/bin/**",
-    "!src/components/desktop/**/obj/**",
-    "!src/components/desktop/**/*.old*",
-    "!src/components/desktop/**/dist-build/**",
-    "!src/components/desktop/**/*.pdb",
-    "!src/components/desktop/broker/tests/**",
+    "src/components/desktop/index.mjs",
+    "src/components/desktop/broker-install.mjs",
+    "src/components/desktop/broker-manifest.json",
     "!**/.env",
     "!**/.env.*",
     "!**/*.pem",
@@ -78,6 +75,14 @@
     "!src/components/gamebot/minecraft-neoforge-bridge/run/**",
     "LICENSE",
     "NOTICE",
+    "SECURITY.md",
+    "PRIVACY.md",
+    "CHANGELOG.md",
+    "docs/compatibility.md",
+    "docs/release/market-readiness.md",
+    "docs/release/CHANGELOG-0.4.4.md",
+    "docs/release/about-suggestion.md",
+    "docs/release/host-not-run.md",
     "vendor/dsh-tools/LICENSE",
     "vendor/wsz987/*/LICENSE"
   ],
@@ -87,10 +92,13 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-slots"
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-conversation"
       ],
       "platform": "web"
+    },
+    "marketplace": {
+      "profiles": ["web"]
     }
   },
   "scripts": {
@@ -105,11 +113,14 @@
     "smoke:connect": "node scripts/connect-smoke.mjs",
     "smoke:local": "node scripts/localcomp-smoke.mjs",
     "smoke:gamebot": "node scripts/smoke-gamebot.mjs",
+    "pack:release": "node scripts/pack-release.mjs",
+    "verify:package": "node scripts/verify-package.mjs --source",
     "vendor:sync": "node scripts/vendor-sync.mjs",
     "vendor:channels": "node scripts/vendor-channels.mjs"
   },
   "engines": {
-    "node": "^22.19 || >=24"
+    "node": "^22.19 || >=24",
+    "dsh": "0.2.2-rc.5"
   },
   "publishConfig": {
     "access": "public",
@@ -146,5 +157,13 @@
     "@wsz987/channel-qq": "0.5.1",
     "image-size": "^2.0.4",
     "lunar-javascript": "^1.7.7"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "0.2.2-rc.5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
   }
 }

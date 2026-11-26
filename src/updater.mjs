@@ -11,12 +11,13 @@
  * 状态落在 dataDir()/update-state.json（上次检查日、忽略版本、进行中的任务）。
  */
 import { execFile, spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { dataDir, PACKAGE_ID, pluginRoot, dshHome } from './tools.mjs'
+import { stageVerifiedNpmUpdate } from './update-integrity.mjs'
 
 const execFileAsync = promisify(execFile)
 const STATE_FILE = 'update-state.json'
@@ -384,34 +385,6 @@ function findDshCmd() {
   return null
 }
 
-async function downloadToFile(url, dest, onProgress) {
-  const res = await fetch(url, { headers: { 'user-agent': 'dsh-work-components-updater' } })
-  if (!res.ok) throw new Error(`下载失败：HTTP ${res.status}`)
-  const total = Number(res.headers.get('content-length')) || 0
-  mkdirSync(dirname(dest), { recursive: true })
-  const tmp = dest + '.part'
-  const file = createWriteStream(tmp)
-  const reader = res.body?.getReader?.()
-  let done = 0
-  if (reader) {
-    while (true) {
-      const { value, done: end } = await reader.read()
-      if (end) break
-      done += value.byteLength
-      file.write(Buffer.from(value))
-      if (onProgress) onProgress(done, total)
-    }
-    await new Promise((resolve, reject) => file.end((err) => (err ? reject(err) : resolve())))
-  } else {
-    const buf = Buffer.from(await res.arrayBuffer())
-    done = buf.length
-    writeFileSync(tmp, buf)
-    if (onProgress) onProgress(done, total || done)
-  }
-  renameSync(tmp, dest)
-  return { bytes: done, total: total || done }
-}
-
 /**
  * 找 npm：本插件 node_modules/npm（一般没有）→ 当前 node 旁的 npm-cli.js → PATH 上的 npm。
  * 旧实现直接用 node 跑 <root>/node_modules/npm/bin/npm-cli.js：文件不存在时 node 照样启动、以退出码 1 结束，
@@ -538,32 +511,30 @@ async function applyNpmUpdate(install, targetVersion, report) {
       { status: 500 },
     )
   }
-  const reg = ''
-  const npm = await queryNpmLatest(reg)
-  const version = targetVersion || npm.latest
-  if (!npm.tarball && !version) throw new Error('无法解析 npm 包下载地址。')
   const staging = join(dataDir(), STAGING_DIR)
   mkdirSync(staging, { recursive: true })
-  const tarballUrl = (await queryNpmLatest(reg)).tarball
-  // Re-query for exact version meta
-  const base = 'https://registry.npmjs.org'
-  const metaRes = await fetch(`${base}/${PACKAGE_NAME}/${encodeURIComponent(version)}`)
-  if (!metaRes.ok) throw new Error(`无法获取 ${PACKAGE_NAME}@${version} 元数据（HTTP ${metaRes.status}）`)
-  const meta = await metaRes.json()
-  const url = meta?.dist?.tarball
-  if (!url) throw new Error('元数据缺少 tarball 地址。')
-  const dest = join(staging, `${PACKAGE_NAME}-${version}.tgz`)
-  report({ state: 'running', step: `正在下载 ${PACKAGE_NAME}@${version}…`, progress: 5, mode: 'determinate' })
-  await downloadToFile(url, dest, (done, total) => {
-    const pct = total > 0 ? Math.min(85, Math.round((done / total) * 80) + 5) : 40
-    const mb = (n) => (n / 1048576).toFixed(1)
-    report({
-      step: total > 0
-        ? `正在下载：${mb(done)} / ${mb(total)} MiB`
-        : `正在下载：${mb(done)} MiB`,
-      progress: pct,
+  report({ state: 'running', step: `正在核对 ${PACKAGE_NAME} 的精确版本…`, progress: 5, mode: 'determinate' })
+  let staged
+  try {
+    staged = await stageVerifiedNpmUpdate({
+      packageName: PACKAGE_NAME,
+      targetVersion: targetVersion || undefined,
+      destDir: staging,
+      onProgress: (done, total) => {
+        const pct = total > 0 ? Math.min(85, Math.round((done / total) * 80) + 5) : 40
+        const mb = (n) => (n / 1048576).toFixed(1)
+        report({
+          step: total > 0
+            ? `正在下载并校验：${mb(done)} / ${mb(total)} MiB`
+            : `正在下载并校验：${mb(done)} MiB`,
+          progress: pct,
+        })
+      },
     })
-  })
+  } catch (error) {
+    throw new Error(`更新包校验失败，未写入配置档：${error.message}`)
+  }
+  const dest = staged.dest
   report({ step: '正在通过官方 dsh 写入配置档…', progress: 88 })
   // Official path: dsh plugin --profile <name> add <tarball>
   await new Promise((resolve, reject) => {

@@ -2,19 +2,24 @@
  * 通用功能：desktop（桌面控制）
  * @see ../../../docs/component-module.md
  *
- * 经纪人随插件提供（src/components/desktop/broker/dist）。
- * 打开「启用」即拉起，不需要「下载安装」。
+ * 发布包不再内置经纪人 exe（体积超过严格市场的 50 MiB 上限）。
+ * 开发树里若已有 broker/dist，直接使用；否则只能在用户点击「下载安装」后，
+ * 按 broker-manifest.json 校验并安装。不要在 npm postinstall 里下载。
  */
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { callMcpTool, jsonOf, mcpNotReady, result, toolFailed } from '../../connect-lib.mjs'
-import { pluginRoot } from '../../tools.mjs'
+import { dataDir, download, pluginRoot } from '../../tools.mjs'
 import { IS_WIN, OFF, stdio } from '../shared.mjs'
+import {
+  STATUS,
+  brokerState,
+  bundledBrokerExe,
+  installBroker,
+  loadManifest,
+} from './broker-install.mjs'
 
 export const id = 'desktop'
 
-/** 随包的自包含经纪人。pluginRoot 在构建后是包目录。 */
-export const BROKER_EXE = join(pluginRoot(), 'src', 'components', 'desktop', 'broker', 'dist', 'DSHDesktopBroker.exe')
+export const BROKER_EXE = bundledBrokerExe(pluginRoot())
 
 /** 本机桌面即目标；无独立「应用进程」可匹配。 */
 export const app = { name: 'Windows 桌面', exe: 'explorer.exe', match: /^explorer$/ }
@@ -24,10 +29,18 @@ export const meta = {
   title: '桌面控制',
   group: '通用',
   serverName: 'desktop',
-  summary: '按控件操作本机 Windows 桌面（键鼠、截图）。插件自带，打开启用即可。不含文件、注册表和 PowerShell。',
+  summary: '按控件操作本机 Windows 桌面（键鼠、截图）。启用前需下载校验过的经纪人。不含文件、注册表和 PowerShell。',
 }
 
-const MISSING = '插件里没有找到桌面控制程序。'
+const MISSING = '桌面控制程序还没安装。请先在设置页下载安装。'
+
+function currentBroker() {
+  return brokerState({
+    bundled: BROKER_EXE,
+    dataDir: dataDir(),
+    manifest: loadManifest(pluginRoot()),
+  })
+}
 
 /** @type {import('../shared.mjs').ComponentModule} */
 export const component = {
@@ -36,14 +49,34 @@ export const component = {
   serverName: 'desktop',
   summary: meta.summary,
   keys: ['desktopEnabled', 'desktopDock'],
-  builtin: true,
-  installed() { return true },
+  builtin: false,
+  installed() { return currentBroker().state === STATUS.READY },
+  needsInstall() { return !this.installed() },
+  async install(_cfg, task) {
+    const manifest = loadManifest(pluginRoot())
+    task?.step?.('正在下载桌面经纪人')
+    task?.log?.(`GET ${manifest.assets?.['win32-x64']?.url || '(无清单)'}`)
+    return installBroker({
+      manifest,
+      dataDir: dataDir(),
+      download: (url, dest, opts) => download(url, dest, {
+        ...opts,
+        proxy: task?.proxy,
+        log: task?.log,
+        timeoutMs: 120_000,
+      }),
+    })
+  },
   launch(cfg) {
     if (!cfg.desktopEnabled) return OFF
     if (!IS_WIN) return { ok: false, reason: '桌面控制只在 Windows 上可用' }
-    if (!existsSync(BROKER_EXE)) return { ok: false, reason: MISSING }
+    const broker = currentBroker()
+    if (broker.state === STATUS.CHECKSUM_FAILED) return { ok: false, reason: '桌面经纪人校验失败，未启动。' }
+    if (broker.state === STATUS.INSTALLING) return { ok: false, reason: '桌面经纪人正在安装。' }
+    if (broker.state !== STATUS.READY || !broker.exe) return { ok: false, reason: MISSING }
     const env = cfg.desktopDock ? { DSH_DESKTOP_DOCK: '1' } : {}
-    return { ok: true, source: 'managed', runtime: '随插件提供', config: stdio('desktop', BROKER_EXE, [], { env }) }
+    const runtime = broker.source === 'bundled' ? '本地构建' : '已校验安装'
+    return { ok: true, source: 'managed', runtime, config: stdio('desktop', broker.exe, [], { env }) }
   },
 }
 

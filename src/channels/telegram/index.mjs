@@ -79,7 +79,7 @@ export function telegramSchemaShape(z) {
     telegramChannelRoutes: z.string().default('').description('通道级预设覆盖，形如 telegram:预设名（routing.overrides.channel）。留空不覆盖。'),
     telegramConversationRoutes: z.string().default('').description('已停用。会话级覆盖会压过每个机器人自己的预设，启动时忽略，保存机器人时清空。'),
     telegramRoutingMode: z.union(['global', 'channel', 'account', 'conversation']).default('conversation').description('路由模式：按全局 / 通道 / 账号 / 会话选择智能体预设。'),
-    telegramIncludeMetadataPrefix: z.boolean().default(true).description('入站消息前附加通道元数据前缀（includeMetadataPrefix）。'),
+    telegramIncludeMetadataPrefix: z.boolean().default(true).description('消息携带用户 ID（默认开启）。关闭后不向模型附加入站身份前缀，仅保留正文与附件；内部权限、路由和历史消息不变。'),
     telegramFormat: z.union(['auto', 'html', 'rich-markdown', 'markdown-v2', 'plain']).default('html').description('出站正文格式：auto / html / rich-markdown / markdown-v2 / plain。'),
     telegramInboundPreempt: z.boolean().default(true).description('新消息到达时中止正在进行的回合并优先处理。'),
     telegramSendReasoning: z.boolean().default(false).description('是否把模型思考过程发到 Telegram（折叠引用块）；默认关闭。'),

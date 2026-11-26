@@ -13,7 +13,8 @@ public final class Validators {
     public static final Set<String> USE_MODES = Set.of("once", "until_finished");
     public static final Set<String> CORE_ACTIONS = Set.of(
             "look_at", "move_to", "interact", "select_item", "use_item_on_block", "attack_block", "attack_entity",
-            "drop_item", "use_item", "find_item", "place_block", "probe_blocks", "break_block"
+            "drop_item", "use_item", "find_item", "place_block", "probe_blocks", "break_block",
+            "navigate_to", "follow_entity", "explore_area", "stop_task", "inspect_blocks"
     );
     private static final Pattern STATE_KEY = Pattern.compile("^[a-z0-9_]+$");
     private static final Pattern STATE_VALUE = Pattern.compile("^[a-z0-9_]+$");
@@ -36,6 +37,7 @@ public final class Validators {
         if (!CORE_ACTIONS.contains(action)) {
             throw new ProtocolException("unsupported", "action is not supported");
         }
+        if (Set.of("navigate_to","follow_entity","explore_area","stop_task","inspect_blocks").contains(action)) return taskParams(action,raw);
         if ("look_at".equals(action) || "move_to".equals(action)) {
             JsonObject out = new JsonObject();
             out.addProperty("x", finite(raw.get("x"), "x"));
@@ -145,6 +147,36 @@ public final class Validators {
         }
         if ("break_block".equals(action)) {
             out.addProperty("expected_block", resourceId(raw.get("expected_block"), "expected_block"));
+        }
+        return out;
+    }
+
+    private static JsonObject taskParams(String action,JsonObject raw) throws ProtocolException {
+        JsonObject out=new JsonObject();
+        if(action.equals("navigate_to")) for(String key:Set.of("x","y","z")) out.addProperty(key,finite(raw.get(key),key));
+        if(action.equals("follow_entity")) {
+            boolean uuid=raw.has("uuid"), agent=raw.has("target_agent_id");
+            if(uuid==agent) throw new ProtocolException("invalid_params","exactly one uuid or target_agent_id is required");
+            String value=raw.get(uuid?"uuid":"target_agent_id").getAsString();
+            if(!(uuid?UUID_TEXT.matcher(value).matches():value.matches("[a-z0-9][a-z0-9-]{0,31}"))) throw new ProtocolException("invalid_params","invalid follow target");
+            out.addProperty(uuid?"uuid":"target_agent_id",value);
+            double distance=raw.has("distance")?finite(raw.get("distance"),"distance"):3;
+            if(distance<2||distance>8)throw new ProtocolException("invalid_params","distance must be 2..8");out.addProperty("distance",distance);
+        }
+        if(action.equals("explore_area")) {
+            if(raw.has("center")) {JsonObject center=new JsonObject();for(String key:Set.of("x","y","z"))center.addProperty(key,finite(raw.getAsJsonObject("center").get(key),key));out.add("center",center);}
+            double radius=raw.has("radius")?finite(raw.get("radius"),"radius"):16;
+            int seconds=raw.has("seconds")?integer(raw.get("seconds"),"seconds"):120;
+            if(radius<4||radius>64||seconds<10||seconds>600)throw new ProtocolException("invalid_params","explore radius 4..64, seconds 10..600");
+            out.addProperty("radius",radius);out.addProperty("seconds",seconds);
+            if(raw.has("return_to_start")&&(!raw.get("return_to_start").isJsonPrimitive()||!raw.getAsJsonPrimitive("return_to_start").isBoolean()))throw new ProtocolException("invalid_params","return_to_start must be boolean");
+            out.addProperty("return_to_start",!raw.has("return_to_start")||raw.get("return_to_start").getAsBoolean());
+        }
+        for(String key:Set.of("interest","block_id","tag","category")) if(raw.has(key)) {
+            String value=raw.get(key).getAsString();
+            boolean category=Set.of("danger","functional","ore","unknown","terrain").contains(value);
+            boolean valid=(key.equals("category")?category:key.equals("interest")?(category||isResourceId(value.startsWith("#")?value.substring(1):value)):isResourceId(value));
+            if(!valid)throw new ProtocolException("invalid_params","invalid "+key);out.addProperty(key,value);
         }
         return out;
     }

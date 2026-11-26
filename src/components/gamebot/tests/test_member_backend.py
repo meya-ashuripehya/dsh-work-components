@@ -88,7 +88,7 @@ async def _member_hello() -> None:
         await backend.disconnect()
     assert seen[0]["protocol_version"] == 2
     assert seen[0]["data"]["agent_id"] == "claude"
-    assert seen[0]["data"]["provision"] is True
+    assert seen[0]["data"]["provision"] is False
 
 
 async def _member_hello_mismatch() -> None:

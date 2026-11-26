@@ -4,6 +4,7 @@
 import { defineTool } from '../../../vendor/dsh-tools/schema.js'
 import { AGENT_ID, memberIdsFor, memberNamesFor, memberRequest } from './members.mjs'
 import { createWorkRuntime, createWorkTools } from './minecraft-work/tools.mjs'
+import { observationContext } from './mc-memory.mjs'
 
 const OUTPUT = { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] }
 
@@ -22,6 +23,7 @@ export const MC_ACTIONS = [
   'drop_item',
   'use_item',
   'find_item',
+  'navigate_to', 'follow_entity', 'explore_area', 'stop_task', 'inspect_blocks',
 ]
 
 function requireMember(exec, cfg) {
@@ -74,7 +76,7 @@ export function createMembersTools({ getConfig, fetchImpl, control } = {}) {
 
   const observeTool = defineTool({
     name: 'mc_observe',
-    description: 'Look at your own Minecraft NPC: position, inventory, nearby blocks, and the last error.',
+    description: 'Look at your own Minecraft NPC: position, inventory, task, visible terrain summary and points of interest. Hidden blocks and private events are not returned.',
     parameters: {},
     output: OUTPUT,
     async execute(args, exec) {
@@ -82,7 +84,8 @@ export function createMembersTools({ getConfig, fetchImpl, control } = {}) {
       const memberId = requireMember(exec, cfg)
       rejectForeign(args?.agent_id, memberId, 'agent_id')
       rejectForeign(args?.member_id, memberId, 'member_id')
-      return request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/observe`, { timeoutMs: 10000 })
+      const obs = await request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/observe`, { timeoutMs: 10000 })
+      return { connected: obs.connected, joined: obs.extras?.joined, ...observationContext(obs), inventory: obs.extras?.inventory || {} }
     },
   })
 
@@ -144,7 +147,8 @@ export function createMembersTools({ getConfig, fetchImpl, control } = {}) {
       const memberId = requireMember(exec, cfg)
       rejectForeign(args?.agent_id, memberId, 'agent_id')
       rejectForeign(args?.member_id, memberId, 'member_id')
-      return request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/status`, { timeoutMs: 10000 })
+      const result = await request(cfg, `/v1/minecraft/members/${encodeURIComponent(memberId)}/status`, { timeoutMs: 10000 })
+      return { ...result, autonomy: control?.view?.(memberId) || result?.autonomy || null }
     },
   })
 
@@ -203,6 +207,7 @@ export function createGamebotMembersFeature(ctx, getConfig) {
   const state = { status: 'off', detail: '未启用', fork: null, gen: 0 }
   let bound = null
   const gate = {
+    view: (id) => bound?.view?.(id),
     blocksMember: (id) => bound?.blocksMember?.(id),
     onConnected: (id) => bound?.onConnected?.(id),
     onDisconnected: (id) => bound?.onDisconnected?.(id),

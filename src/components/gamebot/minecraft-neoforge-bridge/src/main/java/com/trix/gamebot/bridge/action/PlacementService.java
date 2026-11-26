@@ -91,6 +91,9 @@ public final class PlacementService {
         if (!WorldQueries.chunkLoaded(level, run.target)) {
             return ActionOutcome.failure("block_unloaded", "target chunk is not loaded", run.evidence);
         }
+        // The already-present and occupied branches must not become hidden-block probes.
+        ActionOutcome targetGate = gateBlock(agent, params, run.target, Vec3.atCenterOf(run.target));
+        if (targetGate != null) return targetGate;
         BlockState existing = level.getBlockState(run.target);
         if (blockId(existing).equals(run.blockId) && stateMatches(existing, run.requestedState)) {
             run.evidence.addProperty("already_present", true);
@@ -104,12 +107,12 @@ public final class PlacementService {
         }
         int slot = findBlockItem(agent, run.blockId, 0, 8);
         if (slot < 0) {
-            if (findBlockItem(agent, run.blockId, 9, agent.inventory().getContainerSize() - 1) >= 0) {
-                run.evidence.addProperty("material_in_hotbar", false);
-                return ActionOutcome.failure("unsupported", "方块仅在背包非快捷栏槽位", run.evidence);
-            }
+            int stored = findBlockItem(agent, run.blockId, 9, agent.inventory().getContainerSize() - 1);
+            if (stored >= 0) { agent.equipInventorySlot(stored); slot = agent.selectedSlot(); }
+        }
+        if (slot < 0) {
             run.evidence.addProperty("material_in_hotbar", false);
-            return ActionOutcome.failure("item_not_found", "快捷栏中没有所需方块", run.evidence);
+            return ActionOutcome.failure("item_not_found", "背包中没有所需方块", run.evidence);
         }
         run.materialSlot = slot;
         run.materialBefore = agent.inventory().getItem(slot).getCount();

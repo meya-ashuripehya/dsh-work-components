@@ -51,7 +51,7 @@ export function qqSchemaShape(z) {
     qqPreset: z.string().default('').description('（兼容旧设置）账号 main 的私聊预设 ID；已选 qqSeatId 时忽略。留空沿用全局默认。'),
     qqChannelRoutes: z.string().default('').description('通道级预设覆盖，形如 qq:预设名（routing.overrides.channel）。留空不覆盖。'),
     qqRoutingMode: z.union(['global', 'channel', 'account', 'conversation']).default('conversation').description('路由模式：按全局 / 通道 / 账号 / 会话选择智能体预设。'),
-    qqIncludeMetadataPrefix: z.boolean().default(true).description('入站消息前附加通道元数据前缀（includeMetadataPrefix）。'),
+    qqIncludeMetadataPrefix: z.boolean().default(true).description('消息携带用户 ID（默认开启）。关闭后不向模型附加入站身份前缀，仅保留正文与附件；内部权限、路由和历史消息不变。'),
     qqMarkdownSupport: z.boolean().default(false).description('是否启用适配器 markdownSupport。'),
     qqStreamEnabled: z.boolean().default(true).description('私聊 C2C 原生流式（群聊仍缓冲一次发送）。'),
     qqDebugTrace: z.boolean().default(false).description('排查日志：写到 ~/.dsh/dsh-channels/qq-inbound.log。默认关闭。'),

@@ -191,9 +191,9 @@ test('seatMcPresence surfaces connected status for eligible seats', async () => 
     const info = await seatMcPresence(cfg, 'claude', { fetchImpl })
     assert.equal(info.eligible, true)
     assert.equal(info.connected, true)
-    assert.match(info.lines[0], /Status: connected/)
+    assert.match(info.lines[0], /Status: joined/)
     assert.match(info.lines[0], /ClaudeBot/)
-    assert.match(info.lines[0], /Chatroom rounds do not drive the world/)
+    assert.match(info.lines[0], /Room tools are read-only/)
   } finally { rmSync(state, { recursive: true, force: true }) }
 })
 

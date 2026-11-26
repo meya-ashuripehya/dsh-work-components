@@ -13,6 +13,11 @@ BLOCK_SCAN = "minecraft.block.scan"
 RECIPE_QUERY = "minecraft.recipe.query"
 ENTITY_NEARBY = "minecraft.entity.nearby"
 MOVE_TO = "minecraft.player.move_to"
+NAVIGATE_TO = "minecraft.task.navigate_to"
+FOLLOW_ENTITY = "minecraft.task.follow_entity"
+EXPLORE_AREA = "minecraft.task.explore_area"
+STOP_TASK = "minecraft.task.stop_task"
+INSPECT_BLOCKS = "minecraft.world.inspect_blocks"
 LOOK_AT = "minecraft.player.look_at"
 COLLECT = "minecraft.world.collect"
 CRAFT = "minecraft.inventory.craft"
@@ -54,6 +59,11 @@ ACTION_REQUIRED_CAPABILITY = {
     "run_command": SERVER_COMMAND,
     "query_state": STATE_QUERY,
     "move_to": MOVE_TO,
+    "navigate_to": NAVIGATE_TO,
+    "follow_entity": FOLLOW_ENTITY,
+    "explore_area": EXPLORE_AREA,
+    "stop_task": STOP_TASK,
+    "inspect_blocks": INSPECT_BLOCKS,
     "look_at": LOOK_AT,
     "collect": COLLECT,
     "craft": CRAFT,
@@ -77,6 +87,7 @@ ACTION_REQUIRED_CAPABILITY = {
 
 BASIC_ACTIONS = ("say", "run_command", "query_state")
 SEMANTIC_ACTIONS = (
+    "navigate_to", "follow_entity", "explore_area", "stop_task", "inspect_blocks",
     "move_to",
     "look_at",
     "collect",

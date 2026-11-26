@@ -41,15 +41,16 @@ import { callSeat, callSeatWithWait } from './providers.mjs'
 import { createChatroomTools, execRegistryTool } from './chatroom-tools.mjs'
 import { createAttachmentStore, snapshotOf, oversizeNotice, ATTACH_MAX_BYTES, ATTACH_ID_RE, sanitizeName, createMediaGroupBuffer, kindOf, isModelImage } from './attachments.mjs'
 import { transcribeAudio, resolveGeminiKey, TRANSCRIBE_KEY_REF, TRANSCRIBE_MODEL } from './transcribe.mjs'
-import { VIDEO_MODEL, describeVideo as geminiDescribeVideo, askVideo, videoPart, mp4Duration, findVideoLinks, youtubeLink, parseOffset, rangeLabel, watchKey, normalizeVideoMime } from './video.mjs'
+import { VIDEO_MODEL, describeVideo as geminiDescribeVideo, askVideo, videoPart, mp4Duration, findVideoLinks, videoLinkLabel, youtubeLink, parseOffset, rangeLabel, watchKey, normalizeVideoMime } from './video.mjs'
+import { analyzeMedia, credentialMaterialOf, probeDuration, resolveVideoFfmpeg, shouldSegmentFile, uploadLimitBytes } from '../video/segment.mjs'
 import { callGeminiSeat, isNativeGeminiSeat, promptVideos } from './gemini-seat.mjs'
 import { createYtdlp, YTDLP_MISSING } from './ytdlp.mjs'
 import { resolveVideoKey, videoAuthReady } from '../video/key.mjs'
-import { videoGenerateAuth } from '../video/credential.mjs'
+import { videoGenerateAuth, SA_INLINE_MAX_BYTES } from '../video/credential.mjs'
 import { videoSettings } from '../video/index.mjs'
-import { mkdtemp, rm as rmPath, readFile as readFileFs } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile as readFileFs, rename as renameFs, rm as rmPath, stat as statFs } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename as baseName } from 'node:path'
+import { basename as baseName, dirname } from 'node:path'
 import { TOOL_DEFAULTS } from './tool-results.mjs'
 import { createCallLog } from './call-log.mjs'
 import { resolveSeats, normalizeSeats, seatsRevision, VISION_MODES, CHATROOM_SEATS_KEY, DEFAULT_OWNER_TELEGRAM_ID, DEFAULT_CURSOR_AGENT, outputTokenLimit, matchSeat, syncDefaultMain, normalizeMemberSeatIds, defaultMemberSeatIds, seatsForIds, takeEmbeddedRoomMembers } from './seats.mjs'
@@ -210,7 +211,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
       mode,
       languages: String(cfg.chatroomTranscribeLanguages || '').trim(),
       // 视频理解：「多模态 › 视频理解」组件（../video）；关闭时自动描述、watch_video、成员视频输入都停用
-      ...(() => { const v = videoSettings(cfg); return { video: v.enabled, videoModel: v.model, videoYoutube: v.youtube, videoBilibili: v.bilibili, videoBaseUrl: v.baseUrl } })(),
+      ...(() => { const v = videoSettings(cfg); return { video: v.enabled, videoModel: v.model, videoYoutube: v.youtube, videoBilibili: v.bilibili, videoTiktok: v.tiktok, videoDouyin: v.douyin, videoBaseUrl: v.baseUrl } })(),
       maxBytes: ATTACH_MAX_BYTES,
       imageWindow: 9,
     }
@@ -553,6 +554,7 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
 
   // ── 视频理解（video.mjs）：每个入库的视频 / 视频链接都在后台生成「内容描述」，界面卡片随附件快照更新 ──
   const ytdlp = options.ytdlp || createYtdlp()
+  const videosRoot = () => options.videosRoot || join(dataDir(), 'videos')
   const describingVideo = new Map()
   const watchCache = new Map() // roomId\u0000key → { text, at }（链接等没有元数据可写时用）
   async function setVideo(roomId, id, patch) {
@@ -563,6 +565,14 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
   }
   /** 视频附件 / 链接 → 交给 Gemini 的来源（哔哩哔哩链接用下载到本地的那份）。 */
   async function videoSource(roomId, meta) {
+    if (meta?.linkKind === 'youtube') return { meta, load: async () => null, saveRemote: async () => {} }
+    if (meta?.localPath) {
+      return {
+        meta: { ...meta, name: baseName(meta.localPath), mediaType: normalizeVideoMime('', meta.localPath), bytes: Number(meta.localBytes) || 0 },
+        load: () => readFileFs(meta.localPath),
+        saveRemote: async () => {},
+      }
+    }
     let src = meta
     if (meta.link && meta.linkKind !== 'youtube') {
       if (!meta.localId) throw new Error(meta.videoError || '视频还没有下载到本地')
@@ -574,6 +584,47 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
       load: async () => (await attachments.read(roomId, src.id))?.data,
       saveRemote: async (g) => { await attachments.update(roomId, src.id, { gemini: g || undefined }) },
     }
+  }
+  async function moveVideoFile(src, dest) {
+    await mkdir(dirname(dest), { recursive: true })
+    try { await renameFs(src, dest) } catch (e) {
+      if (e?.code !== 'EXDEV') throw e
+      await copyFile(src, dest)
+      await rmPath(src, { force: true })
+    }
+  }
+  async function analyzeRoomVideo(meta, src, { purpose, question, start, end, signal }) {
+    const cfg = getConfig() || {}
+    const auth = await videoGenerateAuth(cfg, geminiFetch())
+    if (auth.error) return { ok: false, error: auth.error }
+    if (meta?.linkKind === 'youtube' || src?.meta?.linkKind === 'youtube') {
+      const call = purpose === 'watch' ? askVideo : geminiDescribeVideo
+      return call({ ...auth, meta: src.meta, load: src.load, saveRemote: src.saveRemote, question, start, end, signal })
+    }
+    const v = videoSettings(cfg)
+    const entry = meta?.linkKind === 'bilibili' ? 'bilibili' : 'chatroom'
+    const keyInfo = resolveVideoKey(cfg)
+    const filePath = meta?.localPath || src?.meta?.path || ''
+    return analyzeMedia({
+      filePath,
+      bytes: Number(meta?.localBytes || src?.meta?.bytes || 0),
+      durationSec: Number(meta?.durationSec || src?.meta?.durationSec || 0),
+      purpose,
+      question,
+      start,
+      end,
+      uploadMaxBytes: uploadLimitBytes({ entry, credentialSource: auth.credentialSource || v.credentialSource, hasBucket: v.bucketEnabled }),
+      settings: v,
+      model: auth.model,
+      credentialMaterial: credentialMaterialOf(auth, { clientEmail: keyInfo.clientEmail, videoCredentialSource: keyInfo.credentialSource }),
+      auth,
+      cacheRoot: join(videosRoot(), 'segments'),
+      signal,
+      meta: src.meta,
+      load: src.load,
+      saveRemote: src.saveRemote,
+      cfg,
+    })
   }
   /** 入库后补时长（MP4 / MOV 读 mvhd；其他格式不填）。 */
   async function videoDuration(roomId, meta, data) {
@@ -615,52 +666,72 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
     if (!st.video) { await setVideo(roomId, id, { videoStatus: 'off' }); return { error: '「多模态 › 视频理解」未启用' } }
     if (cur.description && cur.videoStatus === 'done') return { text: cur.description, by: cur.describedBy || 'Gemini' }
     const fail = async (error) => { await setVideo(roomId, id, { videoStatus: 'failed', videoError: String(error).slice(0, 400) }); ctx?.logger?.warn?.('dsh-workbench: chatroom video describe failed', String(error).slice(0, 200)); return { error } }
-    if (cur.link && cur.linkKind === 'bilibili' && !cur.localId) {
-      const r = await fetchBilibili(roomId, cur)
+    if (cur.link && cur.linkKind !== 'youtube' && !cur.localId && !cur.localPath) {
+      const r = await fetchLinkedVideo(roomId, cur)
       if (r.error) return fail(r.error)
       cur = r.meta
     }
     const k = resolveVideoKey(getConfig() || {})
     if (!videoAuthReady(k)) return fail(k.problem)
-    const auth = await videoGenerateAuth(getConfig() || {}, geminiFetch())
-    if (auth.error) return fail(auth.error)
     let src
     try { src = await videoSource(roomId, cur) } catch (e) { return fail(shortErr(e)) }
-    const r = await geminiDescribeVideo({ ...auth, meta: src.meta, load: src.load, saveRemote: src.saveRemote, signal: AbortSignal.timeout(600000) })
+    const r = await analyzeRoomVideo(cur, src, { purpose: 'describe', signal: AbortSignal.timeout(600000) })
     if (!r.ok) return fail(r.error)
     await setVideo(roomId, id, { videoStatus: 'done', description: r.text, describedBy: 'Gemini', videoError: undefined })
     return { text: r.text, by: 'Gemini' }
   }
-  /** 哔哩哔哩：PATH 上有 yt-dlp 时下载到附件（25 MB 上限），占位记录记下 localId。 */
-  async function fetchBilibili(roomId, cur) {
-    let version = ''
-    try { version = await ytdlp.detect() } catch { version = '' }
-    if (!version) return { error: YTDLP_MISSING }
+  /** 远端视频下载到附件；TikTok / 抖音走 Chrome，哔哩哔哩走 yt-dlp。 */
+  async function fetchLinkedVideo(roomId, cur) {
+    const browser = cur.linkKind === 'tiktok' || cur.linkKind === 'douyin'
+    const downloader = browser ? options.browserVideo : ytdlp
+    if (browser && !downloader) return { error: '请启用并连接「工作组件 › Chrome」。' }
+    if (!browser) {
+      let version = ''
+      try { version = await ytdlp.detect() } catch {}
+      if (!version) return { error: YTDLP_MISSING }
+    }
     let dir = ''
     try {
-      dir = await mkdtemp(join(tmpdir(), 'dsh-bili-'))
-      const d = await ytdlp.download(cur.link, dir, { maxBytes: ATTACH_MAX_BYTES, signal: AbortSignal.timeout(330000) })
+      dir = await mkdtemp(join(tmpdir(), 'dsh-video-'))
+      const s = videoSettings(getConfig() || {})
+      const segmented = s.autoSegment !== false
+      const saTight = browser && s.credentialSource === 'serviceAccount' && !s.bucketEnabled
+      const maxBytes = segmented ? s.downloadMaxBytes : (saTight ? Math.min(ATTACH_MAX_BYTES, SA_INLINE_MAX_BYTES) : ATTACH_MAX_BYTES)
+      const d = await downloader.download(cur.link, dir, { maxBytes, signal: AbortSignal.timeout(600000) })
       if (!d.ok) return { error: d.error }
-      const data = await readFileFs(d.path)
-      if (data.length > ATTACH_MAX_BYTES) return { error: oversizeNotice(baseName(d.path), data.length) }
-      const saved = await attachments.save(roomId, { data, name: sanitizeName(baseName(d.path), 'bilibili.mp4'), mediaType: normalizeVideoMime('', d.path), source: cur.source || 'link', from: cur.from || '', kind: 'video' })
-      const sec = mp4Duration(data)
-      await attachments.update(roomId, cur.id, { localId: saved.id, ...(sec > 0 ? { durationSec: sec } : {}) })
+      const st = await statFs(d.path)
+      if (st.size <= ATTACH_MAX_BYTES) {
+        const data = await readFileFs(d.path)
+        if (data.length > ATTACH_MAX_BYTES) return { error: oversizeNotice(baseName(d.path), data.length) }
+        const saved = await attachments.save(roomId, { data, name: sanitizeName(baseName(d.path), 'video.mp4'), mediaType: normalizeVideoMime('', d.path), source: cur.source || 'link', from: cur.from || '', kind: 'video' })
+        const sec = mp4Duration(data)
+        await attachments.update(roomId, cur.id, { localId: saved.id, ...(sec > 0 ? { durationSec: sec } : {}) })
+        return { meta: await attachments.get(roomId, cur.id) }
+      }
+      const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+      const dest = join(videosRoot(), 'downloads', day, `${cur.linkKind || 'video'}-${baseName(d.path)}`)
+      await moveVideoFile(d.path, dest)
+      let durationSec = 0
+      try {
+        const bins = await resolveVideoFfmpeg({ cfg: getConfig() || {} })
+        if (bins.ok) durationSec = await probeDuration(dest, bins)
+      } catch {}
+      await attachments.update(roomId, cur.id, { localPath: dest, localBytes: st.size, ...(durationSec > 0 ? { durationSec } : {}) })
       return { meta: await attachments.get(roomId, cur.id) }
     } catch (e) {
-      return { error: `哔哩哔哩视频下载失败：${shortErr(e)}` }
+      return { error: `${videoLinkLabel(cur.linkKind)}视频下载失败：${shortErr(e)}` }
     } finally {
       if (dir) { try { await rmPath(dir, { recursive: true, force: true }) } catch {} }
     }
   }
-  /** 消息里的 YouTube / 哔哩哔哩链接 → 链接记录（kind video，不作为附件转发 Telegram），返回快照。 */
+  /** 消息里的 YouTube / 哔哩哔哩 / TikTok / 抖音链接 → 链接记录（kind video，不作为附件转发 Telegram），返回快照。 */
   async function linkVideos(roomId, text, { source, from }) {
     const st = attachSettings(getConfig() || {})
     if (!st.enabled || !st.video) return []
     const out = []
-    for (const l of findVideoLinks(text).filter((x) => (x.kind === 'youtube' ? st.videoYoutube : st.videoBilibili))) {
+    for (const l of findVideoLinks(text).filter((x) => ({ youtube: st.videoYoutube, bilibili: st.videoBilibili, tiktok: st.videoTiktok, douyin: st.videoDouyin }[x.kind]))) {
       try {
-        let meta = await attachments.save(roomId, { data: Buffer.from(l.url + '\n', 'utf8'), name: `${l.kind === 'youtube' ? 'YouTube' : 'Bilibili'} ${l.id}.url`, mediaType: 'text/uri-list', source, from, kind: 'video' })
+        let meta = await attachments.save(roomId, { data: Buffer.from(l.url + '\n', 'utf8'), name: `${videoLinkLabel(l.kind)} ${l.id}.url`, mediaType: 'text/uri-list', source, from, kind: 'video' })
         if (!meta.link) { await attachments.update(roomId, meta.id, { link: l.url, linkKind: l.kind }); meta = { ...meta, link: l.url, linkKind: l.kind } }
         out.push(await prepareVideo(roomId, meta))
       } catch (e) { ctx?.logger?.warn?.('dsh-workbench: chatroom video link failed', shortErr(e)) }
@@ -718,15 +789,21 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
     if (auth.error) return { error: auth.error }
     let src
     try {
-      if (meta.link && meta.linkKind === 'bilibili' && !meta.localId) {
+      if (meta.link && meta.linkKind !== 'youtube' && !meta.localId && !meta.localPath) {
         const pending = describingVideo.get(roomId + '\u0000' + meta.id)
         if (pending) { await pending; meta = await attachments.get(roomId, meta.id) }
-        if (!meta.localId) return { error: meta.videoError || YTDLP_MISSING }
+        if (!meta.localId && !meta.localPath && !pending) {
+          const downloaded = await fetchLinkedVideo(roomId, meta)
+          if (downloaded.error) return { error: downloaded.error }
+          meta = downloaded.meta
+        }
+        if (!meta.localId && !meta.localPath) return { error: meta.videoError || '视频尚未下载，请重试或检查浏览器。' }
       }
       src = meta.id ? await videoSource(roomId, meta) : { meta, load: async () => null, saveRemote: async () => {} }
     } catch (e) { return { error: shortErr(e) } }
-    const r = await askVideo({ ...auth, meta: src.meta, load: src.load, saveRemote: src.saveRemote, question, start, end, signal: AbortSignal.timeout(600000) })
+    const r = await analyzeRoomVideo(meta, src, { purpose: 'watch', question, start, end, signal: AbortSignal.timeout(600000) })
     if (!r.ok) return { error: r.error }
+    if (r.partial) return { text: r.text, label, range, cached: false }
     watchCache.set(memKey, { text: r.text, at: Date.now() })
     if (watchCache.size > 200) watchCache.delete(watchCache.keys().next().value)
     if (meta.id) {
@@ -938,6 +1015,30 @@ export function createChatroomFeature(ctx, getConfig, options = {}) {
         return r?.data ? { inlineData: { mimeType: meta.mediaType || 'image/png', data: Buffer.from(r.data).toString('base64') } } : null
       }
       const src = await videoSource(roomId, meta)
+      if (src.meta?.linkKind !== 'youtube') {
+        const v = videoSettings(getConfig() || {})
+        let bytes = Number(src.meta?.localBytes || src.meta?.bytes || 0)
+        if (src.meta?.localPath && !(bytes > 0)) { try { bytes = (await statFs(src.meta.localPath)).size } catch {} }
+        const filePath = src.meta?.localPath || src.meta?.path || ''
+        const decision = await shouldSegmentFile({
+          bytes,
+          durationSec: Number(src.meta?.durationSec) || 0,
+          uploadMaxBytes: uploadLimitBytes({ entry: meta.linkKind === 'bilibili' ? 'bilibili' : 'chatroom', credentialSource: v.credentialSource, hasBucket: v.bucketEnabled }),
+          segmentSeconds: v.segmentSeconds,
+          autoSegment: v.autoSegment,
+          probe: filePath ? async () => {
+            const bins = await resolveVideoFfmpeg({ cfg: getConfig() || {} })
+            if (!bins.ok) {
+              const err = new Error(bins.error || 'FFMPEG_MISSING')
+              err.missing = true
+              err.code = 'FFMPEG_MISSING'
+              throw err
+            }
+            return probeDuration(filePath, { ffprobe: bins.ffprobe, signal: o.signal })
+          } : null,
+        })
+        if (decision.segment) return null
+      }
       return (await videoPart({ fetchImpl, apiKey: k.key, meta: src.meta, load: src.load, saveRemote: src.saveRemote, signal: o.signal })).part
     }
     const { roomId: _r, ...rest } = o

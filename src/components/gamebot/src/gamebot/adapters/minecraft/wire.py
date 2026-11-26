@@ -18,6 +18,9 @@ ERROR_CODES = frozenset(
         "not_connected",
         "client_not_ready",
         "item_not_found",
+        "missing_tool",
+        "action_failed",
+        "claim_invalid",
         "block_unloaded",
         "out_of_reach",
         "line_of_sight_blocked",
@@ -57,6 +60,7 @@ MAX_INTERACT_DISTANCE = 6.0
 CORE_ACTIONS = frozenset(
     {
         "look_at",
+        "navigate_to", "follow_entity", "explore_area", "stop_task", "inspect_blocks",
         "move_to",
         "interact",
         "select_item",
@@ -393,6 +397,42 @@ def validate_action_params(action: str, params: Optional[Mapping[str, Any]]) -> 
     raw = dict(params or {})
     if action not in CORE_ACTIONS:
         return raw
+    if action in ("navigate_to", "follow_entity", "explore_area", "stop_task", "inspect_blocks"):
+        out = {}
+        if action == "navigate_to":
+            out.update({k: finite_number(raw.get(k), k) for k in ("x", "y", "z")})
+        if action == "follow_entity":
+            uuid, target = raw.get("uuid"), raw.get("target_agent_id")
+            if bool(uuid) == bool(target) or (uuid and not UUID_TEXT.fullmatch(str(uuid))) or (target and not AGENT_ID.fullmatch(str(target))):
+                raise WireError("invalid_params", "exactly one valid uuid or target_agent_id is required")
+            out["uuid" if uuid else "target_agent_id"] = str(uuid or target)
+            distance = finite_number(raw.get("distance", 3), "distance")
+            if not 2 <= distance <= 8:
+                raise WireError("invalid_params", "distance must be 2..8")
+            out["distance"] = distance
+        if action == "explore_area":
+            if "center" in raw:
+                if not isinstance(raw["center"], Mapping):
+                    raise WireError("invalid_params", "center must be a point")
+                out["center"] = {k: finite_number(raw["center"].get(k), k) for k in ("x", "y", "z")}
+            radius = finite_number(raw.get("radius", 16), "radius")
+            seconds = integer_coord(raw.get("seconds", 120), "seconds")
+            if not 4 <= radius <= 64 or not 10 <= seconds <= 600:
+                raise WireError("invalid_params", "explore radius 4..64, seconds 10..600")
+            returns = raw.get("return_to_start", True)
+            if not isinstance(returns, bool):
+                raise WireError("invalid_params", "return_to_start must be boolean")
+            out.update(radius=radius, seconds=seconds, return_to_start=returns)
+        categories = {"danger", "functional", "ore", "unknown", "terrain"}
+        for key in ("interest", "block_id", "tag", "category"):
+            if key not in raw:
+                continue
+            value = str(raw[key])
+            valid = value in categories if key == "category" else (value in categories or is_resource_id(value.lstrip("#"))) if key == "interest" else is_resource_id(value)
+            if not valid:
+                raise WireError("invalid_params", f"invalid {key}")
+            out[key] = value
+        return out
     if action in ("look_at", "move_to"):
         out = {
             "x": finite_number(raw.get("x"), "x"),
@@ -630,10 +670,18 @@ def normalize_snapshot(message: Mapping[str, Any]) -> Dict[str, Any]:
             "main_hand": _item_view(player.get("main_hand")),
             "off_hand": _item_view(player.get("off_hand")),
         },
-        "inventory": {"slots": slots, "counts": clean_counts},
+        "inventory": {"slots": slots, "counts": clean_counts, "capacity": inventory.get("capacity", 36), "used_slots": inventory.get("used_slots", len(slots)), "pickup_error": bool(inventory.get("pickup_error"))},
         "nearby_blocks": blocks,
         "nearby_blocks_truncated": None if view.get("nearby_blocks_truncated") is None else bool(view.get("nearby_blocks_truncated")),
         "nearby_players": players,
+        "nearby_agents": list(view.get("nearby_agents") or []),
+        "nearby_items": list(view.get("nearby_items") or [])[:24],
+        "recent_pickups": list(view.get("recent_pickups") or [])[-20:],
+        "standable_goals": list(view.get("standable_goals") or []),
+        "game_time": view.get("game_time"),
+        "task": dict(view.get("task") or {}),
+        "terrain_summary": dict(view.get("terrain_summary") or {}),
+        "points_of_interest": list(view.get("points_of_interest") or []),
         "screen": {"id": str(screen_id) if is_resource_id(screen_id) else None, "open": bool(screen.get("open") or False)},
         "actor_type": str(view.get("actor_type") or "local_player"),
         "agent_id": None if not view.get("agent_id") else str(view.get("agent_id")),

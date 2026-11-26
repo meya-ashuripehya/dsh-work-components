@@ -1,7 +1,7 @@
 /**
  * 「多模态」› 视频理解：默认开启。经 Google Gemini 观看视频。密钥只用本组件单独配置的 videoGeminiKey（见 ./key.mjs；
  * 只放在请求头，不进日志与返回值，状态里只给来源与末四位掩码）。哔哩哔哩所需的 yt-dlp 可在设置页按需下载（./ytdlp-install.mjs）。
- *   - 聊天室：每个视频（含 YouTube / 哔哩哔哩链接）自动生成带时间戳的内容描述、watch_video、成员的「视频输入」（见 ../chatroom）。
+ *   - 聊天室：每个视频（含 YouTube / 哔哩哔哩 / TikTok / 抖音链接）自动生成带时间戳的内容描述、watch_video、成员的「视频输入」（见 ../chatroom）。
  *   - 会话：启用后在子插件里注册 describe_video / watch_video（本机视频文件或公开链接），关闭时卸下。
  *     两个工具都不在 Telegram OPEN_TOOLS 中：会把本机文件上传给 Google，只有授权用户（所有者）触发的回合可用。
  * 旧版设置键 chatroomVideoEnabled / chatroomVideoModel（原在聊天室「附件与语音」中）仍会读取，并在启动时迁移到本组件的键。
@@ -16,10 +16,17 @@ import { videoKeyStatus } from './key.mjs'
 import { createYtdlpInstaller, ytdlpAsset } from './ytdlp-install.mjs'
 import { getAccessToken, removeServiceAccountFile, saveServiceAccountJson, readServiceAccountMeta, videoCredentialSource, videoVertexLocation } from './credential.mjs'
 import { checkBucketAccess, runCleanupSweep, validateBucketPrefix, videoBucketSettings } from './bucket.mjs'
+import { DEFAULT_DOWNLOAD_MAX_BYTES, DEFAULT_OVERLAP_SECONDS, DEFAULT_SEGMENT_SECONDS } from './segment.mjs'
+
+const clampInt = (v, fallback, min, max) => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
 
 export { resolveVideoKey, videoKeyStatus, VIDEO_KEY_MISSING, VIDEO_KEY_SETTING } from './key.mjs'
 
-export const VIDEO_KEYS = ['videoEnabled', 'videoCredentialSource', 'videoGeminiKey', 'videoServiceAccountFile', 'videoVertexLocation', 'videoBucket', 'videoBucketPrefix', 'videoMaxHeight', 'videoBaseUrl', 'videoModel', 'videoYoutube', 'videoBilibili', 'videoYtdlpPath']
+export const VIDEO_KEYS = ['videoEnabled', 'videoCredentialSource', 'videoGeminiKey', 'videoServiceAccountFile', 'videoVertexLocation', 'videoBucket', 'videoBucketPrefix', 'videoMaxHeight', 'videoBaseUrl', 'videoModel', 'videoAutoSegment', 'videoSegmentSeconds', 'videoSegmentOverlapSeconds', 'videoDownloadMaxMb', 'videoYoutube', 'videoBilibili', 'videoTiktok', 'videoDouyin', 'videoYtdlpPath']
 export const LEGACY_VIDEO_KEYS = ['chatroomVideoEnabled', 'chatroomVideoModel']
 export { VIDEO_MODEL }
 
@@ -49,6 +56,8 @@ export function videoSettings(cfg) {
     model: model && (model !== VIDEO_MODEL || !legacyModel) ? model : (legacyModel || VIDEO_MODEL),
     youtube: c.videoYoutube !== false,
     bilibili: c.videoBilibili !== false,
+    tiktok: c.videoTiktok !== false,
+    douyin: c.videoDouyin !== false,
     baseUrl: videoBaseUrl(c.videoBaseUrl),
     credentialSource: videoCredentialSource(c),
     vertexLocation: videoVertexLocation(c),
@@ -57,6 +66,13 @@ export function videoSettings(cfg) {
       const b = videoBucketSettings(c)
       return { videoBucket: b.bucket, videoBucketPrefix: b.prefix, videoMaxHeight: String(b.maxHeight), bucketEnabled: b.enabled }
     })(),
+    autoSegment: c.videoAutoSegment !== false,
+    segmentSeconds: clampInt(c.videoSegmentSeconds, DEFAULT_SEGMENT_SECONDS, 30, 3600),
+    overlapSeconds: Math.min(
+      clampInt(c.videoSegmentOverlapSeconds, DEFAULT_OVERLAP_SECONDS, 0, 120),
+      Math.max(0, clampInt(c.videoSegmentSeconds, DEFAULT_SEGMENT_SECONDS, 30, 3600) - 1),
+    ),
+    downloadMaxBytes: clampInt(c.videoDownloadMaxMb, DEFAULT_DOWNLOAD_MAX_BYTES / (1024 * 1024), 25, 8192) * 1024 * 1024,
   }
 }
 
@@ -94,7 +110,7 @@ export function videosRoot(root) {
  * @param getConfig 当前插件设置
  * @param {{ getGemini: () => ({ resolveKey: () => Promise<{ key?: string, ref?: string, via?: string, seat?: string, problem?: string }>, fetch: () => Function } | null), ytdlp?, videosRoot?: () => string }} o
  */
-export function createVideoFeature(ctx, getConfig, { getGemini, ytdlp = createYtdlp(), installer = null, videosRoot: rootOf, dataRoot: dataRootOf, fetchImpl = fetch } = {}) {
+export function createVideoFeature(ctx, getConfig, { getGemini, browserVideo, ytdlp = createYtdlp(), installer = null, videosRoot: rootOf, dataRoot: dataRootOf, fetchImpl = fetch } = {}) {
   const log = ctx?.logger ?? console
   const state = { status: 'off', detail: '未启用', fork: null, gen: 0 }
   let disposed = false
@@ -149,6 +165,7 @@ export function createVideoFeature(ctx, getConfig, { getGemini, ytdlp = createYt
               getConfig: () => getConfig() || {},
               getGemini,
               ytdlp,
+              browserVideo,
               videosRoot: () => rootOf?.() || videosRoot(),
             })
             for (const tool of tools) toolCtx.tools.register(tool)

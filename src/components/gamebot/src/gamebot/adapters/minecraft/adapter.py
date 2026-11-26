@@ -76,6 +76,13 @@ class MinecraftAdapter(GameDriver):
         f = self._minaret.snapshot_fields()
         bundle = self._bundle_from_minaret(f)
         extras = {
+            "world_id": f.get("world_id"),
+            "joined": bool(f.get("joined")),
+            "snapshot_seq": f.get("snapshot_seq"),
+            "connection_generation": f.get("connection_generation"),
+            "snapshot_age_ms": f.get("snapshot_age_ms"),
+            "game_time": f.get("game_time"),
+            "advertised": f.get("advertised") or [],
             "legacy": {
                 "ok": True,
                 "driver": "neoforge_ws",

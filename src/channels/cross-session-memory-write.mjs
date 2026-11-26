@@ -2,6 +2,7 @@
  * Write + gate helpers for preset JSONL cross-session memory.
  * Channel inbound/outbound and chatroom seats call into here.
  */
+import { memoryRuntimeState } from './cross-session-runtime-state.mjs'
 import { loadBindings, bindingsPath, estimateTokens } from './cross-session-memory.mjs'
 import {
   ownerLinkFromSettings,
@@ -104,22 +105,25 @@ export function sceneFromBinding(binding) {
  *   compacting?: Set<string>,
  * }}
  */
-let runtime = null
 
 export function setMemoryWriteRuntime(bag) {
-  runtime = bag && typeof bag === 'object' ? bag : null
+  memoryRuntimeState.runtime = bag && typeof bag.getConfig === 'function' ? bag : null
 }
 
 export function getMemoryWriteRuntime() {
-  return runtime
+  return memoryRuntimeState.runtime
 }
 
 function cfgOf() {
-  return runtime?.getConfig?.() || {}
+  try {
+    return memoryRuntimeState.runtime?.getConfig?.() || { crossSessionMemoryEnabled: false }
+  } catch {
+    return { crossSessionMemoryEnabled: false }
+  }
 }
 
 function loadBinds() {
-  return loadBindings(runtime?.bindingsFile || bindingsPath(runtime?.home))
+  return loadBindings(memoryRuntimeState.runtime?.bindingsFile || bindingsPath(memoryRuntimeState.runtime?.home))
 }
 
 /**
@@ -137,7 +141,7 @@ export function compactionInstructionFor(cfg) {
 }
 
 async function streamSummarize({ instruction, corpus, provider, model }) {
-  const llm = runtime?.getLlm?.()
+  const llm = memoryRuntimeState.runtime?.getLlm?.()
   if (!llm || typeof llm.stream !== 'function') return null
   const p = asText(provider) || 'deepseek'
   const m = asText(model) || 'deepseek-chat'
@@ -177,27 +181,28 @@ function summarizerModelFrom(cfg) {
 }
 
 export function scheduleCompact(preset) {
+  const activeRuntime = memoryRuntimeState.runtime
   const p = asText(preset)
-  if (!p || !runtime) return
+  if (!p || !activeRuntime) return
   const cfg = cfgOf()
   if (!isPresetMemoryEnabled(cfg, p)) return
-  if (!runtime.compacting) runtime.compacting = new Set()
-  if (runtime.compacting.has(p)) return
-  runtime.compacting.add(p)
+  if (!activeRuntime.compacting) activeRuntime.compacting = new Set()
+  if (activeRuntime.compacting.has(p)) return
+  activeRuntime.compacting.add(p)
   void (async () => {
     try {
       const { provider, model } = summarizerModelFrom(cfg)
       await maybeCompactPreset({
         preset: p,
-        home: runtime.home,
+        home: activeRuntime.home,
         threshold: STORE_CAPS.compactThresholdTokens,
         instruction: compactionInstructionFor(cfg),
         summarize: ({ instruction, corpus }) => streamSummarize({ instruction, corpus, provider, model }),
       })
     } catch (e) {
-      runtime.log?.warn?.('dsh-workbench: cross-session memory compact failed', e?.message || e)
+      activeRuntime.log?.warn?.('dsh-workbench: cross-session memory compact failed', e?.message || e)
     } finally {
-      runtime.compacting?.delete(p)
+      activeRuntime.compacting?.delete(p)
     }
   })()
 }
@@ -229,7 +234,7 @@ export async function writeInboundChannelMessage(event, text, extra = {}) {
     speaker,
     role: 'user',
     text: body,
-    home: runtime?.home,
+    home: memoryRuntimeState.runtime?.home,
   })
   scheduleCompact(preset)
   return entry
@@ -252,7 +257,7 @@ export async function writeAssistantChannelMessage(binding, text) {
     speaker,
     role: 'assistant',
     text: body,
-    home: runtime?.home,
+    home: memoryRuntimeState.runtime?.home,
   })
   scheduleCompact(preset)
   return entry
@@ -311,7 +316,7 @@ export async function writeChatroomMemoryMessage({
       role: kind === 'seat' ? 'assistant' : 'user',
       text: asText(msg.text),
       time: msg.time ? Date.parse(msg.time) || Date.now() : Date.now(),
-      home: runtime?.home,
+      home: memoryRuntimeState.runtime?.home,
     })
     if (entry) written.push(entry)
     scheduleCompact(preset)
@@ -329,7 +334,7 @@ export function injectForChannel({ preset, sessionId, maxTokens } = {}) {
     preset,
     excludeSessionId: sessionId,
     maxTokens: maxTokens ?? STORE_CAPS.injectMaxTokens,
-    home: runtime?.home,
+    home: memoryRuntimeState.runtime?.home,
   })
   return text
 }
@@ -347,7 +352,7 @@ export function injectForChatroomSeat({ seat, roomId, maxTokens } = {}) {
     excludeRoomId: roomId,
     // Also exclude guest session if known — room-scoped exclude is enough for "other sessions"
     maxTokens: maxTokens ?? STORE_CAPS.injectMaxTokens,
-    home: runtime?.home,
+    home: memoryRuntimeState.runtime?.home,
   })
   return text
 }

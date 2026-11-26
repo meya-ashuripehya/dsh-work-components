@@ -136,6 +136,7 @@ class ProviderBundle:
             self._avail(cap_ids.RECIPE_QUERY, mf, "no recipe source"),
             self._avail(cap_ids.ENTITY_NEARBY, mf or self.entity_nearby_known, "nearby entities require Mineflayer or a Minaret snapshot"),
             self._avail(cap_ids.MOVE_TO, mf, "pathfinding requires Mineflayer"),
+            *[self._avail(cap, False, "requires Minaret persistent-task capabilities") for cap in (cap_ids.NAVIGATE_TO, cap_ids.FOLLOW_ENTITY, cap_ids.EXPLORE_AREA, cap_ids.STOP_TASK, cap_ids.INSPECT_BLOCKS)],
             self._avail(cap_ids.LOOK_AT, mf, "look_at is not advertised"),
             self._avail(cap_ids.COLLECT, mf, "collect requires Mineflayer world access"),
             self._avail(cap_ids.CRAFT, mf, "craft requires Mineflayer inventory"),

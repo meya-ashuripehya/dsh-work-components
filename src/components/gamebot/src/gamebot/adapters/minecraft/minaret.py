@@ -49,6 +49,10 @@ class MinaretBackend:
         self._loader: Optional[str] = "neoforge"
         self._mods: List[str] = []
         self._advertised: List[str] = []
+        self._world_id: Optional[str] = None
+        self._joined = True  # legacy drivers remain readable, but host requires world_id
+        self._snapshot_seq = 0
+        self._snapshot_received = None
         self._position: Optional[Vec3] = None
         self._health: Optional[float] = None
         self._food: Optional[float] = None
@@ -245,6 +249,12 @@ class MinaretBackend:
         username = self._agent_name if self._actor_type == "server_npc" and self._agent_name else self._bot_name()
         return {
             "connected": connected,
+            "world_id": self._world_id,
+            "joined": connected and self._joined,
+            "snapshot_seq": self._snapshot_seq,
+            "connection_generation": self._conn_gen,
+            "snapshot_age_ms": None if self._snapshot_received is None else max(0, (time.monotonic() - self._snapshot_received) * 1000),
+            "game_time": self._minecraft.get("game_time"),
             "connecting": self._connecting,
             "username": username,
             "online_players": sorted(self._online_players),
@@ -339,14 +349,28 @@ class MinaretBackend:
 
     def _apply_handshake(self, data: Dict[str, Any]) -> None:
         hs = extract_handshake(data)
+        view = data.get("data") if isinstance(data.get("data"), dict) else data
+        if view.get("event", data.get("event")) == "hello" or data.get("event") == "hello":
+            if self._world_id != view.get("world_id"):
+                self._snapshot_seq = 0
+                self._snapshot_received = None
+                self._recent_events = []
+                self._minecraft = {}
+                self._position = None
+            self._world_id = view.get("world_id")
+            self._joined = view.get("world_ready") is not False
+            if not self._joined:
+                self._minecraft = {}
+                self._position = None
+                self._recent_events = []
+        if "raw_capabilities" in hs:
+            self._advertised = list(hs["raw_capabilities"])
         if hs.get("version"):
             self._version = str(hs["version"])
         if hs.get("loader"):
             self._loader = str(hs["loader"])
         if hs.get("mods"):
             self._mods = list(hs["mods"])
-        if hs.get("raw_capabilities"):
-            self._advertised = list(hs["raw_capabilities"])
         if hs.get("position"):
             point = hs["position"]
             self._position = Vec3(x=point["x"], y=point["y"], z=point["z"])
@@ -354,12 +378,17 @@ class MinaretBackend:
             self._health = float(hs["health"])
 
     def _apply_snapshot(self, data: Dict[str, Any]) -> None:
+        view = data.get("data") if isinstance(data.get("data"), dict) else data
         try:
             snapshot = normalize_snapshot(data)
         except WireError as exc:
             self._last_error = exc.message
             return
+        self._world_id = view.get("world_id")
+        self._snapshot_seq = int(data.get("sequence") or 0)
+        self._joined = True
         self._minecraft = snapshot
+        self._snapshot_received = time.monotonic()
         self._block_scan_known = True
         self._entity_nearby_known = True
         player = snapshot["player"]
@@ -419,9 +448,7 @@ class MinaretBackend:
         if got != expected:
             future.set_result({"ok": False, "error": f"hello agent_id {got or 'missing'} does not match {expected}"})
             return
-        if isinstance(view, dict) and view.get("world_ready") is False:
-            future.set_result({"ok": False, "error": "server npc is not ready"})
-            return
+        # A successful roster registration need not have a spawned NPC yet.
         future.set_result({"ok": True, "agent_id": got})
 
     async def _handle_event(self, data: Dict[str, Any], generation: int) -> None:
@@ -578,7 +605,7 @@ class MinaretBackend:
                         self._next_sequence(),
                         agent_id=agent_id,
                         display_name=str(self.config.get("MC_AGENT_NAME") or self._bot_name()) if agent_id else None,
-                        provision=bool(agent_id),
+                        provision=False,
                         claim_key=self._claim_key(),
                     )
                     await ws.send(json.dumps(hello, ensure_ascii=False))
@@ -683,6 +710,8 @@ class MinaretBackend:
         target: str = "",
         emote: str = "",
         say_id: Optional[str] = None,
+        world_id: Optional[str] = None,
+        dimension: Optional[str] = None,
     ) -> Dict[str, Any]:
         cleaned = validate_say({"text": text, "audience": audience, "target": target, "emote": emote})
         token = say_id_of(say_id)
@@ -699,6 +728,9 @@ class MinaretBackend:
         agent_id = self._configured_agent_id()
         if agent_id:
             payload["agent_id"] = agent_id
+        if world_id:
+            payload["world_id"] = world_id
+            payload["dimension"] = dimension
         self._fail_say(None, "superseded", "action_rejected")
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -759,6 +791,12 @@ class MinaretBackend:
             build_cancel(target_request_id, self._next_sequence(), agent_id=self._configured_agent_id())
         )
 
+    async def cancel_pending_actions(self) -> None:
+        if self._ws is not None:
+            await self._send_json(build_cancel("*", self._next_sequence(), agent_id=self._configured_agent_id()))
+        for request_id in list(self._pending):
+            await self._cancel_quietly(request_id)
+
     def _result(self, action: str, payload: Dict[str, Any]) -> ActionResult:
         ok = bool(payload.get("ok"))
         code = payload.get("error_code")
@@ -786,6 +824,8 @@ class MinaretBackend:
                 target=str(cleaned.get("target") or ""),
                 emote=str(cleaned.get("emote") or ""),
                 say_id=str(params.get("say_id") or "") or None,
+                world_id=params.get("world_id"),
+                dimension=params.get("dimension"),
             )
             ok = bool(view.get("ok"))
             code = view.get("error_code")
@@ -837,6 +877,9 @@ class MinaretBackend:
         except WireError as exc:
             return ActionResult(ok=False, action=action, error=exc.message, degraded=True, degrade_reason=exc.code)
         request_id = str(envelope["request_id"])
+        for scope in ("world_id", "dimension"):
+            if params.get(scope) is not None:
+                envelope["data"][scope] = params[scope]
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending[request_id] = (future, self._conn_gen)
@@ -844,8 +887,8 @@ class MinaretBackend:
             await self._send_json(envelope)
             payload = await asyncio.wait_for(future, timeout=self._action_timeout(action, cleaned))
         except asyncio.TimeoutError:
-            self._pending.pop(request_id, None)
             await self._cancel_quietly(request_id)
+            self._pending.pop(request_id, None)
             if fingerprint:
                 self._unresolved.add(fingerprint)
                 return ActionResult(

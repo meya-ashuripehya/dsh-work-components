@@ -32,6 +32,10 @@ neoForge {
             systemProperty 'minaret.diagnostics', 'true'
             // Offline ModDev default is Dev; set human player name for chat/mirrors.
             programArguments.addAll('--username', 'Shiro')
+            // Opt-in, isolated acceptance world; ordinary development launches are unchanged.
+            if (project.hasProperty('mcAcceptanceWorld')) {
+                programArguments.addAll('--quickPlaySingleplayer', project.property('mcAcceptanceWorld').toString())
+            }
         }
     }
 }

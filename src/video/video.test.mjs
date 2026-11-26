@@ -34,8 +34,8 @@ function tools({ cfg = {}, gemini, ytdlp, root } = {}) {
 }
 
 test('video settings: defaults on; legacy chatroom keys still read; one-time migration clears them', () => {
-  assert.deepEqual(VIDEO_KEYS, ['videoEnabled', 'videoCredentialSource', 'videoGeminiKey', 'videoServiceAccountFile', 'videoVertexLocation', 'videoBucket', 'videoBucketPrefix', 'videoMaxHeight', 'videoBaseUrl', 'videoModel', 'videoYoutube', 'videoBilibili', 'videoYtdlpPath'])
-  assert.deepEqual(videoSettings({}), { enabled: true, model: 'gemini-3.8-flash', youtube: true, bilibili: true, baseUrl: 'https://generativelanguage.googleapis.com', credentialSource: 'apiKey', vertexLocation: 'us-central1', serviceAccountFile: '', videoBucket: '', videoBucketPrefix: 'dsh-video', videoMaxHeight: '480', bucketEnabled: false })
+  assert.deepEqual(VIDEO_KEYS, ['videoEnabled', 'videoCredentialSource', 'videoGeminiKey', 'videoServiceAccountFile', 'videoVertexLocation', 'videoBucket', 'videoBucketPrefix', 'videoMaxHeight', 'videoBaseUrl', 'videoModel', 'videoAutoSegment', 'videoSegmentSeconds', 'videoSegmentOverlapSeconds', 'videoDownloadMaxMb', 'videoYoutube', 'videoBilibili', 'videoTiktok', 'videoDouyin', 'videoYtdlpPath'])
+  assert.deepEqual(videoSettings({}), { enabled: true, model: 'gemini-3.8-flash', youtube: true, bilibili: true, tiktok: true, douyin: true, baseUrl: 'https://generativelanguage.googleapis.com', credentialSource: 'apiKey', vertexLocation: 'us-central1', serviceAccountFile: '', videoBucket: '', videoBucketPrefix: 'dsh-video', videoMaxHeight: '480', bucketEnabled: false, autoSegment: true, segmentSeconds: 600, overlapSeconds: 5, downloadMaxBytes: 4294967296 })
   assert.equal(videoSettings({ chatroomVideoEnabled: false }).enabled, false)
   assert.equal(videoSettings({ videoEnabled: false }).enabled, false)
   assert.equal(videoSettings({ chatroomVideoModel: 'gemini-x' }).model, 'gemini-x')

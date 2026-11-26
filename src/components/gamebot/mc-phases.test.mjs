@@ -10,7 +10,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-test('idle wake fires once, ignores its own speech, and waits for a new external event', async () => {
+test('connect wakes immediately and idle keeps running without external events', async () => {
   let clock = 0
   const turns = []
   const control = createMcControl({
@@ -23,26 +23,27 @@ test('idle wake fires once, ignores its own speech, and waits for a new external
   })
   control.connect('claude')
   control.tick(clock)
-  assert.equal(turns.length, 0)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(turns.length, 1)
   clock = IDLE_MS
   control.tick(clock)
   await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(turns, [1])
+  assert.deepEqual(turns, [1, 1])
   assert.equal(control.view('claude').busy, false)
   clock = IDLE_MS * 4
   control.tick(clock)
   await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(turns, [1])
+  assert.deepEqual(turns, [1, 1, 1])
   assert.equal(control.note('claude', { id: 'say-self', self: false }), false)
   clock = IDLE_MS * 5
   control.tick(clock)
   await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(turns, [1])
+  assert.deepEqual(turns, [1, 1, 1, 1])
   assert.equal(control.note('claude', { id: 'player:1', self: false }), true)
   clock += IDLE_MS
   control.tick(clock)
   await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(turns, [1, 1])
+  assert.deepEqual(turns, [1, 1, 1, 1, 1])
 })
 
 test('disconnect invalidates an in-flight turn and takeover has a resume path', async () => {
@@ -79,7 +80,7 @@ test('disconnect invalidates an in-flight turn and takeover has a resume path', 
   assert.equal(control.view('claude').deadline != null, true)
 })
 
-test('control decisions can only say', async () => {
+test('control decisions reject tools not offered this turn', async () => {
   const sent = []
   const result = await applyDecision({
     toolCalls: [
@@ -99,7 +100,7 @@ test('control decisions can only say', async () => {
   assert.equal(sent.length, 1)
   assert.equal(sent[0].text, 'hello')
   assert.equal(sent[0].say_id === 'from-model', false)
-  assert.match(controlSystemPrompt({ lines: ['- seat'] }, ''), /只能用 say/)
+  assert.match(controlSystemPrompt({ lines: ['- seat'] }, ''), /只使用本轮提供的工具/)
 })
 
 test('mirror keeps two identical lines and drops the echo and private chat', async () => {
@@ -275,14 +276,13 @@ test('controlSystemPrompt names the queue head focus', () => {
   assert.match(withFocus, /一条回复队列/)
   assert.match(withFocus, /必须用 say/)
   const idle = controlSystemPrompt({ lines: [] }, '', null)
-  assert.match(idle, /没有待回复的聊天队首/)
-  assert.match(idle, /聊天默认不发言/)
-  assert.match(idle, /不要用 say/)
-  assert.match(idle, /禁止对公屏说/)
-  assert.match(idle, /观察与按设计行动/)
+  assert.match(idle, /没有待回复的聊天/)
+  assert.match(idle, /继续自己的目标/)
+  assert.match(idle, /主动自然交流/)
+  assert.match(idle, /主动发言有20秒冷却/)
   assert.doesNotMatch(idle, /保持安静，不要发言/)
 })
-test('AI public say no longer fan-out arms every other seat', async () => {
+test('a note to one seat does not wake unrelated seats', async () => {
   let clock = 0
   const turns = []
   const control = createMcControl({

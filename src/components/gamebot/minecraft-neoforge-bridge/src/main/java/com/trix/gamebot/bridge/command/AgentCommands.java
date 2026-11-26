@@ -61,6 +61,12 @@ public final class AgentCommands {
                                                         StringArgumentType.getString(context, "name")
                                                 )))))
                         .then(Commands.literal("list").executes(context -> list(context.getSource())))
+                        .then(Commands.literal("tell")
+                                .then(Commands.argument("agent_id", StringArgumentType.word())
+                                        .then(Commands.argument("message", StringArgumentType.greedyString())
+                                                .executes(context -> tell(context.getSource(),
+                                                        StringArgumentType.getString(context, "agent_id"),
+                                                        StringArgumentType.getString(context, "message"))))))
                         .then(Commands.literal("remove")
                                 .then(Commands.argument("agent_id", StringArgumentType.word())
                                         .executes(context -> remove(
@@ -133,7 +139,28 @@ public final class AgentCommands {
         return find(server, agentId) == null ? "agent_not_available" : null;
     }
 
+    private static int tell(CommandSourceStack source, String agentId, String message) {
+        if (source.getPlayer() == null) {
+            source.sendFailure(Component.literal("请由游戏内玩家发送私聊"));
+            return 0;
+        }
+        String error = ServerLifecycle.tell(source.getPlayer(), agentId, message);
+        if (error != null) {
+            source.sendFailure(Component.literal(error));
+            return 0;
+        }
+        AgentEntity target = find(source.getServer(), agentId);
+        String targetName = target == null ? agentId : target.agentName();
+        // Echo only to the sender; do not broadcast or mirror the private body.
+        source.sendSuccess(() -> Component.literal("<" + targetName + "> " + message), false);
+        return 1;
+    }
+
     private static int spawn(CommandSourceStack source, String agentId, String requestedName) {
+        if (!ServerLifecycle.eligible(agentId)) {
+            source.sendFailure(Component.literal("该席位未选择、已停用或工作台尚未连接，请先启用对应 Minecraft 席位"));
+            return 0;
+        }
         if (!AgentMessages.validAgentId(agentId)) {
             source.sendFailure(Component.literal("成员编码不合法"));
             return 0;

@@ -19,6 +19,11 @@ public final class AgentRegistry extends SavedData {
     public static final String LEGACY_STORAGE_ID = "minaret_agent";
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentRegistry.class);
     private final AgentTable table = new AgentTable();
+    private UUID worldId = UUID.randomUUID();
+
+    public AgentRegistry() { setDirty(); }
+
+    public String worldId() { return worldId.toString(); }
 
     public static AgentRegistry get(MinecraftServer server) {
         AgentRegistry registry = server.overworld().getDataStorage().computeIfAbsent(factory(), STORAGE_ID);
@@ -32,6 +37,7 @@ public final class AgentRegistry extends SavedData {
 
     private static AgentRegistry load(CompoundTag tag, HolderLookup.Provider provider) {
         AgentRegistry registry = new AgentRegistry();
+        if (tag.hasUUID("WorldId")) registry.worldId = tag.getUUID("WorldId");
         List<AgentRecord> records = new ArrayList<>();
         ListTag agents = tag.getList("Agents", Tag.TAG_COMPOUND);
         for (Tag raw : agents) {
@@ -132,6 +138,7 @@ public final class AgentRegistry extends SavedData {
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider provider) {
+        tag.putUUID("WorldId", worldId);
         ListTag agents = new ListTag();
         for (AgentRecord record : table.records()) {
             CompoundTag entry = new CompoundTag();

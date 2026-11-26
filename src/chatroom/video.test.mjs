@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, open, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -260,17 +260,18 @@ test('watch_video: normal tool card, kept on a failed turn, never relayed to Tel
 
 // ── 功能层：上传 / Telegram 视频自动描述、watch_video 缓存、YouTube、哔哩哔哩、视频输入席位 ──
 
-function feature(dir, { generate, seats = [{ id: 'ds', name: 'DeepSeek', provider: 'deepseek', model: 'deepseek-v4-pro' }], call, ytdlp, extra = {} } = {}) {
+function feature(dir, { generate, seats = [{ id: 'ds', name: 'DeepSeek', provider: 'deepseek', model: 'deepseek-v4-pro' }], call, ytdlp, browserVideo, extra = {} } = {}) {
   const g = fakeGemini({ generate })
   const cfg = { chatroomEnabled: true, chatroomOwnerTelegramId: '1', chatroomSeats: seats, chatroomDefaultMain: seats[0]?.id, videoGeminiKey: KEY, ...extra }
   const prompts = []
   const feat = createChatroomFeature(null, () => cfg, {
-    dir, llm: null, presets: null, attachmentService: null,
+    dir, videosRoot: join(dir, 'videos'), llm: null, presets: null, attachmentService: null,
     credentials: { resolve: async (ref) => (ref === 'GOOGLE_API_KEY' ? KEY : undefined), set: async () => {} },
     geminiFetch: g.fetchImpl,
     isVision: async () => false,
     call: call || (async (o) => { prompts.push(o.prompt); return { text: '收到', toolCalls: [], usage: {} } }),
     ...(ytdlp ? { ytdlp } : {}),
+    ...(browserVideo ? { browserVideo } : {}),
   })
   feat.bots.reply = async () => true
   return { feat, g, prompts, cfg }
@@ -309,7 +310,7 @@ test('feature: every uploaded video is described in the background; card snapsho
 
 test('feature: a failed description shows the reason on the card only; AIs get a blank sheet', async () => {
   const dir = await tmp()
-  const { feat, prompts } = feature(dir, { generate: () => ({ status: 429, json: { error: { status: 'RESOURCE_EXHAUSTED', message: `Quota exceeded for key ${KEY}` } } }) })
+  const { feat, prompts } = feature(dir, { generate: () => ({ status: 400, json: { error: { status: 'INVALID_ARGUMENT', message: `Quota exceeded for key ${KEY}` } } }) })
   try {
     const room = await feat.store.createRoom({ title: '视频' })
     await feat.telegramInbound(room.id, [{ chatId: '-1', fromId: '1', fromName: 'Shiro', text: '', files: [{ fileId: 'V', kind: 'video', name: 'clip.mp4', mediaType: 'video/mp4', size: 200 }], download: async () => ({ data: mp4(7) }) }])
@@ -375,7 +376,7 @@ test('feature: Bilibili needs yt-dlp on PATH (clear reason otherwise); with it, 
   const a = feature(dir, { ytdlp: missing })
   try {
     const room = await a.feat.store.createRoom({ title: 'b' })
-    await a.feat.localPost(room.id, '看 https://www.bilibili.com/video/BV1xx411c7mD', [])
+    await a.feat.localPost(room.id, '看 https://www.bilibili.com/video/BV1xx411c7mD', [], { run: false })
     const msg = await until(async () => (await a.feat.store.readMessages(room.id)).find((m) => m.videoLinks?.[0]?.videoStatus === 'failed'))
     assert.match(msg.videoLinks[0].videoError, /未检测到 yt-dlp/)
     assert.equal(a.g.gens(), 0)
@@ -388,11 +389,75 @@ test('feature: Bilibili needs yt-dlp on PATH (clear reason otherwise); with it, 
   const b = feature(dir2, { ytdlp: present, generate: () => ({ text: '[0:00] 哔哩哔哩视频' }) })
   try {
     const room = await b.feat.store.createRoom({ title: 'b' })
-    await b.feat.localPost(room.id, '看 https://www.bilibili.com/video/BV1xx411c7mD', [])
+    await b.feat.localPost(room.id, '看 https://www.bilibili.com/video/BV1xx411c7mD', [], { run: false })
     const msg = await until(async () => (await b.feat.store.readMessages(room.id)).find((m) => m.videoLinks?.[0]?.videoStatus === 'done'))
     assert.equal(msg.videoLinks[0].durationSec, 12); assert.equal(msg.videoLinks[0].linkKind, 'bilibili')
     assert.ok(b.g.generates()[0].body.contents[0].parts[0].inlineData)
   } finally { b.feat.dispose?.(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); await rm(dir2, { recursive: true, force: true }) }
+})
+
+test('feature: TikTok / Douyin messages use browser download and Gemini, honour platform toggles', async () => {
+  const dir = await tmp()
+  const downloads = []
+  const { feat, g, cfg } = feature(dir, {
+    browserVideo: { async download(url, d, options) { downloads.push({ url, options }); const path = join(d, 'browser.mp4'); await writeFile(path, mp4(12)); return { ok: true, path } } },
+    ytdlp: { detect() { throw new Error('must not use yt-dlp') } },
+  })
+  try {
+    const room = await feat.store.createRoom({ title: 'browser videos' })
+    await feat.localPost(room.id, 'https://v.douyin.com/UZC2ZoipTzA/ https://www.tiktok.com/@test/video/123456789', [], { run: false })
+    const msg = await until(async () => (await feat.store.readMessages(room.id)).find((m) => m.videoLinks?.length === 2 && m.videoLinks.every((v) => v.videoStatus === 'done')))
+    assert.deepEqual(msg.videoLinks.map((v) => v.linkKind), ['douyin', 'tiktok'])
+    assert.equal(downloads.length, 2)
+    assert.equal(downloads[0].options.maxBytes, 4 * 1024 * 1024 * 1024)
+    assert.ok(g.generates().every((r) => r.body.contents[0].parts[0].inlineData))
+    const reply = await feat.watchVideo(room.id, { target: msg.videoLinks[0].id, question: '内容？' })
+    assert.ok(reply.text)
+    assert.equal(downloads.length, 2)
+    cfg.videoDouyin = false; cfg.videoTiktok = false
+    await feat.localPost(room.id, 'https://v.douyin.com/ABC123/ https://www.tiktok.com/@test/video/987654321', [], { run: false })
+    assert.equal(downloads.length, 2)
+    const messages = await feat.store.readMessages(room.id)
+    assert.ok(!messages.filter((m) => m.kind === 'user').at(-1).videoLinks?.length)
+  } finally { feat.dispose?.(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
+})
+
+test('feature: a browser video larger than 25 MB is kept on disk and is not stored as an attachment', async () => {
+  const dir = await tmp()
+  const downloads = []
+  const big = 26 * 1024 * 1024
+  const { feat, g } = feature(dir, {
+    browserVideo: { async download(_url, d, options) {
+      downloads.push(options)
+      const path = join(d, 'long.mp4')
+      const fh = await open(path, 'w')
+      await fh.write(mp4(12))
+      await fh.truncate(big)
+      await fh.close()
+      return { ok: true, path, bytes: big }
+    } },
+  })
+  try {
+    const room = await feat.store.createRoom({ title: 'long browser video' })
+    await feat.localPost(room.id, 'https://v.douyin.com/LongVideoTrial/', [], { run: false })
+    const msg = await until(async () => {
+      const hit = (await feat.store.readMessages(room.id)).find((m) => m.videoLinks?.[0]?.videoStatus === 'done' || m.videoLinks?.[0]?.videoStatus === 'failed')
+      return hit
+    }, 45000)
+    const snap = msg.videoLinks[0]
+    assert.equal(downloads[0].maxBytes, 4 * 1024 * 1024 * 1024)
+    const link = await feat.attachments.get(room.id, snap.id)
+    assert.equal(link.localBytes, big)
+    assert.ok(link.localPath)
+    assert.equal(link.localId, undefined)
+    const items = Object.values(await feat.attachments.list(room.id))
+    assert.ok(items.every((m) => !(Number(m.bytes) > 25 * 1024 * 1024)))
+    if (snap.videoError) assert.doesNotMatch(snap.videoError, /25 MB/)
+    for (const call of g.generates()) {
+      const data = call.body?.contents?.[0]?.parts?.[0]?.inlineData?.data
+      if (data) assert.ok(Buffer.from(data, 'base64').length <= 25 * 1024 * 1024)
+    }
+  } finally { feat.dispose?.(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
 })
 
 test('feature: a Gemini seat with video input receives the latest video via the plugin route; others use DSH with the description', async () => {

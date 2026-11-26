@@ -108,20 +108,29 @@ for (const lang of ['en', 'zh']) {
     problems.push(`locale/${lang}.json: ${error.message}`)
   }
 }
-for (const need of ['locale/*.json', 'icon.svg', 'lib/index.mjs', 'lib/local-loader-worker.mjs', 'lib/component-sdk.mjs', 'lib/channel-telegram.mjs', 'lib/gmail-server.mjs', 'lib/client.js', 'cordis.patch.yml']) {
+for (const need of ['locale/*.json', 'icon.svg', 'lib/index.mjs', 'lib/local-loader-worker.mjs', 'lib/component-sdk.mjs', 'lib/channel-telegram.mjs', 'lib/gmail-server.mjs', 'lib/client.js', 'cordis.patch.yml', 'src/components/desktop/broker-manifest.json', 'SECURITY.md', 'PRIVACY.md', 'CHANGELOG.md', 'docs/compatibility.md']) {
   if (!pkg.files?.includes(need)) problems.push(`package.json files[] lacks ${need}`)
 }
+if (pkg.files?.includes('src/components/desktop/**')) problems.push('package.json files[] still uses the broad desktop glob')
 
-
-// 发布（CI）时 npm 包必须带上桌面控制经纪人；本地开发可缺省（未装 dotnet 时 build 会跳过）。
-if (process.env.CI && !existsSync(join(root, 'src', 'components', 'desktop', 'broker', 'dist', 'DSHDesktopBroker.exe'))) {
-  problems.push('src/components/desktop/broker/dist/DSHDesktopBroker.exe missing (run npm run build:desktop -- --require)')
-}
+// 经纪人 exe 不再打进 npm 包。CI 可以单独构建它，但缺失 exe 不是包清单错误。
 
 try {
   execFileSync(process.execPath, [join(root, 'scripts', 'test-update.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push(String(error.stderr || error.stdout || error.message).trim() || 'scripts/test-update.mjs failed')
+}
+
+try {
+  execFileSync(process.execPath, ['--test',
+    join(root, 'src', 'update-integrity.test.mjs'),
+    join(root, 'src', 'download-integrity.test.mjs'),
+    join(root, 'src', 'plugin-compatibility.test.mjs'),
+    join(root, 'src', 'components', 'desktop', 'broker-install.test.mjs'),
+    join(root, 'src', 'settings-mask.test.mjs'),
+  ], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('release integrity tests failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((line) => /^not ok|Error|assert/i.test(line)).slice(0, 20).join('\n'))
 }
 
 // 「表情包」：catalog / 去重 / 检索 / recent / OPEN_TOOLS（node:test）。
@@ -146,7 +155,7 @@ try {
 }
 
 try {
-  execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'cross-session-memory-store.test.mjs')], { stdio: 'pipe' })
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'cross-session-memory-store.test.mjs'), join(root, 'src', 'channels', 'cross-session-runtime.test.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push('src/channels/cross-session-memory-store.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
 }
@@ -181,7 +190,7 @@ try {
 
 // 「多模态」› 视频理解：设置兼容 / 迁移、组件挂载、describe_video / watch_video 工具与状态接口（模拟 Gemini，不发真实请求）。
 try {
-  execFileSync(process.execPath, ['--test', join(root, 'src', 'video', 'video.test.mjs'), join(root, 'src', 'video', 'videokey.test.mjs'), join(root, 'src', 'video', 'bucket.test.mjs'), join(root, 'src', 'video', 'credential.test.mjs')], { stdio: 'pipe' })
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'video', 'video.test.mjs'), join(root, 'src', 'video', 'videokey.test.mjs'), join(root, 'src', 'video', 'bucket.test.mjs'), join(root, 'src', 'video', 'credential.test.mjs'), join(root, 'src', 'video', 'segment.test.mjs')], { stdio: 'pipe' })
 } catch (error) {
   problems.push('src/video/video.test.mjs / videokey.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 12).join('\n'))
 }
@@ -336,6 +345,13 @@ try {
 }
 
 
+// 通道身份开关：真实入站转换保持正文、附件和内部路由身份。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'channels', 'message-identity.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/channels/message-identity.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 20).join('\n'))
+}
+
 // Session-controls: trajectory rows must soft-hide with the same replace plan as chat.
 {
   const client = readFileSync(join(root, 'lib', 'client.js'), 'utf8')
@@ -343,6 +359,27 @@ try {
   if (!client.includes('data-trajectory-row-key')) problems.push('lib/client.js trajectory hide must key off data-trajectory-row-key')
   if (!client.includes('applyTrajectoryReplacedHide(plan, read.entries)')) problems.push('lib/client.js ReplacedOutputHost must call applyTrajectoryReplacedHide')
   if (!client.includes('.dsw-sc-replaced{display:none !important}')) problems.push('lib/client.js lacks .dsw-sc-replaced hide CSS')
+}
+
+// 会话控制：压缩检查点不隐藏原文；撤回/重试仍按闭区间隐藏（node:test，脱敏构造）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'session-controls', 'replaced-hide.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/session-controls/replaced-hide.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 20).join('\n'))
+}
+
+// 采样：最终 Messages body、留空、原值冲突、会话隔离、持久化、非法值，以及客户端校验与模型旁 slot。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'session-controls', 'sampling.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/session-controls/sampling.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 30).join('\n'))
+}
+
+// 陪伴压缩：冷启动安装、命中/未命中，以及指令来源类别（不触发真实模型）。
+try {
+  execFileSync(process.execPath, ['--test', join(root, 'src', 'session-history', 'companion-compaction.test.mjs')], { stdio: 'pipe' })
+} catch (error) {
+  problems.push('src/session-history/companion-compaction.test.mjs failed:\n' + String(error.stdout || error.stderr || error.message).split('\n').filter((l) => /^not ok|Error|assert/i.test(l)).slice(0, 20).join('\n'))
 }
 
 if (problems.length) {

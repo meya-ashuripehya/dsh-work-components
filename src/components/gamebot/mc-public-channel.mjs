@@ -4,7 +4,7 @@
  *   - 玩家公聊：入队到每个已连接席位（各席自行决定是否 / 何时回）。
  *   - 私聊：只入队到相关席位（该席 observe 里出现的 private）。
  *   - 同一席位同时只有一个 active（队首）；不同席位可并行。
- *   - AI 公聊不 fan-out 入队 / 武装。
+ *   - AI 公聊进入各席感知；定向消息优先，普通公聊不触发抢答。
  *   - 不做预算 / end_round / 交棒。
  */
 
@@ -33,6 +33,7 @@ function normalize(raw) {
     text: String(raw?.text || ''),
     target: String(raw?.target || ''),
     memberId: String(raw?.memberId || ''),
+    priority: raw?.priority === true,
   }
 }
 
@@ -75,7 +76,19 @@ export function createSeatQueues() {
       if (!item.id) return false
       const seat = seatOf(id)
       if (!remember(seat, item.id)) return false
-      seat.pending.push(item)
+      if (item.priority && seat.active && !seat.active.priority && !seat.active.processing) {
+        seat.pending.unshift(seat.active)
+        seat.active = null
+      }
+      if (item.priority) {
+        const index = seat.pending.findIndex((p) => !p.priority)
+        seat.pending.splice(index < 0 ? seat.pending.length : index, 0, item)
+      } else seat.pending.push(item)
+      // Bound ambient chatter rather than letting unattended public traffic grow forever.
+      if (seat.pending.length > 64) {
+        const ambient = seat.pending.findIndex((p) => !p.priority)
+        seat.pending.splice(ambient < 0 ? 0 : ambient, 1)
+      }
       return true
     },
 
@@ -119,8 +132,10 @@ export function createSeatQueues() {
      * 回合结束：丢掉 active，升下一条。返回新的 active（或 null）。
      * outcome 仅供观测，不改变队列顺序。
      */
-    finish(memberId, _outcome) {
+    finish(memberId, _outcome, consumedIds = []) {
       const seat = seatOf(memberId)
+      const consumed = new Set(consumedIds)
+      seat.pending = seat.pending.filter((item) => item.priority || !consumed.has(item.id))
       seat.active = null
       return this.activateNext(memberId)
     },

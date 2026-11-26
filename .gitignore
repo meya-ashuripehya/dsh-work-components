@@ -36,6 +36,9 @@ src/components/desktop/**/dist/
 *.bak
 *.bak-*
 
+# 发布 tarball（npm run pack:release）
+/release-artifacts/
+
 # 构建产物（npm run build / build:desktop 生成）
 lib/gmail-server.mjs
 src/components/desktop/**/dist-build/

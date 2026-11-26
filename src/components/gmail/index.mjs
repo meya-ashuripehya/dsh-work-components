@@ -27,6 +27,21 @@ export const meta = {
 
 const SERVER = join(pluginRoot(), 'lib', 'gmail-server.mjs')
 
+/**
+ * IMAP / SMTP 是裸 TCP，不认 HTTPS_PROXY，端口被拦时直连必然超时。
+ * 这里把代理相关的环境变量显式带给 MCP 子进程，由 mail.mjs 自己开 CONNECT 隧道。
+ */
+const PROXY_KEYS = ['GMAIL_PROXY', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY']
+
+function proxyEnv() {
+  const out = {}
+  for (const key of PROXY_KEYS) {
+    const value = process.env[key]
+    if (value) out[key] = value
+  }
+  return out
+}
+
 /** @type {import('../shared.mjs').ComponentModule} */
 export const component = {
   id: 'gmail',
@@ -49,7 +64,7 @@ export const component = {
       source: 'managed',
       runtime: `Node ${node.version}，随插件提供`,
       config: stdio('gmail', node.path, [SERVER], {
-        env: { ...node.env, GMAIL_ADDRESS: account.address, GMAIL_APP_PASSWORD: account.password },
+        env: { ...node.env, ...proxyEnv(), GMAIL_ADDRESS: account.address, GMAIL_APP_PASSWORD: account.password },
       }),
     }
   },

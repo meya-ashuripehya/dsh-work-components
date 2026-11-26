@@ -1,3 +1,4 @@
+import http from 'node:http'
 import net from 'node:net'
 import tls from 'node:tls'
 import { decodeHeaderWords, messageText, parseHeaders } from './mime.mjs'
@@ -7,6 +8,8 @@ import { ByteQueue, imapQuote, imapSession, parseFetch, searchUids, smtpSend } f
 const IMAP_HOST = 'imap.gmail.com'
 const SMTP_HOST = 'smtp.gmail.com'
 const TEXT_LIMIT = 16000
+/** 只有这几个值被当作「明确要求直连」，见 readProxy()。 */
+const DIRECT = /^(direct|off|none|0|false)$/i
 
 function clip(text) {
   const value = String(text || '')
@@ -16,12 +19,58 @@ function clip(text) {
 
 function netError(error, host) {
   const msg = String(error?.message || error)
-  if (/邮件过大|没有打开 IMAP|拒绝了这个密码/.test(msg)) throw error
+  if (/邮件过大|没有打开 IMAP|拒绝了这个密码|代理/.test(msg)) throw error
   if (/timeout|ETIMEDOUT|超时/i.test(msg)) throw new Error(`连接 ${host} 超时。请检查网络后重试。`)
   if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|certificate|CERT/i.test(msg)) {
     throw new Error(`连不上 ${host}。请检查网络后重试。`)
   }
   throw error
+}
+
+/**
+ * 读取 HTTP 代理：GMAIL_PROXY 优先，其次 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY。
+ * 只认 http://host:port（CONNECT 隧道），socks5 之类的协议这里不处理。
+ * GMAIL_PROXY 设成 direct / off / none 可以强制直连。
+ * 返回 { host, port } 或 null（直连）。
+ */
+export function readProxy(env = process.env) {
+  const raw = String(env.GMAIL_PROXY || '').trim()
+  if (DIRECT.test(raw)) return null
+  const value = raw || String(env.HTTPS_PROXY || env.HTTP_PROXY || env.ALL_PROXY || '').trim()
+  const m = /^(?:https?:\/\/)?([^:/\s]+):(\d+)\/?$/i.exec(value)
+  return m ? { host: m[1], port: Number(m[2]) } : null
+}
+
+/**
+ * 通过本地 HTTP 代理给 target:port 开一条 CONNECT 隧道，拿到裸 socket。
+ * IMAP / SMTP 是裸 TCP，不会读 HTTPS_PROXY，端口被拦时直连必然超时，
+ * 所以这里自己把连接绕出去。没配代理时返回 null，调用方退回直连。
+ */
+export function openTunnel(target, port, env = process.env) {
+  const proxy = readProxy(env)
+  if (!proxy) return Promise.resolve(null)
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: proxy.host,
+      port: proxy.port,
+      method: 'CONNECT',
+      path: `${target}:${port}`,
+      headers: { Host: `${target}:${port}` },
+      timeout: 20000,
+    })
+    req.once('connect', (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy()
+        reject(new Error(`代理 ${proxy.host}:${proxy.port} 拒绝连接 ${target}:${port}（HTTP ${res.statusCode}）`))
+        return
+      }
+      socket.setNoDelay(true)
+      resolve(socket)
+    })
+    req.once('timeout', () => req.destroy(new Error(`代理 ${proxy.host}:${proxy.port} 连接超时`)))
+    req.once('error', reject)
+    req.end()
+  })
 }
 
 function attach(socket) {
@@ -45,9 +94,12 @@ function attach(socket) {
   }
 }
 
-export function connectImap() {
+export async function connectImap() {
+  const tunnel = await openTunnel(IMAP_HOST, 993)
   return new Promise((resolve, reject) => {
-    const socket = tls.connect({ host: IMAP_HOST, port: 993, servername: IMAP_HOST })
+    const socket = tunnel
+      ? tls.connect({ socket: tunnel, servername: IMAP_HOST })
+      : tls.connect({ host: IMAP_HOST, port: 993, servername: IMAP_HOST })
     const timer = setTimeout(() => {
       socket.destroy()
       reject(new Error(`连接 ${IMAP_HOST} 超时。请检查网络后重试。`))
@@ -64,14 +116,15 @@ export function connectImap() {
   })
 }
 
-export function connectSmtp() {
+export async function connectSmtp() {
+  const tunnel = await openTunnel(SMTP_HOST, 587)
   return new Promise((resolve, reject) => {
-    const socket = net.connect(587, SMTP_HOST)
+    const socket = tunnel || net.connect(587, SMTP_HOST)
     const timer = setTimeout(() => {
       socket.destroy()
       reject(new Error(`连接 ${SMTP_HOST} 超时。请检查网络后重试。`))
     }, 20000)
-    socket.once('connect', () => {
+    const ready = () => {
       clearTimeout(timer)
       socket.setTimeout(30000, () => socket.destroy(new Error(`连接 ${SMTP_HOST} 超时。请检查网络后重试。`)))
       const plain = attach(socket)
@@ -82,7 +135,10 @@ export function connectSmtp() {
         secure.once('error', rej)
       })
       resolve(plain)
-    })
+    }
+    // 隧道 socket 从 CONNECT 拿到时已经连上了，不会再发 connect 事件。
+    if (tunnel) { ready(); return }
+    socket.once('connect', ready)
     socket.once('error', (error) => {
       clearTimeout(timer)
       reject(error)

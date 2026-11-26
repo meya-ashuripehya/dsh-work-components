@@ -51,6 +51,10 @@ public final class ServerActionDispatcher {
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
     private final Map<String, String> requestPayloads = new ConcurrentHashMap<>();
     private final ActionLedger ledger = new ActionLedger(10);
+    private final NavigationTasks tasks = new NavigationTasks();
+    public JsonObject taskView(String id) { return tasks.view(id); }
+    public String taskInterest(String id) { return tasks.interest(id); }
+    public void clearTasks() { tasks.clear(); }
     private ActionReplies replies;
 
     public void bind(ActionReplies replies) {
@@ -61,6 +65,14 @@ public final class ServerActionDispatcher {
         String requestId = text(message, "request_id");
         JsonObject data = message.has("data") && message.get("data").isJsonObject() ? message.get("data").getAsJsonObject() : new JsonObject();
         String action = text(data, "action");
+        AgentEntity scopedAgent = AgentCommands.find(minecraftServer, agentId);
+        String world = text(data, "world_id");
+        String dimension = text(data, "dimension");
+        if ((world != null && !world.equals(com.trix.gamebot.bridge.entity.AgentRegistry.get(minecraftServer).worldId()))
+                || (dimension != null && (scopedAgent == null || !dimension.equals(scopedAgent.level().dimension().location().toString())))) {
+            reply(agentId, generation, requestId, action, ActionOutcome.failure("action_rejected", "stale world or dimension"));
+            return;
+        }
         if (requestId == null || action == null) {
             reply(agentId, generation, requestId, action, ActionOutcome.failure("invalid_params", "request_id and action are required"));
             return;
@@ -97,6 +109,14 @@ public final class ServerActionDispatcher {
             reply(agentId, generation, requestId, action, ActionOutcome.failure("client_not_ready", "server npc is not spawned"));
             return;
         }
+        if (tasks.active(agentId) && longRunning) {
+            ledger.complete(agentId,requestId,generation);
+            reply(agentId,generation,requestId,action,ActionOutcome.failure("busy","stop_task before a manual long world action"));return;
+        }
+        if (NavigationTasks.ACTIONS.contains(action) && ledger.snapshot().stream().anyMatch(j -> j.agentId.equals(agentId) && j.longAction)) {
+            ledger.complete(agentId,requestId,generation);
+            reply(agentId,generation,requestId,action,ActionOutcome.failure("busy","cancel the previous long world action before starting a task"));return;
+        }
         if (data.has("goal") && !data.get("goal").isJsonNull()) {
             agent.setGoal(data.get("goal").getAsString());
         }
@@ -115,6 +135,11 @@ public final class ServerActionDispatcher {
         if (target == null) {
             return;
         }
+        if (target.equals("*")) {
+            tasks.cancel(minecraftServer,agentId,generation,"cancelled");
+            for(Pending job:pending.values()) if(job.agentId.equals(agentId)&&job.generation==generation) job.cancel=true;
+            tick(minecraftServer);return;
+        }
         if (ledger.get(agentId, target, generation) == null) {
             reply(agentId, generation, target, "cancel_action", ActionOutcome.failure("action_rejected", "no such request for this agent"));
             return;
@@ -127,6 +152,7 @@ public final class ServerActionDispatcher {
     }
 
     public void tick(MinecraftServer minecraftServer) {
+        tasks.tick(minecraftServer);
         if (pending.isEmpty()) {
             return;
         }
@@ -153,7 +179,12 @@ public final class ServerActionDispatcher {
                 continue;
             }
             if (job.mining) {
-                advanceMine(agent, job, now);
+                try { advanceMine(agent, job, now); }
+                catch (RuntimeException error) {
+                    agent.disarmMainHand();
+                    if (agent.level() instanceof ServerLevel level && job.minePos != null) level.destroyBlockProgress(agent.getId(), job.minePos, -1);
+                    finish(job, ActionOutcome.failure("action_failed", "mining failed; observe before any retry"));
+                }
                 continue;
             }
             if (job.using) {
@@ -178,6 +209,7 @@ public final class ServerActionDispatcher {
     }
 
     public void failAgent(MinecraftServer minecraftServer, String agentId, long generation, String code, String message) {
+        tasks.cancel(minecraftServer,agentId,generation,code);
         for (ActionLedger.Job doomed : ledger.snapshot()) {
             if (!agentId.equals(doomed.agentId) || doomed.generation != generation) {
                 continue;
@@ -193,6 +225,7 @@ public final class ServerActionDispatcher {
     }
 
     public void failAll(MinecraftServer minecraftServer, String code, String message) {
+        tasks.cancelAll(minecraftServer,code);
         for (Pending job : new ArrayList<>(pending.values())) {
             AgentEntity agent = minecraftServer == null ? null : AgentCommands.find(minecraftServer, job.agentId);
             holdOrRelease(agent, job, ActionOutcome.failure(code, message), true);
@@ -211,6 +244,9 @@ public final class ServerActionDispatcher {
             return;
         }
         job.started = true;
+        if (agent.handLocked() && java.util.Set.of("select_item", "drop_item", "use_item", "attack_entity", "interact", "use_item_on_block", "place_block").contains(job.action)) {
+            finish(job, ActionOutcome.failure("busy", "wait for the active hand transaction")); return;
+        }
         if (ClaimGate.changesWorld(job.action)) {
             ClaimGate.Denial denial = ClaimGate.check(job.agentId, job.generation, job.action, job.params, job.claim, System.currentTimeMillis());
             if (denial != null) {
@@ -220,6 +256,8 @@ public final class ServerActionDispatcher {
         }
         try {
             ActionOutcome outcome = switch (job.action) {
+                case "navigate_to", "follow_entity", "explore_area", "stop_task" -> tasks.submit(job.agentId,job.generation,job.requestId,job.action,job.params,NavigationTasks.driver((MinecraftServer)agent.level().getServer(),agent));
+                case "inspect_blocks" -> inspectBlocks(agent,job.params);
                 case "look_at" -> lookAt(agent, job.params);
                 case "move_to" -> beginMove(agent, job);
                 case "select_item" -> select(agent, job.params);
@@ -253,6 +291,13 @@ public final class ServerActionDispatcher {
         return ActionOutcome.done(true, "confirmed", null, null, "looked", evidence);
     }
 
+    private static ActionOutcome inspectBlocks(AgentEntity agent,JsonObject params) {
+        var nearby=ServerSnapshotService.scanNearby(agent,CommonBridgeConfig.scanRadius());
+        var scan=com.trix.gamebot.bridge.observation.SemanticPerception.scan(agent,nearby.source,null);
+        JsonObject evidence=new JsonObject();evidence.add("visible_blocks",com.trix.gamebot.bridge.observation.SemanticPerception.inspect(scan,params));
+        return ActionOutcome.done(true,"observed",null,null,"inspected",evidence);
+    }
+
     private static ActionOutcome beginMove(AgentEntity agent, Pending job) {
         JsonObject params = job.params;
         double x = params.get("x").getAsDouble();
@@ -264,6 +309,14 @@ public final class ServerActionDispatcher {
         }
         if (agent.position().distanceTo(new Vec3(x, y, z)) > MovementService.MOVE_LIMIT) {
             return ActionOutcome.failure("out_of_reach", "target is too far to path without loading chunks");
+        }
+        if (!MovementGeometry.canStandAt((ServerLevel) agent.level(), agent, x, y, z)) {
+            JsonObject evidence = new JsonObject();
+            Vec3 surface = MovementGeometry.standingSurface((ServerLevel) agent.level(), agent, pos);
+            String hint = surface == null ? "choose a different observed standable_goals position"
+                    : "supporting block top has feet y=" + surface.y + "; use an observed standable_goals position";
+            evidence.addProperty("requested_feet_y", y);
+            return ActionOutcome.failure("action_rejected", "target feet position is not standable (body collision, missing support or hazard); " + hint, evidence);
         }
         MovementExclusions exclusions = MovementExclusions.parse(params);
         double tolerance = MovementService.tolerance(params, MovementService.DEFAULT_TOLERANCE);
@@ -367,11 +420,17 @@ public final class ServerActionDispatcher {
     }
 
     private static ActionOutcome drop(AgentEntity agent, JsonObject params) {
+        if (!(agent.level() instanceof ServerLevel level)) return ActionOutcome.failure("client_not_ready", "server npc is not spawned");
         int slot;
+        if (params.has("item_id")) {
+            slot = ResourceActions.dropSlot(agent.inventory(), params.get("item_id").getAsString(), params.get("count").getAsInt());
+            if (slot < 0) return ActionOutcome.failure("item_not_found", "no inventory stack contains the requested item and quantity");
+        } else {
         try {
             slot = hotbarSlot(agent, params);
         } catch (ActionRejection rejection) {
             return rejection.outcome;
+        }
         }
         ItemStack stack = agent.inventory().getItem(slot);
         if (stack.isEmpty()) {
@@ -382,17 +441,18 @@ public final class ServerActionDispatcher {
             return ActionOutcome.failure("invalid_params", "count exceeds the current stack");
         }
         JsonObject before = ServerSnapshotService.evidence(agent);
-        ItemStack dropped = stack.split(count);
-        if (!(agent.level() instanceof ServerLevel level)) {
-            return ActionOutcome.failure("client_not_ready", "server npc is not spawned");
-        }
+        ItemStack dropped = stack.copyWithCount(count);
         ItemEntity entity = new ItemEntity(level, agent.getX(), agent.getEyeY(), agent.getZ(), dropped);
         entity.setPickUpDelay(10);
-        level.addFreshEntity(entity);
-        agent.selectSlot(slot);
+        Vec3 forward = agent.getLookAngle(); entity.setDeltaMovement(forward.x * 0.25, 0.15, forward.z * 0.25);
+        if (!level.addFreshEntity(entity)) return ActionOutcome.failure("action_rejected", "item spawn rejected; inventory unchanged");
+        stack.shrink(count); agent.deferOwnPickup(entity.getUUID()); agent.refreshHands();
         JsonObject after = ServerSnapshotService.evidence(agent);
         String effect = ServerSnapshotService.countsChanged(before, after) ? "confirmed" : "unverified";
-        return ActionOutcome.done(true, effect, null, null, "dropped " + count, ServerSnapshotService.merge(before, after));
+        JsonObject evidence = ServerSnapshotService.merge(before, after);
+        evidence.addProperty("spawned", true); evidence.addProperty("item_id", AgentEntity.itemId(dropped));
+        evidence.addProperty("count", count); evidence.addProperty("entity_uuid", entity.getUUID().toString());
+        return ActionOutcome.done(true, effect, null, null, "dropped " + count, evidence);
     }
 
     private static ActionOutcome useItem(AgentEntity agent, Pending job) {
@@ -441,6 +501,7 @@ public final class ServerActionDispatcher {
     }
 
     private static ActionOutcome beginMine(AgentEntity agent, Pending job) {
+        if (agent.handLocked()) return ActionOutcome.failure("busy", "hand transaction in progress");
         BlockPos pos = blockPos(job.params);
         ActionOutcome gate = gateBlock(agent, job.params, pos);
         if (gate != null) {
@@ -450,24 +511,22 @@ public final class ServerActionDispatcher {
             return ActionOutcome.failure("client_not_ready", "server npc is not spawned");
         }
         BlockState state = level.getBlockState(pos);
+        if (state.isAir()) return ActionOutcome.failure("state_mismatch", "target is already air");
         float hardness = state.getDestroySpeed(level, pos);
         if (hardness < 0.0F) {
             return ActionOutcome.failure("unsupported", "block cannot be destroyed");
         }
+        int slot = ResourceActions.bestTool(agent.inventory(), state);
+        if (slot < 0) return ActionOutcome.failure("missing_tool", "no suitable harvesting tool in inventory; block was not changed");
+        agent.equipInventorySlot(slot);
+        var player = ResourceActions.player(agent);
+        if (!state.canHarvestBlock(level, pos, player)) return ActionOutcome.failure("missing_tool", "held tool cannot harvest this block; block was not changed");
         agent.lookAtPoint(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
         agent.armMainHand();
         agent.swing(InteractionHand.MAIN_HAND);
-        if (hardness == 0.0F) {
-            boolean dropped = agent.getMainHandItem().isCorrectToolForDrops(state);
-            level.destroyBlock(pos, dropped, agent, 512);
-            agent.disarmMainHand();
-            JsonObject evidence = new JsonObject();
-            evidence.addProperty("block_id", net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
-            evidence.addProperty("destroyed", level.getBlockState(pos).isAir());
-            return ActionOutcome.done(true, "confirmed", null, null, "broke block", evidence);
-        }
         job.mining = true;
         job.minePos = pos;
+        job.mineState = state;
         job.mineProgress = 0.0F;
         return null;
     }
@@ -480,6 +539,7 @@ public final class ServerActionDispatcher {
         }
         if (now >= job.deadlineMs) {
             agent.disarmMainHand();
+            level.destroyBlockProgress(agent.getId(), job.minePos, -1);
             finish(job, ActionOutcome.failure("timeout", "mining timed out"));
             return;
         }
@@ -489,30 +549,38 @@ public final class ServerActionDispatcher {
             return;
         }
         BlockState state = level.getBlockState(job.minePos);
-        float hardness = state.getDestroySpeed(level, job.minePos);
-        if (state.isAir() || hardness < 0.0F) {
+        if (!state.equals(job.mineState)) {
             agent.disarmMainHand();
-            JsonObject evidence = new JsonObject();
-            evidence.addProperty("destroyed", state.isAir());
-            finish(job, ActionOutcome.done(state.isAir(), state.isAir() ? "confirmed" : "failed", state.isAir() ? null : "block cannot be destroyed", state.isAir() ? null : "unsupported", "broke block", evidence));
+            level.destroyBlockProgress(agent.getId(), job.minePos, -1);
+            finish(job, ActionOutcome.failure("state_mismatch", "target changed during mining; acquisition not confirmed"));
             return;
         }
+        ActionOutcome gate = gateBlock(agent, job.params, job.minePos);
+        if (gate != null) { agent.disarmMainHand(); level.destroyBlockProgress(agent.getId(), job.minePos, -1); finish(job, gate); return; }
         if (agent.tickCount % 4 == 0) {
             agent.swing(InteractionHand.MAIN_HAND);
         }
-        ItemStack tool = agent.getMainHandItem();
-        float speed = Math.max(1.0F, tool.getDestroySpeed(state));
-        boolean harvest = tool.isCorrectToolForDrops(state);
-        job.mineProgress += speed / hardness / (harvest ? 30.0F : 100.0F);
+        var player = ResourceActions.player(agent);
+        if (!state.canHarvestBlock(level, job.minePos, player)) {
+            agent.disarmMainHand(); level.destroyBlockProgress(agent.getId(), job.minePos, -1);
+            finish(job, ActionOutcome.failure("missing_tool", "tool no longer permits harvesting")); return;
+        }
+        job.mineProgress += state.getDestroyProgress(player, level, job.minePos);
+        level.destroyBlockProgress(agent.getId(), job.minePos, Math.min(9, (int)(job.mineProgress * 10)));
         if (job.mineProgress < 1.0F) {
             return;
         }
-        level.destroyBlock(job.minePos, harvest, agent, 512);
-        agent.disarmMainHand();
+        boolean destroyed;
+        try { destroyed = player.gameMode.destroyBlock(job.minePos); }
+        finally { ResourceActions.commitInventory(agent, player); agent.disarmMainHand(); level.destroyBlockProgress(agent.getId(), job.minePos, -1); }
         JsonObject evidence = new JsonObject();
         evidence.addProperty("block_id", net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
-        evidence.addProperty("destroyed", level.getBlockState(job.minePos).isAir());
-        finish(job, ActionOutcome.done(true, evidence.get("destroyed").getAsBoolean() ? "confirmed" : "observed", null, null, "broke block", evidence));
+        evidence.addProperty("destroyed", destroyed && !level.getBlockState(job.minePos).equals(state));
+        evidence.addProperty("acquired", false);
+        evidence.addProperty("acquisition_status", "check_inventory_and_pickup_events; destruction alone is not acquisition");
+        evidence.add("pos", posJson(job.minePos));
+        evidence.add("inventory_after", ServerSnapshotService.inventory(agent));
+        finish(job, evidence.get("destroyed").getAsBoolean() ? ActionOutcome.done(true, "confirmed", null, null, "block destroyed; drops not yet collected", evidence) : ActionOutcome.failure("action_rejected", "block break was denied or unchanged", evidence));
     }
 
     /** 带前提的拆除：目标位置的方块必须与 expected_block 一致，否则不改世界。其余沿用 attack_block 的挖掘流程。 */
@@ -773,6 +841,7 @@ public final class ServerActionDispatcher {
         }
         if (job.mining || job.using) {
             agent.disarmMainHand();
+            if (job.mining && job.minePos != null && agent.level() instanceof ServerLevel level) level.destroyBlockProgress(agent.getId(), job.minePos, -1);
         }
     }
 
@@ -935,6 +1004,7 @@ public final class ServerActionDispatcher {
         private PlacementService.Run placementRun;
         private float mineProgress;
         private BlockPos minePos;
+        private BlockState mineState;
         private JsonObject evidence;
         private JsonObject claim;
 

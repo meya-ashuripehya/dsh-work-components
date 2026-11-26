@@ -48,7 +48,9 @@ def extract_handshake(data: Dict[str, Any]) -> Dict[str, Any]:
         out["mods"] = [str(m).lower() for m in mods if m]
     elif isinstance(mods, str) and mods.strip():
         out["mods"] = [p.strip().lower() for p in mods.split(",") if p.strip()]
-    caps = data.get("capabilities") or data.get("caps")
+    # An explicit empty list revokes previously advertised actions (removed NPC,
+    # world not ready). Do not fall back to an old alias on a falsy list.
+    caps = data.get("capabilities") if "capabilities" in data else data.get("caps")
     if isinstance(caps, list):
         out["raw_capabilities"] = [str(c) for c in caps]
     pos = data.get("position") or data.get("pos")

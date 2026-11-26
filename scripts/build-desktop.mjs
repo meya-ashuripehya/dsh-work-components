@@ -1,5 +1,5 @@
 // 桌面控制经纪人：src/components/desktop/broker → broker/dist/DSHDesktopBroker.exe（dotnet publish，自包含单文件，win-x64）。
-// 产物 73 MB 左右，不进 git（.gitignore 忽略 dist/）；npm 发布前由 CI 构建并随包分发，用户无需安装 .NET。
+// 产物约 76 MiB，不进 git，也不进 npm tarball（超过严格市场 50 MiB）。CI 仍编译它以确认能构建。用户不需要为了安装插件而安装 .NET。
 //   node scripts/build-desktop.mjs            需要时构建（dist 缺失或源码更新）；本机没有 dotnet 时只提示、不失败
 //   node scripts/build-desktop.mjs --force    总是重新构建
 //   node scripts/build-desktop.mjs --require  没有 dotnet 或构建失败时退出码非 0（CI / 发布用）

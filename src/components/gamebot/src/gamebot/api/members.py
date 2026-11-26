@@ -18,6 +18,7 @@ from gamebot.members import (
     revoke_member_claim,
     status_member,
     valid_member_id,
+    update_control_state,
 )
 
 router = APIRouter()
@@ -37,6 +38,7 @@ class MemberAction(BaseModel):
 class CancelRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target_request_id: str
+    world_id: Optional[str] = None
 
 
 class ClaimRevoke(BaseModel):
@@ -51,6 +53,31 @@ class ReconcileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     member_ids: List[str]
     names: Optional[Dict[str, str]] = None
+
+
+class ControlState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    world_id: str
+    state: str
+    lastDecisionAt: Optional[float] = None
+    deadline: Optional[float] = None
+    lastAction: Optional[str] = None
+    lastResult: Optional[Dict[str, Any]] = None
+    lastError: Optional[str] = None
+    task: Optional[Dict[str, Any]] = None
+    observationStalled: bool = False
+    lastSnapshotAt: Optional[float] = None
+    modelCalls: int = 0
+
+
+@router.post("/v1/minecraft/members/{member_id}/autonomy")
+async def autonomy(member_id: str, body: ControlState, x_gamebot_member_token: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+    _auth(x_gamebot_member_token)
+    _check_id(member_id)
+    try:
+        return await update_control_state(member_id, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _auth(token: Optional[str]) -> None:
@@ -82,6 +109,8 @@ async def connect(
     _check_id(member_id)
     try:
         return await connect_member(member_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -138,7 +167,7 @@ async def cancel(
     _auth(x_gamebot_member_token)
     _check_id(member_id)
     try:
-        return await cancel_member(member_id, body.target_request_id)
+        return await cancel_member(member_id, body.target_request_id, body.world_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="member session not found") from exc
     except Exception as exc:

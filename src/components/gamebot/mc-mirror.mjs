@@ -27,6 +27,9 @@ export function chatIdentity(event) {
 }
 
 export function classifyChat(event) {
+  // Local delivery receipts are not incoming chat. They lack source/audience and
+  // must never turn a private send into an anonymous public echo.
+  if (event?.type === 'chat_out' || event?.type === 'chat_result') return null
   const data = inner(event)
   const id = chatIdentity(event)
   if (!id) return null
@@ -62,9 +65,10 @@ export function classifyChat(event) {
 }
 export function createMirror({ cooldownMs = MIRROR_COOLDOWN_MS, now = Date.now, append } = {}) {
   const seen = new Set()
+  const inflight = new Map()
   let lastBystander = null
 
-  async function take(item) {
+  async function takeOnce(item) {
     if (!item?.id) return { mirrored: false, reason: 'no-id' }
     if (seen.has(item.id)) return { mirrored: false, reason: 'seen' }
     if (item.audience === 'private') {
@@ -72,26 +76,35 @@ export function createMirror({ cooldownMs = MIRROR_COOLDOWN_MS, now = Date.now, 
       return { mirrored: false, reason: 'private' }
     }
     if (item.kind === 'bystander') {
-      seen.add(item.id)
       const at = now()
       if (lastBystander != null && at - lastBystander < cooldownMs) return { mirrored: false, reason: 'cooldown' }
       lastBystander = at
       await append?.(item)
+      seen.add(item.id)
       return { mirrored: true, reason: 'bystander' }
     }
-    seen.add(item.id)
     await append?.(item)
+    seen.add(item.id)
     return { mirrored: true, reason: 'say' }
+  }
+
+  async function take(item) {
+    const id = item?.id
+    if (!id) return takeOnce(item)
+    if (inflight.has(id)) { await inflight.get(id); return { mirrored: false, reason: 'seen' } }
+    const pending = takeOnce(item)
+    inflight.set(id, pending)
+    try { return await pending } finally { inflight.delete(id) }
   }
 
   return {
     take,
-    async fromAction(memberId, result, name) {
+    async fromAction(memberId, result, name, world) {
       if (!result?.ok) return { mirrored: false, reason: 'unconfirmed' }
       const extras = result.extras || {}
       const id = String(extras.message_id || extras.say_id || '')
       return take({
-        id,
+        id: world ? `${world}:${memberId}:${id}` : id,
         kind: 'say',
         audience: String(extras.audience || 'public'),
         text: stripRolePrefix(result.sent || ''),

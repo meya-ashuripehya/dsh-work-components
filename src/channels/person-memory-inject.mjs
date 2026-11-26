@@ -6,6 +6,7 @@
  * Patches ChannelHarnessBridge.prototype.handleQueuedMessage (same style as cards-link).
  * Also learns Telegram/QQ sender.name into peer-aliases-learned.json for later list/search labels.
  */
+import { memoryRuntimeState } from './cross-session-runtime-state.mjs'
 import {
   buildPersonSummary,
   ownerLinkFromSettings,
@@ -22,19 +23,19 @@ import {
   isMasterMemoryEnabled,
 } from './cross-session-memory-write.mjs'
 
-let provider = null
 
 /** @param {null | (() => { enabled?: boolean, config?: object, aliases?: object[], learnedFile?: string })} fn */
 export function setPersonMemoryProvider(fn) {
-  provider = typeof fn === 'function' ? fn : null
+  memoryRuntimeState.provider = typeof fn === 'function' ? fn : null
 }
 
 export function getPersonMemoryProvider() {
-  return provider
+  return memoryRuntimeState.provider
 }
 
 function snapshotFromProvider(event) {
-  const raw = provider?.() || {}
+  const raw = memoryRuntimeState.provider?.()
+  if (!raw) return null
   if (raw.enabled === false) return null
   const cfg = raw.config || raw.settings || {}
   const nested = cfg.crossSessionMemory && typeof cfg.crossSessionMemory === 'object'
@@ -98,7 +99,7 @@ function plainUserText(event) {
  * @returns {object} possibly rewritten event
  */
 export function enrichInboundEvent(event, snap) {
-  if (!event || !snap) return event
+  if (!event || !snap || !isMasterMemoryEnabled(snap.config || {})) return event
   const channel = channelOf(event)
   const peerId = conversationIdOf(event)
   if (!channel || !peerId) return event
@@ -165,6 +166,11 @@ export function installPersonMemoryInject(ChannelHarnessBridge) {
     try {
       const snap = snapshotFromProvider(event)
       if (snap) next = enrichInboundEvent(event, snap)
+      else if (event?.__dshInboundPrefix !== undefined) {
+        // A queued event may have been enriched before the switch was turned off.
+        const { __dshInboundPrefix: _memory, ...plain } = event
+        next = plain
+      }
     } catch { /* never block delivery */ }
     return original.call(this, next, key, text, parsed, generation)
   }

@@ -37,6 +37,9 @@ import ffmpeg from './ffmpeg/index.mjs'
 import obsidian from './obsidian/index.mjs'
 import rea from './rea/index.mjs'
 import deepslate from './deepslate/index.mjs'
+import cursor from './cursor/index.mjs'
+import ghidra from './ghidra/index.mjs'
+import ilspy from './ilspy/index.mjs'
 import gamebotMinecraft from './gamebot-minecraft/index.mjs'
 import gamebotCivilization from './gamebot-civilization/index.mjs'
 import gamebotVision from './gamebot-vision/index.mjs'
@@ -68,6 +71,9 @@ import * as ffmpegMod from './ffmpeg/index.mjs'
 import * as obsidianMod from './obsidian/index.mjs'
 import * as reaMod from './rea/index.mjs'
 import * as deepslateMod from './deepslate/index.mjs'
+import * as cursorMod from './cursor/index.mjs'
+import * as ghidraMod from './ghidra/index.mjs'
+import * as ilspyMod from './ilspy/index.mjs'
 import * as gamebotMinecraftMod from './gamebot-minecraft/index.mjs'
 import * as gamebotCivilizationMod from './gamebot-civilization/index.mjs'
 import * as gamebotVisionMod from './gamebot-vision/index.mjs'
@@ -105,6 +111,9 @@ const BUNDLED_ENTRIES = [
   { component: obsidian, mod: obsidianMod },
   { component: rea, mod: reaMod },
   { component: deepslate, mod: deepslateMod },
+  { component: cursor, mod: cursorMod },
+  { component: ghidra, mod: ghidraMod },
+  { component: ilspy, mod: ilspyMod },
   { component: gamebotMinecraft, mod: gamebotMinecraftMod },
   { component: gamebotCivilization, mod: gamebotCivilizationMod },
   { component: gamebotVision, mod: gamebotVisionMod },

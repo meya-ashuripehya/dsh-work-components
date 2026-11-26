@@ -6,7 +6,7 @@
  */
 import { createPreCompactionHistoryTools } from './tools.mjs'
 
-export { createCompanionCompactionFeature } from './companion-compaction.mjs'
+export { createCompanionCompactionFeature, companionStatusBadge } from './companion-compaction.mjs'
 export { COMPANION_COMPACTION_INSTRUCTION } from './companion-instruction.mjs'
 
 export function createPreCompactionHistoryFeature(ctx, getConfig) {

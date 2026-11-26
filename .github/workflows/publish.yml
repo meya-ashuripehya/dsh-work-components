@@ -5,6 +5,9 @@ name: Publish to npm
 # meya-ashuripehya/dsh-work-components, workflow publish.yml. Requires npm >= 11.5.1 and a
 # public repository whose URL matches package.json "repository.url"; provenance is attached
 # automatically.
+#
+# One tag produces one exe, one manifest, one npm tarball and one GitHub Release asset.
+# npm publish runs only after the uploaded asset is downloaded back and matches.
 
 on:
   workflow_dispatch:
@@ -13,11 +16,35 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
+  broker:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - run: npm ci
+
+      - run: npm run build:desktop -- --require
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-broker-exe
+          path: src/components/desktop/broker/dist/DSHDesktopBroker.exe
+          if-no-files-found: error
+
   publish:
+    needs: broker
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,32 +54,75 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      # Node 22 ships npm 10; trusted publishing needs npm >= 11.5.1.
       - run: npm install -g npm@^11.5.1
 
       - run: npm --version
 
       - run: npm ci
 
-      # 桌面控制经纪人（自包含单文件 win-x64，约 73 MB）不进 git，发布前在这里构建并随 npm 包分发。
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/download-artifact@v4
         with:
-          dotnet-version: "8.0.x"
+          name: desktop-broker-exe
+          path: broker-build
 
-      - run: npm run build:desktop -- --require
+      - name: require a v* tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "npm publish and the Release asset run only from a v* tag"
+            exit 1
+          fi
+          node -e "const v=require('./package.json').version; if(process.env.GITHUB_REF_NAME!=='v'+v){console.error('tag',process.env.GITHUB_REF_NAME,'!= package',v); process.exit(1)}"
 
-      # prepublishOnly runs build + check again during publish; doing it here fails earlier.
       - run: npm run build
 
       - run: npm run check
 
-      # 预发布版本（含 "-"，如 0.4.0-beta.1）发到 beta 等 dist-tag，不移动 latest。
+      - name: pack the tarball against this exe
+        run: node scripts/pack-release.mjs --out artifacts --broker-asset broker-build/DSHDesktopBroker.exe
+
+      - name: verify the tarball that will be published
+        run: node scripts/verify-package.mjs --tgz "$(tr -d '\r' < artifacts/tgz-path.txt)" --require-size --broker-asset broker-build/DSHDesktopBroker.exe
+
+      - name: upload the exe to a draft release and read it back
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          cp broker-build/DSHDesktopBroker.exe artifacts/DSHDesktopBroker-win-x64.exe
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/DSHDesktopBroker-win-x64.exe --clobber
+          else
+            gh release create "$TAG" artifacts/DSHDesktopBroker-win-x64.exe --draft --title "$TAG" --notes "Draft. The npm package is published only after this asset matches the tarball manifest."
+          fi
+          rm -rf release-readback
+          mkdir release-readback
+          gh release download "$TAG" --pattern DSHDesktopBroker-win-x64.exe --dir release-readback
+          node --input-type=module -e "
+            import { digestFile } from './scripts/stage-broker-asset.mjs';
+            import { readFileSync } from 'node:fs';
+            const built = await digestFile('broker-build/DSHDesktopBroker.exe');
+            const back = await digestFile('release-readback/DSHDesktopBroker-win-x64.exe');
+            if (built.bytes !== back.bytes || built.sha256 !== back.sha256 || built.sha512 !== back.sha512) {
+              console.error('release asset does not match the built exe');
+              process.exit(1);
+            }
+            const names = readFileSync('artifacts/tgz-path.txt','utf8').trim();
+            console.log('release asset matches', names, built.sha256);
+          "
+
       - name: npm publish
         run: |
+          TGZ=$(tr -d '\r' < artifacts/tgz-path.txt)
           VERSION=$(node -p "require('./package.json').version")
           case "$VERSION" in
             *-*) TAG=$(echo "${VERSION#*-}" | cut -d. -f1) ;;
             *) TAG=latest ;;
           esac
-          echo "publishing $VERSION with --tag $TAG"
-          npm publish --access public --provenance --tag "$TAG"
+          echo "publishing $TGZ as $VERSION with --tag $TAG"
+          npm publish "$TGZ" --access public --provenance --tag "$TAG"
+
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

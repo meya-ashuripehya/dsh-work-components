@@ -1,0 +1,15 @@
+{
+  "component": "desktop-broker",
+  "version": "0.4.4",
+  "status": "unavailable",
+  "note": "Repository template. bytes, sha256 and sha512 are empty on purpose. scripts/pack-release.mjs --broker-asset writes them from the exe built in the same run and does not modify this file. Installation refuses this template.",
+  "assets": {
+    "win32-x64": {
+      "file": "DSHDesktopBroker.exe",
+      "url": "https://github.com/meya-ashuripehya/dsh-work-components/releases/download/v0.4.4/DSHDesktopBroker-win-x64.exe",
+      "bytes": null,
+      "sha256": "",
+      "sha512": ""
+    }
+  }
+}

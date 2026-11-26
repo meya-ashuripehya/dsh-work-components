@@ -31,6 +31,7 @@ import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import tls from 'node:tls'
 import { fileURLToPath } from 'node:url'
+import { parseSha256Sum, tagFromReleaseRedirect, uvReleaseUrls } from './download-integrity.mjs'
 
 const IS_WIN = process.platform === 'win32'
 const EXE = IS_WIN ? '.exe' : ''
@@ -416,7 +417,7 @@ export async function resolveRedirect(url, { proxy, timeoutMs = 20000, headers }
 }
 
 /** 下载到 dest（先写 .part 再改名），跟随重定向，失败重试。onProgress(received, total|null)。headers：附加请求头。 */
-export async function download(url, dest, { proxy, onProgress, retries = 3, timeoutMs = 60000, log, headers } = {}) {
+export async function download(url, dest, { proxy, onProgress, retries = 3, timeoutMs = 60000, log, headers, maxBytes } = {}) {
   await mkdir(dirname(dest), { recursive: true })
   const signal = currentAbortSignal()
   let lastError
@@ -437,13 +438,24 @@ export async function download(url, dest, { proxy, onProgress, retries = 3, time
         }
         if (res.statusCode !== 200) { res.resume(); throw httpError(res, current) }
         const total = Number(res.headers['content-length']) || null
+        if (maxBytes && total && total > maxBytes) {
+          res.resume()
+          throw Object.assign(new Error(`下载超过大小上限（${total} > ${maxBytes}）`), { noRetry: true })
+        }
         let received = 0
         onProgress?.(0, total)
         const part = dest + '.part'
         await new Promise((ok, fail) => {
           const out = createWriteStream(part)
           res.setTimeout?.(timeoutMs, () => res.destroy(new Error(`下载无数据超过 ${Math.round(timeoutMs / 1000)} 秒`)))
-          res.on('data', (c) => { received += c.length; onProgress?.(received, total) })
+          res.on('data', (c) => {
+            received += c.length
+            if (maxBytes && received > maxBytes) {
+              res.destroy(Object.assign(new Error(`下载超过大小上限（${received} > ${maxBytes}）`), { noRetry: true }))
+              return
+            }
+            onProgress?.(received, total)
+          })
           res.on('error', fail)
           out.on('error', fail)
           out.on('finish', ok)
@@ -759,12 +771,24 @@ export async function installUv(task) {
   const m = managedPaths()
   const asset = uvAsset()
   if (!asset) throw new Error(`没有适用于 ${process.platform}/${process.arch} 的 uv 预编译包：请手动安装 uv，并在设置中填写 uv 路径`)
-  const url = `https://github.com/astral-sh/uv/releases/latest/download/${asset}`
+  task.step('正在确定 uv 版本')
+  const tagPage = await resolveRedirect('https://github.com/astral-sh/uv/releases/latest', { proxy: task.proxy })
+  const pinned = uvReleaseUrls(tagFromReleaseRedirect(tagPage), asset)
   const archive = join(m.downloads, asset)
-  task.step('正在下载 uv')
-  task.log(`GET ${url}`)
-  const got = await download(url, archive, { proxy: task.proxy, onProgress: progressReporter(task, ' uv'), log: task.log })
+  const sumFile = join(m.downloads, `${asset}.sha256`)
+  task.step('正在下载 uv 校验值')
+  task.log(`GET ${pinned.checksumUrl}`)
+  await download(pinned.checksumUrl, sumFile, { proxy: task.proxy, log: task.log, maxBytes: 1024 * 1024 })
+  const expected = parseSha256Sum(readFileSync(sumFile, 'utf8'), asset)
+  task.step(`正在下载 uv ${pinned.tag}`)
+  task.log(`GET ${pinned.archiveUrl}`)
+  const got = await download(pinned.archiveUrl, archive, { proxy: task.proxy, onProgress: progressReporter(task, ' uv'), log: task.log, maxBytes: 80 * 1024 * 1024 })
   task.log(`已下载 ${mb(got.bytes)} MB ← ${got.url.split('?')[0]}`)
+  const actual = await sha256(archive)
+  if (actual !== expected) {
+    await rm(archive, { force: true })
+    throw new Error(`uv 包校验失败（sha256 ${actual} ≠ ${expected}）`)
+  }
   task.step('正在解压 uv')
   const tmp = join(m.root, `.tmp-uv-${Date.now()}`)
   await removeDir(tmp)
@@ -783,7 +807,7 @@ export async function installUv(task) {
   await rm(archive, { force: true })
   let version = ''
   await run(m.uv, ['--version'], { onLine: (l) => { version = l; consoleOf(task)(l) } })
-  await writeFile(join(dest, MARKER), JSON.stringify({ id: 'uv', version, source: got.url, installedAt: new Date().toISOString() }, null, 2))
+  await writeFile(join(dest, MARKER), JSON.stringify({ id: 'uv', version, source: got.url, tag: pinned.tag, sha256: expected, installedAt: new Date().toISOString() }, null, 2))
   return { version }
 }
 

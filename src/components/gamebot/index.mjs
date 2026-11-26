@@ -264,7 +264,7 @@ export function createGameModule(game) {
       try { await pushConfig(url, game, cfg) } catch (error) {
         return { ok: false, reason: String(error?.message ?? error) }
       }
-      // 进世界自动连接固定为开：启用 Minecraft 时把全部已启用成员连进世界（世界未就绪时由 mc-host 重连再 reconcile）。
+      // 仅登记席位资格；NPC 由游戏内 spawn 指令加入，重连只恢复存档已有成员。
       if (game === 'minecraft' && memberIdsFor(cfg).length) {
         void reconcileMembers(cfg).then((summary) => {
           console.info(`[dsh-workbench:${id}] ${summary.note}`)

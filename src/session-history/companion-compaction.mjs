@@ -23,11 +23,56 @@ const SUMMARIZE_FLAG = '__dshCompanionSummarizeOrig'
 const DEBUG_DIR = join(homedir(), '.dsh', 'data', 'dsh-work-components')
 const DEBUG_LOG = join(DEBUG_DIR, 'companion-compaction.log')
 
+let debugSink = null
+
+/** Tests capture lines here. Production keeps the file log. Never pass instruction or transcript text. */
+export function setCompanionCompactionDebugSink(sink) {
+  debugSink = typeof sink === 'function' ? sink : null
+}
+
 function debugLog(line) {
+  const text = String(line)
+  if (debugSink) {
+    try { debugSink(text) } catch {}
+    return
+  }
   try {
     mkdirSync(DEBUG_DIR, { recursive: true })
-    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${line}\n`)
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${text}\n`)
   } catch {}
+}
+
+/** `off` when disabled, `custom` when the textarea has non-whitespace text, else `default`. */
+export function instructionSourceOf(cfg) {
+  if (!isCompanionCompactionEnabled(cfg)) return 'off'
+  const custom = typeof cfg?.companionCompactionInstruction === 'string' && cfg.companionCompactionInstruction.trim()
+  return custom ? 'custom' : 'default'
+}
+
+/**
+ * Badge for the settings list. Text names the phase and the instruction
+ * source category. It does not include the instruction body.
+ */
+export function companionStatusBadge(runtime, cfg) {
+  if (cfg?.companionCompactionEnabled === false) {
+    return { text: '未启用', cls: 'off', title: runtime?.detail || '' }
+  }
+  const source = runtime?.instructionSource === 'custom' ? '自定义指令' : '内置指令'
+  const title = runtime?.detail || ''
+  switch (runtime?.phase) {
+    case 'pending':
+      return { text: '等待压缩引擎', cls: 'busy', title }
+    case 'miss':
+      return { text: '已安装但未命中', cls: 'error', title }
+    case 'hit':
+      return { text: '已命中 · ' + source, cls: 'on', title }
+    case 'installed':
+      return { text: '已安装 · ' + source, cls: 'on', title }
+    case 'off':
+      return { text: '未启用', cls: 'off', title }
+    default:
+      return { text: '未安装', cls: 'error', title: title || '启动后尚未安装陪伴压缩包装' }
+  }
 }
 
 /** Resolve instruction text: non-empty config override wins, else built-in. */
@@ -115,10 +160,11 @@ function getService(ctx, name) {
   try { return ctx?.[name] ?? null } catch { return null }
 }
 
-function wrapStreamOnLlm(llm, getConfig, log, tag) {
+function wrapStreamOnLlm(llm, getConfig, log, tag, note) {
   if (!llm || typeof llm.stream !== 'function') return false
-  if (llm[WRAP_FLAG] && llm.stream !== llm[WRAP_FLAG]) return true
-  const bound = llm.stream.bind(llm)
+  if (llm.stream?.__dshCompanionCompaction === true && llm[WRAP_FLAG]) return true
+  const raw = llm.stream
+  const bound = raw.bind(llm)
   function companionCompactionStream(options) {
     try {
       const cfg = getConfig() || {}
@@ -128,8 +174,10 @@ function wrapStreamOnLlm(llm, getConfig, log, tag) {
         if (purposeHit || markerHit) {
           const instruction = resolveCompanionInstruction(cfg)
           const rewritten = applyCompanionCompactionOptions(options, instruction)
-          debugLog(`stream-wrap hit tag=${tag} purpose=${options?.purpose} marker=${markerHit}`)
-          log.info?.(`dsh-workbench: companion compaction instruction applied (${tag})`)
+          const source = instructionSourceOf(cfg)
+          debugLog(`phase=hit via=stream tag=${tag} source=${source} purpose=${purposeHit} marker=${markerHit}`)
+          log.info?.(`dsh-workbench: companion compaction instruction applied (${tag}, ${source})`)
+          note?.({ kind: 'hit', via: 'stream', tag, source })
           return bound(rewritten)
         }
       }
@@ -141,8 +189,8 @@ function wrapStreamOnLlm(llm, getConfig, log, tag) {
   }
   companionCompactionStream.__dshCompanionCompaction = true
   llm.stream = companionCompactionStream
-  llm[WRAP_FLAG] = bound
-  debugLog(`stream-wrap installed tag=${tag}`)
+  llm[WRAP_FLAG] = raw
+  debugLog(`phase=installed via=stream tag=${tag}`)
   return true
 }
 
@@ -158,11 +206,12 @@ function unwrapStreamOnLlm(llm) {
  * Patch compaction.summarize: for each call, wrap THAT engine's ctx.llm.stream
  * around the original summarize (guarantees we hit the same llm summarizeWithLlm uses).
  */
-function patchSummarize(engine, getConfig, log) {
+function patchSummarize(engine, getConfig, log, note) {
   if (!engine || typeof engine.summarize !== 'function') return false
   if (engine[SUMMARIZE_FLAG]) return true
-  const original = engine.summarize.bind(engine)
-  engine[SUMMARIZE_FLAG] = original
+  const raw = engine.summarize
+  const original = raw.bind(engine)
+  engine[SUMMARIZE_FLAG] = raw
   engine.summarize = async function companionSummarize(input, agent, signal) {
     const cfg = getConfig() || {}
     if (!isCompanionCompactionEnabled(cfg)) {
@@ -170,18 +219,30 @@ function patchSummarize(engine, getConfig, log) {
     }
     const llm = getService(this.ctx, 'llm') || this.ctx?.llm
     const instruction = resolveCompanionInstruction(cfg)
+    const source = instructionSourceOf(cfg)
     let installedHere = false
+    let nestedHit = false
     let prev = null
+    let prevFn = null
     if (llm && typeof llm.stream === 'function') {
-      // Always install a nested wrap for this call even if a permanent wrap exists:
-      // chain through current stream so we still rewrite.
-      prev = llm.stream.bind(llm)
+      // Chain through the stream this engine actually calls. A closed-over
+      // stream on another object is reported as a miss after the call returns.
+      // If a permanent wrap is already on this function, it records the hit.
+      prevFn = llm.stream
+      const prevWasWrap = prevFn.__dshCompanionCompaction === true
+      prev = prevFn.bind(llm)
       llm.stream = function (options) {
         try {
           const purposeHit = options?.purpose === 'compaction'
           const markerHit = looksLikeOfficialCompactionInstruction(lastUserText(options?.messages))
           if (purposeHit || markerHit) {
-            debugLog(`summarize-nested hit purpose=${options?.purpose} marker=${markerHit}`)
+            nestedHit = true
+            if (!prevWasWrap) {
+              debugLog(`phase=hit via=summarize source=${source} purpose=${purposeHit} marker=${markerHit}`)
+              note?.({ kind: 'hit', via: 'summarize', tag: 'engine.summarize', source })
+            } else {
+              debugLog(`summarize-nested forwarded source=${source}`)
+            }
             return prev(applyCompanionCompactionOptions(options, instruction))
           }
         } catch (error) {
@@ -191,18 +252,22 @@ function patchSummarize(engine, getConfig, log) {
       }
       installedHere = true
     } else {
-      debugLog('summarize patch: no llm on engine.ctx')
+      debugLog('phase=miss via=summarize-no-llm')
     }
     try {
-      debugLog('summarize patch: calling original summarize')
+      debugLog('summarize entered')
       return await original(input, agent, signal)
     } finally {
-      if (installedHere && prev) {
-        try { llm.stream = prev } catch {}
+      if (installedHere && prevFn) {
+        try { llm.stream = prevFn } catch {}
+      }
+      if (!nestedHit) {
+        debugLog(`phase=miss via=${installedHere ? 'summarize' : 'summarize-no-llm'} source=${source}`)
+        note?.({ kind: 'miss', via: installedHere ? 'summarize' : 'summarize-no-llm', source })
       }
     }
   }
-  debugLog('summarize patch installed')
+  debugLog('phase=installed via=summarize')
   log.info?.('dsh-workbench: companion compaction summarize patch installed')
   return true
 }
@@ -220,13 +285,48 @@ function unpatchSummarize(engine) {
  */
 export function createCompanionCompactionFeature(ctx, getConfig) {
   const log = ctx.logger ?? console
-  const state = { status: 'off', detail: '未启用', gen: 0 }
+  const state = {
+    status: 'off',
+    phase: 'idle',
+    detail: '未安装',
+    instructionSource: 'off',
+    hits: 0,
+    misses: 0,
+    gen: 0,
+  }
   let disposed = false
   let snapshot = ''
   const wrappedLlms = new Set()
   let patchedEngine = null
   let injectFork = null
   let pendingInstall = false
+
+  function note(event) {
+    if (disposed || !event) return
+    if (event.kind === 'hit') {
+      state.hits += 1
+      state.phase = 'hit'
+      state.status = 'on'
+      state.instructionSource = event.source || state.instructionSource
+      state.detail = state.instructionSource === 'custom' ? '已命中 · 自定义指令' : '已命中 · 内置指令'
+      return
+    }
+    if (event.kind === 'miss') {
+      state.misses += 1
+      state.phase = 'miss'
+      state.status = 'error'
+      state.detail = '已安装但未命中'
+    }
+  }
+
+  function markInstalled(source) {
+    state.instructionSource = source
+    state.status = 'on'
+    if (state.phase !== 'hit' && state.phase !== 'miss') {
+      state.phase = 'installed'
+      state.detail = source === 'custom' ? '已安装 · 自定义指令' : '已安装 · 内置指令'
+    }
+  }
 
   function uninstall() {
     unpatchSummarize(patchedEngine)
@@ -238,17 +338,16 @@ export function createCompanionCompactionFeature(ctx, getConfig) {
   function tryInstall() {
     let ok = false
     const engine = getService(ctx, 'compaction')
-    if (engine && patchSummarize(engine, getConfig, log)) {
+    if (engine && patchSummarize(engine, getConfig, log, note)) {
       patchedEngine = engine
       ok = true
-      // Also wrap engine.ctx.llm permanently
       const engLlm = getService(engine.ctx, 'llm') || engine.ctx?.llm
-      if (engLlm && wrapStreamOnLlm(engLlm, getConfig, log, 'engine.ctx.llm')) {
+      if (engLlm && wrapStreamOnLlm(engLlm, getConfig, log, 'engine.ctx.llm', note)) {
         wrappedLlms.add(engLlm)
       }
     }
     const llm = getService(ctx, 'llm')
-    if (llm && wrapStreamOnLlm(llm, getConfig, log, 'workbench.ctx.llm')) {
+    if (llm && wrapStreamOnLlm(llm, getConfig, log, 'workbench.ctx.llm', note)) {
       wrappedLlms.add(llm)
       ok = true
     }
@@ -261,16 +360,16 @@ export function createCompanionCompactionFeature(ctx, getConfig) {
       injectFork = ctx.inject(['compaction', 'llm'], (sub) => {
         if (disposed || !pendingInstall) return
         const eng = getService(sub, 'compaction')
-        if (eng && patchSummarize(eng, getConfig, log)) patchedEngine = eng
+        if (eng && patchSummarize(eng, getConfig, log, note)) patchedEngine = eng
         const llm = getService(sub, 'llm')
-        if (llm && wrapStreamOnLlm(llm, getConfig, log, 'inject.llm')) wrappedLlms.add(llm)
-        if (eng?.ctx?.llm && wrapStreamOnLlm(eng.ctx.llm, getConfig, log, 'inject.engine.llm')) {
+        if (llm && wrapStreamOnLlm(llm, getConfig, log, 'inject.llm', note)) wrappedLlms.add(llm)
+        if (eng?.ctx?.llm && wrapStreamOnLlm(eng.ctx.llm, getConfig, log, 'inject.engine.llm', note)) {
           wrappedLlms.add(eng.ctx.llm)
         }
         if (patchedEngine || wrappedLlms.size) {
-          state.status = 'on'
-          state.detail = '已启用 · 陪伴压缩指令'
-          debugLog('inject installed patches')
+          const cfg = getConfig() || {}
+          markInstalled(instructionSourceOf(cfg))
+          debugLog(`phase=${state.phase} via=inject source=${state.instructionSource}`)
         }
       })
     } catch (error) {
@@ -283,10 +382,8 @@ export function createCompanionCompactionFeature(ctx, getConfig) {
     if (disposed) return
     const cfg = getConfig() || {}
     const enabled = isCompanionCompactionEnabled(cfg)
-    const custom = typeof cfg.companionCompactionInstruction === 'string' && cfg.companionCompactionInstruction.trim()
-      ? 'custom'
-      : 'default'
-    const snap = enabled ? `1:${custom}` : '0'
+    const source = instructionSourceOf(cfg)
+    const snap = enabled ? `1:${source}` : '0'
     const healthy = !!(patchedEngine || wrappedLlms.size)
     if (snap === snapshot && (!enabled || healthy)) return
     const gen = ++state.gen
@@ -296,10 +393,18 @@ export function createCompanionCompactionFeature(ctx, getConfig) {
     if (!enabled) {
       snapshot = snap
       state.status = 'off'
+      state.phase = 'off'
+      state.instructionSource = 'off'
       state.detail = '未启用'
-      debugLog('disabled')
+      debugLog('phase=off')
       return
     }
+    state.hits = 0
+    state.misses = 0
+    state.phase = 'pending'
+    state.status = 'error'
+    state.instructionSource = source
+    state.detail = '等待 compaction/llm 就绪'
     pendingInstall = true
     ensureInject()
     const ok = tryInstall()
@@ -310,17 +415,12 @@ export function createCompanionCompactionFeature(ctx, getConfig) {
     }
     if (!ok) {
       snapshot = ''
-      state.status = 'error'
-      state.detail = '等待 compaction/llm 就绪'
-      debugLog('install pending — compaction/llm not ready')
+      debugLog('phase=pending compaction/llm not ready')
       return
     }
     snapshot = snap
-    state.status = 'on'
-    state.detail = custom === 'custom'
-      ? '已启用 · 自定义陪伴压缩指令'
-      : '已启用 · 陪伴压缩指令'
-    debugLog(`enabled status=${state.status} engine=${!!patchedEngine} llms=${wrappedLlms.size}`)
+    markInstalled(source)
+    debugLog(`phase=${state.phase} source=${source} engine=${!!patchedEngine} llms=${wrappedLlms.size}`)
   }
 
   return {
@@ -334,11 +434,21 @@ export function createCompanionCompactionFeature(ctx, getConfig) {
       try { await injectFork?.dispose?.() } catch {}
       injectFork = null
       state.status = 'off'
-      state.detail = '未启用'
-      debugLog('disposed')
+      state.phase = 'idle'
+      state.instructionSource = 'off'
+      state.detail = '已卸载'
+      debugLog('phase=idle disposed')
     },
     state() {
-      return { status: state.status, detail: state.detail, mounted: !!(patchedEngine || wrappedLlms.size) }
+      return {
+        status: state.status,
+        phase: state.phase,
+        detail: state.detail,
+        instructionSource: state.instructionSource,
+        hits: state.hits,
+        misses: state.misses,
+        mounted: !!(patchedEngine || wrappedLlms.size),
+      }
     },
   }
 }

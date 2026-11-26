@@ -2,6 +2,7 @@ package com.trix.gamebot.bridge.action;
 
 import com.google.gson.JsonObject;
 import com.trix.gamebot.bridge.entity.AgentEntity;
+import com.trix.gamebot.bridge.observation.WorldQueries;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
@@ -9,10 +10,23 @@ import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.core.Direction;
 
 /** Shared standability and body clearance checks for movement and placement stances. */
 public final class MovementGeometry {
     private MovementGeometry() {
+    }
+
+    /** A collision-shape surface, including slabs; never guess blockY + 1. */
+    public static Vec3 standingSurface(ServerLevel level, AgentEntity agent, BlockPos support) {
+        if (!WorldQueries.chunkLoaded(level, support)) return null;
+        var shape = level.getBlockState(support).getCollisionShape(level, support, CollisionContext.of(agent));
+        if (shape.isEmpty()) return null;
+        double x = support.getX() + 0.5;
+        double y = support.getY() + shape.max(Direction.Axis.Y);
+        double z = support.getZ() + 0.5;
+        return canStandAt(level, agent, x, y, z) ? new Vec3(x, y, z) : null;
     }
 
     public static boolean canStandAt(ServerLevel level, AgentEntity agent, double x, double y, double z) {

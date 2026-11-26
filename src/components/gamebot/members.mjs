@@ -70,12 +70,15 @@ function baseUrl(cfg) {
   return String(cfg?.gamebotUrl || 'http://127.0.0.1:8766').replace(/\/$/, '')
 }
 
-export async function memberRequest(cfg, path, { method = 'GET', body, fetchImpl = fetch, timeoutMs = 20000 } = {}) {
+export async function memberRequest(cfg, path, { method = 'GET', body, fetchImpl = fetch, timeoutMs = 20000, signal } = {}) {
   const token = memberToken()
   if (!token) {
     throw new Error('成员令牌还没准备好。请先启用 GameBot · Minecraft，让工作台启动 body。')
   }
   const ctrl = new AbortController()
+  const cancel = () => ctrl.abort()
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) ctrl.abort()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
     const res = await fetchImpl(`${baseUrl(cfg)}${path}`, {
@@ -103,12 +106,12 @@ export async function memberRequest(cfg, path, { method = 'GET', body, fetchImpl
     throw error
   } finally {
     clearTimeout(timer)
+    signal?.removeEventListener('abort', cancel)
   }
 }
 
 export async function reconcileMembers(cfg, { fetchImpl = fetch } = {}) {
   const memberIds = memberIdsFor(cfg)
-  if (!memberIds.length) return { ok: true, members: [], note: '没有可连接的成员席位' }
   const data = await memberRequest(cfg, '/v1/minecraft/members/reconcile', {
     method: 'POST',
     body: { member_ids: memberIds, names: Object.fromEntries(Object.entries(memberNamesFor(cfg)).filter(([id]) => memberIds.includes(id))) },
@@ -126,16 +129,19 @@ export async function memberStatusSummary(cfg, { fetchImpl = fetch } = {}) {
   if (!memberToken()) return '成员 NPC：令牌未就绪'
   let connected = 0
   let unconfigured = false
+  const details = new Map()
   await Promise.all(ids.map(async (id) => {
     try {
       const data = await memberRequest(cfg, `/v1/minecraft/members/${encodeURIComponent(id)}/status`, { fetchImpl, timeoutMs: 4000 })
       if (data?.connected) connected += 1
+      const a = data?.autonomy
+      if (a) details.set(id, `${id}：${a.observationStalled ? '世界观察停滞' : a.state}；任务 ${a.task?.action || '无'}/${a.task?.state || '-'}${a.task?.goal ? `；目标 ${JSON.stringify(a.task.goal)}` : ''}；分段 ${a.task?.segments || 0}；模型 ${a.modelCalls || 0} 次；最近快照 ${a.lastSnapshotAt ? new Date(a.lastSnapshotAt).toISOString() : '-'}；最近决策 ${a.lastDecisionAt != null ? new Date(a.lastDecisionAt).toISOString() : '-'}；下次 ${a.deadline != null ? new Date(a.deadline).toISOString() : '-'}${a.lastError ? `；${a.lastError}` : ''}`)
     } catch (error) {
       if (/没有令牌|重启 GameBot/.test(String(error?.message || ''))) unconfigured = true
     }
   }))
   if (unconfigured) return `成员 NPC：body 没有成员令牌（${ids.length} 个席位）。请从工作台重启 GameBot。`
-  return `成员 NPC：${connected}/${ids.length} 已连接`
+  return `成员 NPC：${connected}/${ids.length} 已连接${details.size ? `。${ids.filter((id) => details.has(id)).map((id) => details.get(id)).join('。')}` : ''}`
 }
 
 
@@ -174,7 +180,7 @@ export async function seatMcPresence(cfg, memberId, { fetchImpl = fetch } = {}) 
       ...base,
       detail,
       lines: [
-        `- Minecraft seat: you have NPC code "${id}". Status: body token not ready (restart GameBot from the workbench). Tools when ready: mc_status, mc_connect, mc_observe, mc_act, mc_cancel, mc_disconnect. Chatroom rounds do not drive the world — call mc_* when you want to act in-game.`,
+        `- Minecraft eligible seat: "${id}". Status: body token not ready (restart GameBot from the workbench). Joining requires /minaret agent spawn ${id} in-game. Room tools are read-only: mc_status, mc_observe. Room tasks become memory for autonomous game decisions.`,
       ],
     }
   }
@@ -187,7 +193,7 @@ export async function seatMcPresence(cfg, memberId, { fetchImpl = fetch } = {}) 
     const username = data?.username == null || data?.username === '' ? null : String(data.username).slice(0, 64)
     const agent_id = data?.agent_id == null || data?.agent_id === '' ? null : String(data.agent_id).slice(0, 64)
     let status = 'not connected'
-    if (connected) status = 'connected'
+    if (connected) status = data?.joined === false ? 'registered, awaiting in-game spawn' : 'joined'
     else if (connecting) status = 'connecting'
     else if (exists === false) status = 'no session yet'
     const who = username || agent_id || id
@@ -203,7 +209,7 @@ export async function seatMcPresence(cfg, memberId, { fetchImpl = fetch } = {}) 
       agent_id,
       detail,
       lines: [
-        `- Minecraft seat: you have NPC code "${id}"${who !== id ? ` (in-world: ${who})` : ''}. Status: ${status}.${err} Tools: mc_status, mc_connect, mc_observe, mc_act, mc_cancel, mc_disconnect. Chatroom rounds do not drive the world — call mc_* when you want to act in-game.`,
+        `- Minecraft eligible seat: "${id}"${who !== id ? ` (in-world: ${who})` : ''}. Status: ${status}.${err} Joining requires /minaret agent spawn ${id} in-game. Room tools are read-only: mc_status, mc_observe. Room tasks become memory for autonomous game decisions.`,
       ],
     }
   } catch (error) {

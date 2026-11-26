@@ -4,8 +4,11 @@
  */
 import { listUserTurns, truncateSession, extractUserText, rewindTailTurn, resolveAnchorSeq, recallLiveTurn, recallLiveOutput, REGENERATE_SOURCE_KIND } from './ops.mjs'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { createCircuitBreaker } from './circuit.mjs'
 import { findSessionLogPath } from './zstd-log.mjs'
+import { createSamplingStore, mountSamplingExtensions, samplingPayload, SamplingError } from './sampling.mjs'
+import { dataDir } from '../tools.mjs'
 
 export { listUserTurns, truncateSession, extractUserText, rewindTailTurn, resolveAnchorSeq, recallLiveTurn, recallLiveOutput, findSessionLogPath, createCircuitBreaker }
 
@@ -293,7 +296,7 @@ export async function rePrompt(ctx, sessionId, text) {
 /**
  * Handle /dsh-workbench/api/session/* routes. Returns true if handled.
  */
-export async function handleSessionApi(ctx, circuit, req, res, sub, { sendJson, readBody, getConfig }) {
+export async function handleSessionApi(ctx, circuit, req, res, sub, { sendJson, readBody, getConfig, sampling = null }) {
   if (!sub.startsWith('/session')) return false
   const path = sub.slice('/session'.length) || '/'
 
@@ -312,6 +315,14 @@ export async function handleSessionApi(ctx, circuit, req, res, sub, { sendJson, 
     return void sendJson(res, 200, { ok: true, notices: circuit.listNotices() })
   }
 
+  if (path === '/sampling' && req.method === 'GET') {
+    if (!sampling) return void sendJson(res, 503, { ok: false, error: '采样设置尚未挂载' })
+    const url = new URL(req.url ?? '/', 'http://local')
+    const sessionId = (url.searchParams.get('sessionId') || '').trim()
+    if (!sessionId) return void sendJson(res, 409, { ok: false, error: '会话尚未创建，发送一条消息后再设置采样参数' })
+    return void sendJson(res, 200, samplingPayload(sampling.get(sessionId), sessionId))
+  }
+
   if (path === '/turns' && req.method === 'GET') {
     const url = new URL(req.url ?? '/', 'http://local')
     const sessionId = url.searchParams.get('sessionId')
@@ -321,6 +332,23 @@ export async function handleSessionApi(ctx, circuit, req, res, sub, { sendJson, 
 
   if (req.headers['sec-fetch-site'] === 'cross-site') {
     return void sendJson(res, 403, { ok: false, error: 'cross-site request refused' })
+  }
+
+  if (path === '/sampling' && req.method === 'POST') {
+    if (!sampling) return void sendJson(res, 503, { ok: false, error: '采样设置尚未挂载' })
+    let body
+    try { body = JSON.parse(await readBody(req) || '{}') }
+    catch { return void sendJson(res, 400, { ok: false, error: '请求不是合法 JSON' }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return void sendJson(res, 400, { ok: false, error: '请求不是合法 JSON' })
+    try {
+      const saved = sampling.update(body.sessionId, body)
+      const sessionId = String(body.sessionId || '').trim()
+      return void sendJson(res, 200, { ...samplingPayload(saved, sessionId), saved: true })
+    } catch (error) {
+      const status = error instanceof SamplingError ? error.status : 500
+      const message = error instanceof SamplingError ? error.message : `采样参数保存失败：${error?.message || error}`
+      return void sendJson(res, status, { ok: false, error: message })
+    }
   }
 
   if (path === '/cancel' && req.method === 'POST') {
@@ -409,6 +437,26 @@ export async function handleSessionApi(ctx, circuit, req, res, sub, { sendJson, 
  */
 export function mountSessionControls(ctx, getConfig) {
   const circuit = createCircuitBreaker(ctx, getConfig)
-  const dispose = circuit.install()
-  return { circuit, dispose }
+  const disposeCircuit = circuit.install()
+  let sampling = null
+  let disposeSampling = () => {}
+  try {
+    sampling = createSamplingStore({
+      file: join(dataDir(), 'sampling-overrides.json'),
+      warn: (message) => ctx.logger?.warn?.(`dsh-workbench: ${message}`),
+    })
+    sampling.load()
+    disposeSampling = mountSamplingExtensions(ctx, sampling)
+  } catch (error) {
+    sampling = null
+    ctx.logger?.warn?.('dsh-workbench: sampling controls not mounted', error?.message || error)
+  }
+  return {
+    circuit,
+    sampling,
+    dispose() {
+      try { disposeSampling() } catch { /* extension service already gone */ }
+      try { disposeCircuit?.() } catch { /* circuit already released */ }
+    },
+  }
 }

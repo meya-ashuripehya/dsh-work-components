@@ -1,21 +1,43 @@
-// npm prepare：git 安装时若缺少构建产物则跑 build；npm 发布包已带 lib/ 时跳过，避免消费端无 esbuild 失败。
-// 桌面 exe：由 scripts/build.mjs 末尾按需调用 build-desktop（无 dotnet 时跳过，不失败）。
-import { existsSync } from 'node:fs'
+// Git 安装时补齐构建产物。发布包会去掉 prepare，避免消费端执行一条指向缺失文件的脚本。
+// 手写的 lib/client.js 缺失时失败，不尝试构建它。其余产物缺一或比源码旧就整包重建。
+import { existsSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const main = join(root, 'lib', 'index.mjs')
-if (existsSync(main)) {
-  console.log('prepare: lib/index.mjs 已存在，跳过构建')
+const handwritten = join(root, 'lib', 'client.js')
+if (!existsSync(handwritten)) {
+  console.error('prepare: lib/client.js 缺失。这是手写客户端，不能靠构建生成。')
+  process.exit(1)
+}
+
+const required = [
+  ['lib/index.mjs', 'src/index.mjs'],
+  ['lib/local-loader-worker.mjs', 'src/components/local-loader-worker.mjs'],
+  ['lib/component-sdk.mjs', 'src/component-sdk.mjs'],
+  ['lib/channel-telegram.mjs', 'src/channels/telegram/runtime.mjs'],
+  ['lib/channel-qq.mjs', 'src/channels/qq/runtime.mjs'],
+  ['lib/gmail-server.mjs', 'src/components/gmail/server.mjs'],
+]
+const missing = []
+for (const [out, src] of required) {
+  const output = join(root, out)
+  const source = join(root, src)
+  if (!existsSync(output)) {
+    missing.push(out)
+    continue
+  }
+  if (existsSync(source) && statSync(source).mtimeMs > statSync(output).mtimeMs) missing.push(`${out} (older than ${src})`)
+}
+if (missing.length === 0) {
+  console.log('prepare: 必要产物已齐全')
   process.exit(0)
 }
 
-console.log('prepare: 缺少 lib/index.mjs，执行 npm run build…')
-// 优先用调用本脚本的 npm（npm_execpath → node 直接跑 npm-cli.js）；Windows 上直接 spawn npm.cmd 不带 shell 会 EINVAL。
+console.log(`prepare: 需要构建（${missing.join(', ')}）`)
 const cli = process.env.npm_execpath
-const r = cli && /\.c?js$/i.test(cli)
+const run = cli && /\.c?js$/i.test(cli)
   ? spawnSync(process.execPath, [cli, 'run', 'build'], { cwd: root, stdio: 'inherit', env: process.env })
   : spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: root, stdio: 'inherit', env: process.env, shell: process.platform === 'win32' })
-process.exit(r.status == null ? 1 : r.status)
+process.exit(run.status == null ? 1 : run.status)

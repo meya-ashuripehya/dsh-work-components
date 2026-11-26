@@ -10,9 +10,12 @@ import com.trix.gamebot.bridge.command.AgentCommands;
 import com.trix.gamebot.bridge.compat.AgentAdapterRegistry;
 import com.trix.gamebot.bridge.config.CommonBridgeConfig;
 import com.trix.gamebot.bridge.entity.AgentEntity;
+import com.trix.gamebot.bridge.entity.AgentRegistry;
 import com.trix.gamebot.bridge.observation.ServerSnapshotService;
+import com.trix.gamebot.bridge.observation.SemanticPerception;
 import com.trix.gamebot.bridge.protocol.AgentMessages;
 import com.trix.gamebot.bridge.protocol.ChatSpeech;
+import com.trix.gamebot.bridge.protocol.PlayerPrivateChat;
 import com.trix.gamebot.bridge.protocol.ProtocolCodec;
 import com.trix.gamebot.bridge.transport.AgentBridgeServer;
 import com.trix.gamebot.bridge.transport.AgentConnections;
@@ -55,6 +58,7 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
 
     @SubscribeEvent
     public static void onStarted(ServerStartedEvent event) {
+        DISPATCHER.clearTasks();
         minecraftServer = event.getServer();
         AgentAdapterRegistry.bootstrap();
         startFailed = false;
@@ -105,6 +109,17 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
         INSTANCE.sendHello(agentId);
     }
 
+    public static boolean eligible(String agentId) {
+        return socket != null && socket.connections().bindingOfAgent(agentId) != null;
+    }
+
+    public static String tell(ServerPlayer sender, String agentId, String message) {
+        if (socket == null || minecraftServer == null || AgentCommands.find(minecraftServer, agentId) == null) {
+            return "目标席位未加入游戏或尚未连接工作台";
+        }
+        return PlayerPrivateChat.deliver(socket, sender.getGameProfile().getName(), agentId, message);
+    }
+
     public static void forget(String agentId) {
         scans.remove(agentId);
         if (socket == null || minecraftServer == null) {
@@ -115,11 +130,7 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
             return;
         }
         DISPATCHER.failAgent(minecraftServer, agentId, binding.generation, "client_not_ready", "server npc was removed");
-        AgentConnections.Binding closed = socket.connections().close(binding.channel);
-        binding.channel.close(1000, "removed");
-        if (closed != null) {
-            // close() 已经摘掉当前代际。套接字的 onClose 还会再走一次，那里看到的是过期连接。
-        }
+        INSTANCE.sendHello(agentId);
     }
 
     private void tick(MinecraftServer server) {
@@ -138,10 +149,26 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
                 continue;
             }
             Scan scan = scans.computeIfAbsent(binding.agentId, ignored -> new Scan());
+            // A saved NPC can become available after the initial registration
+            // hello. Announce actual capabilities once per live connection before
+            // its first snapshot, instead of leaving it permanently wait-only.
+            if (scan.helloGeneration != binding.generation) {
+                sendHello(binding.agentId);
+                scan.helloGeneration = binding.generation;
+            }
             scan.tick++;
+            com.trix.gamebot.bridge.action.ResourceActions.pickupNearby(agent);
             if (!scan.scanned || scan.tick % 10 == 0 || !agent.blockPosition().equals(scan.lastScanPos)) {
                 ServerSnapshotService.NearbyScan nearby = ServerSnapshotService.scanNearby(agent, scanRadius());
                 scan.cachedBlocks = nearby.blocks;
+                scan.semantic = SemanticPerception.scan(agent,nearby.source,DISPATCHER.taskInterest(binding.agentId));
+                scan.cachedGoals = ServerSnapshotService.standableGoals(agent, nearby.blocks);
+                JsonArray visibleGoals=new JsonArray();
+                for(var g:scan.cachedGoals) {var p=g.getAsJsonObject().getAsJsonObject("position");
+                    BlockPos support=BlockPos.containing(p.get("x").getAsDouble(),p.get("y").getAsDouble()-0.05,p.get("z").getAsDouble());
+                    if(SemanticPerception.visible(agent,support))visibleGoals.add(g);
+                } scan.cachedGoals=visibleGoals;
+                SemanticPerception.addDirections(scan.semantic,visibleGoals,agent.position());
                 scan.blocksTruncated = nearby.truncated;
                 scan.lastScanPos = agent.blockPosition();
                 scan.scanned = true;
@@ -162,11 +189,30 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
         data.addProperty("actor_type", "server_npc");
         data.addProperty("agent_id", agentId);
         data.addProperty("entity_uuid", agent.getUUID().toString());
+        data.addProperty("world_id", AgentRegistry.get(minecraftServer).worldId());
+        data.addProperty("game_time", agent.level().getGameTime());
         data.add("player", ServerSnapshotService.player(agent));
         data.add("nearby_players", ServerSnapshotService.nearbyPlayers(agent));
+        JsonArray peers = new JsonArray();
+        for (var record : AgentRegistry.get(minecraftServer).table().records()) {
+            AgentEntity other = AgentCommands.find(minecraftServer, record.agentKey());
+            if (other == null || other == agent || other.level() != agent.level() || agent.distanceTo(other) > 64) continue;
+            JsonObject peer = new JsonObject();
+            peer.addProperty("agent_id", record.agentKey());
+            peer.addProperty("name", other.agentName());
+            peer.add("position", ServerSnapshotService.player(other).get("position"));
+            peers.add(peer);
+        }
+        data.add("nearby_agents", peers);
         data.add("nearby_blocks", scan.cachedBlocks == null ? new JsonArray() : scan.cachedBlocks);
+        data.add("standable_goals", scan.cachedGoals == null ? new JsonArray() : scan.cachedGoals);
+        data.add("terrain_summary",scan.semantic.has("terrain_summary")?scan.semantic.get("terrain_summary"):new JsonObject());
+        data.add("points_of_interest",scan.semantic.has("points_of_interest")?scan.semantic.get("points_of_interest"):new JsonArray());
+        data.add("task",DISPATCHER.taskView(agentId));
         data.addProperty("nearby_blocks_truncated", scan.blocksTruncated);
         data.add("inventory", ServerSnapshotService.inventory(agent));
+        data.add("nearby_items", com.trix.gamebot.bridge.action.ResourceActions.nearbyItems(agent, scanRadius()));
+        data.add("recent_pickups", agent.recentPickups());
         data.add("screen", ServerSnapshotService.closedScreen());
         socket.send(agentId, binding.generation, ProtocolCodec.envelope(
                 ProtocolCodec.AGENT_PROTOCOL_VERSION, "snapshot", data, socket.nextSequence(), null));
@@ -191,6 +237,7 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
         data.add("mods", modIds());
         data.addProperty("username", ready ? agent.agentName() : "");
         data.addProperty("world_ready", ready);
+        data.addProperty("world_id", AgentRegistry.get(minecraftServer).worldId());
         data.addProperty("actor_type", "server_npc");
         data.addProperty("agent_id", agentId);
         data.add("entity_uuid", ready ? new com.google.gson.JsonPrimitive(agent.getUUID().toString()) : JsonNull.INSTANCE);
@@ -263,11 +310,10 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
         }
         String agentId = AgentMessages.agentId(payload);
         JsonObject data = payload.has("data") && payload.get("data").isJsonObject() ? payload.getAsJsonObject("data") : new JsonObject();
-        boolean provision = data.has("provision") && !data.get("provision").isJsonNull() && data.get("provision").getAsBoolean();
         String displayName = text(data, "display_name");
-        String error = provision
+        String error = AgentRegistry.get(minecraftServer).find(agentId) != null
                 ? AgentCommands.ensure(minecraftServer, agentId, displayName == null ? agentId : displayName)
-                : AgentCommands.requireReady(minecraftServer, agentId);
+                : null;
         if (error != null) {
             String message = "agent_not_available".equals(error)
                     ? "server npc is not available for " + agentId
@@ -335,6 +381,13 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
         AgentEntity agent = AgentCommands.find(minecraftServer, agentId);
         if (agent == null) {
             replyChat(agentId, sayId, false, "client_not_ready", "server npc is not spawned", null, speech.audience, speech.target);
+            return;
+        }
+        String world = text(payload, "world_id");
+        String dimension = text(payload, "dimension");
+        if ((world != null && !world.equals(AgentRegistry.get(minecraftServer).worldId()))
+                || (dimension != null && !dimension.equals(agent.level().dimension().location().toString()))) {
+            replyChat(agentId, sayId, false, "action_rejected", "stale world or dimension", null, speech.audience, speech.target);
             return;
         }
         String line = ChatSpeech.line(agent.agentName(), speech);
@@ -445,10 +498,14 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
                 "minecraft.player.position.read",
                 "minecraft.player.health.read",
                 "minecraft.inventory.read",
+                "minecraft.inventory.auto_pickup",
+                "minecraft.world.harvest_with_tools",
+                "minecraft.world.place_from_inventory", "minecraft.inventory.drop_safe",
                 "minecraft.block.scan",
                 "minecraft.entity.nearby",
                 "minecraft.player.look_at",
                 "minecraft.player.move_to",
+                "minecraft.task.navigate_to", "minecraft.task.follow_entity", "minecraft.task.explore_area", "minecraft.task.stop_task", "minecraft.world.inspect_blocks",
                 "minecraft.inventory.select",
                 "minecraft.inventory.drop",
                 "minecraft.item.use",
@@ -548,9 +605,12 @@ public final class ServerLifecycle implements AgentBridgeServer.Listener {
     }
 
     private static final class Scan {
+        private long helloGeneration = -1;
         private int tick;
         private boolean scanned;
         private JsonArray cachedBlocks = new JsonArray();
+        private JsonArray cachedGoals = new JsonArray();
+        private JsonObject semantic = new JsonObject();
         private boolean blocksTruncated = true;
         private BlockPos lastScanPos = BlockPos.ZERO;
     }

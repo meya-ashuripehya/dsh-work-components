@@ -4,9 +4,9 @@ license = "MIT"
 
 [[mods]]
 modId = "minaret"
-version = "1.0.0"
+version = "1.5.1"
 displayName = "Minaret"
-description = "Loopback WebSocket bridge. Hosts one server-side AI NPC on an integrated world, and can still control the local player in explicit legacy mode."
+description = "Loopback WebSocket bridge for independent server-side AI members with persistent world identity and explicit in-game joining."
 authors = "TRIX"
 
 [[dependencies.minaret]]

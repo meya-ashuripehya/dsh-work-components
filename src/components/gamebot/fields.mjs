@@ -69,7 +69,7 @@ export const GAME_FIELDS = {
     { cfg: 'NEOFORGE_WS_AUTH_PASS', label: 'NeoForge WS 密码', kind: 'password', def: '' },
 
     { cfg: 'MC_AGENTS', label: 'Minecraft AI（旧）', kind: 'mcagents', def: '', hidden: true, desc: '已由席位管理 + 绑定聊天室的成员列表取代，仅用于把旧行的 profileId / 名称迁入席位池。' },
-    { cfg: 'MC_CHATROOM', label: '绑定聊天室', kind: 'mcroom', def: '', desc: '选择 Minecraft 使用的聊天室。进世界的 NPC = 该房间成员（席位池中的有序席位，仅已启用且 id 合法者）。席位在「席位管理」中维护，房间名册在「聊天室」中从席位池挑选。保存本卡或启用 Minecraft 时：未绑定或房间已不存在则自动新建房间「Minecraft」；旧 Minecraft AI 表中尚未出现在席位池的行会迁入池中。' },
+    { cfg: 'MC_CHATROOM', label: '绑定聊天室', kind: 'mcroom', def: '', desc: '选择 Minecraft 使用的聊天室。已启用且编码合法的房间成员只登记为可加入席位，不自动生成 NPC。玩家在游戏内执行 /minaret agent spawn <席位编码> [名称] 后，该席开始自主陪玩；remove 后不会自动重建。重新连接仅恢复当前存档已加入成员。房间聊天作为游戏决策记忆，游戏公聊回写房间，私聊不写公共记忆。席位在「席位管理」维护。未绑定或房间不存在时自动新建「Minecraft」房间，旧 AI 表仍可迁移。' },
     { cfg: 'MC_USERNAME', label: '机器人用户名（旧）', kind: 'text', def: 'Player', hidden: true, desc: '已由「Minecraft AI」的名称取代，仅用于迁移；下发时取第一个已启用 AI 的名称。' },
     { cfg: 'MC_MEMBER_IDS', label: '成员 NPC（旧）', kind: 'text', def: '', hidden: true, desc: '已由「Minecraft AI」取代，仅用于迁移；下发时由已启用的 AI 编码生成。' },
     { cfg: 'MC_VERSION', label: 'MC 版本', kind: 'text', def: '1.21.1' },
@@ -152,7 +152,7 @@ export function toGameBotPatch(game, cfg) {
     config[f.cfg] = v
   }
   if (game === 'minecraft') {
-    // 进世界自动连接固定为开：不再作为设置项，始终下发。
+    // 自动恢复连接，不代表自动创建 NPC；加入由游戏内指令决定。
     config.MC_AUTO_CONNECT = '1'
     const ids = memberIdsFor(cfg)
     config.MC_MEMBER_IDS = ids.join(',')

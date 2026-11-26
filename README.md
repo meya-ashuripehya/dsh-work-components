@@ -1,5 +1,7 @@
 # dsh-work-components（工作组件）
 
+English: a DeepSeek Harness plugin that mounts MCP servers for work software. Web client platform is `dsh.client.platform=web`. Install from npm with `dsh plugin add dsh-work-components` using the Web host CLI, or the Desktop host's own `dsh` CLI when that profile is verified. Desktop control is not inside the npm tarball; enable it from the settings page, which downloads a checksum-pinned Windows broker. Git installs still run `prepare` and need a local build. This package does not claim every DSH 0.2.x release; `engines.dsh` and the optional peer are exactly `0.2.2-rc.5`.
+
 兼容 DeepSeek Harness（DSH）的插件，用来统一挂载和管理「控制其他工作软件」的 MCP 服务器（Office / 创作工具 / Windows 桌面 / Notion / Cloudflare / GitHub / ComfyUI 等）。每个工作组件以 `@deepseek-ai/dsh-mcp-client` 子插件的形式挂载：不写进 profile，随本插件卸载，设置改动后只重挂受影响的组件。
 
 自有代码采用 [MIT 许可证](./LICENSE)。`vendor/dsh-tools/` 是 DeepSeek 的代码副本，版权归 DeepSeek，许可同样是 MIT，全文和保留义务见 [NOTICE](./NOTICE) 与 [vendor/dsh-tools/LICENSE](./vendor/dsh-tools/LICENSE)。
@@ -15,7 +17,7 @@
 | Photoshop | [@alisaitteke/photoshop-mcp](https://github.com/alisaitteke/photoshop-mcp)（npm，COM / ExtendScript） | `mcp__photoshop__` | Windows（或 macOS）装有 Photoshop 并开着 |
 | Chrome | [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)（npm） | `mcp__chrome__` | 本机 Google Chrome；可独立启动或连已有实例 |
 | Windows | [Windows-MCP](https://github.com/CursorTouch/Windows-MCP)（PyPI） | `mcp__windows__` | Windows；stdio 由插件拉起，或连已有 HTTP 服务 |
-| 桌面控制 | 插件自带经纪人（UI Automation） | `mcp__desktop__` | Windows；随插件提供，打开「启用」即可，无需下载 |
+| 桌面控制 | 按需下载的经纪人（UI Automation） | `mcp__desktop__` | Windows；npm 包不含 exe。设置页「下载安装」校验 SHA-256/SHA-512 后才能启用 |
 | Notion | [Notion MCP](https://developers.notion.com/docs/mcp)（经 [mcp-remote](https://github.com/geelen/mcp-remote) OAuth 桥） | `mcp__notion__` | 首次 OAuth；token 在 `%USERPROFILE%\.mcp-auth` |
 | Gmail | 插件自带（IMAP `imap.gmail.com` / SMTP `smtp.gmail.com`） | `mcp__gmail__` | 需要填写地址和应用专用密码；`send_message` 会直接发信 |
 | Cloudflare | [Cloudflare API MCP](https://github.com/cloudflare/mcp-server-cloudflare)（经 mcp-remote） | `mcp__cloudflare__` | 首次 OAuth（scope=offline_access） |
@@ -27,6 +29,9 @@
 | Obsidian | [obsidian-mcp-server](https://github.com/cyanheads/obsidian-mcp-server)（npm） | `mcp__obsidian__` | Obsidian 开着 + 社区插件 Local REST API + API 密钥 |
 | REA 逆向分析 | [rea-agents](https://github.com/morluto/rea)（npm `rea-agents@6.4.0`） | `mcp__rea__` | Node.js ^22.19 / ^24.11 / >=26；原生二进制另需 Ghidra/Hopper/IDA |
 | DeepSlate | [deepslate-mcp](https://github.com/Philogag/deepslate-mcp)（MIT，启动本机检出目录，不内置） | `mcp__deepslate__` | 本机已 clone 并 `npm install && npm run build`；Node.js 20+ |
+| Cursor | [cursor-delegate-mcp](https://github.com/andreilungeanu/cursor-delegate-mcp)（npm `cursor-delegate-mcp`） | `mcp__cursor__` | 本机已安装并登录 Cursor CLI（`cursor-agent`）；Node.js 20+ |
+| Ghidra | [pyghidra-mcp](https://github.com/clearbluejar/pyghidra-mcp)（PyPI `pyghidra-mcp`） | `mcp__ghidra__` | 本机 Ghidra + JDK 21（`GHIDRA_INSTALL_DIR` 或设置项）；uv |
+| ILSpy | [ILSpy-MCP](https://github.com/cervonwong/ILSpy-MCP)（MIT，本机 `ILSpy.Mcp.exe`，不代下载） | `mcp__ilspy__` | 把 release 解压到 `%USERPROFILE%\Tools\ilspy-mcp\`，或在设置里填绝对路径 |
 | Termalin | [Termalin MCP](https://termal.in/mcp)（本机 `termalin-mcp` 或托管 HTTP） | `mcp__termalin__` | 本机：已安装并运行 Termalin 应用；托管：Pro / 试用的 API 密钥 |
 | KiCad | [KiCad MCP Pro](https://github.com/oaslananka/kicad-mcp-pro)（社区，`uvx kicad-mcp-pro`，不内置） | `mcp__kicad__` | 本机 uv（uvx）；ERC / DRC / 导出需 KiCad（kicad-cli） |
 | Fusion | [Autodesk Fusion MCP Server](https://help.autodesk.com/view/ADSKMCP/ENU/)（Fusion 内置，本机 HTTP 27182） | `mcp__fusion__` | Fusion 开着，并在首选项里启用 MCP 服务器 |
@@ -39,7 +44,7 @@
 
 组件依赖的运行时（uv + Python，或 Node.js）与各上游 MCP 包，都可以在设置页「下载安装」到插件数据目录的 `tools/`（见下文「数据目录」）。**新鲜安装时所有工作组件 MCP 与会话控制均默认关闭**（`*Enabled: false`），装好后在管理页逐个打开「启用」才会挂载对应 MCP。具体安装、桥接、端口与项目侧配置都在设置 UI 里完成，本 README 不重复操作步骤。
 
-已内嵌：GameBot（src/components/gamebot/）、桌面控制（`src/components/desktop/broker/dist/DSHDesktopBroker.exe`，设置页「通用」分组，打开「启用」即可；npm 包内已含，git 检出需 `npm run build:desktop` 构建，要求 .NET SDK 8+）。
+已内嵌：GameBot（`src/components/gamebot/`）。桌面经纪人 exe 不在 npm 包内。开发目录里已有 `broker/dist` 时直接使用；否则只能在设置页「下载安装」。仓库里的 `broker-manifest.json` 是无哈希模板，设置页下载会拒绝它。`publish.yml` 在同一个 tag 里编译 exe、写入哈希、上传 Release，再发布对应的 npm 包。本地构建需要 .NET SDK 8+（`npm run build:desktop`）。
 
 ### DeepSlate（Minecraft 结构渲染）
 
@@ -144,13 +149,13 @@
 在 DSH Desktop 里让智能体用内置的 `plugin_manager` 安装 bundle（不要自己在 profile 目录里跑 npm / pnpm，`install_bundle` 会完成包安装和 bundle 选择）：
 
 1. 对智能体说：「用 plugin_manager 的 install_bundle 安装 npm 包 `dsh-work-components`」。
-2. 推荐从 **npm** 安装（发布包已含 `lib/` 构建产物）。本包的 `prepare` 仅在缺少 `lib/index.mjs` 时才会执行 `npm run build`（例如从 git 源码安装）；从 npm 安装时通常已有产物并跳过。若 `plugin_manager` 列出待批准的构建脚本，先确认来源再批准 `dsh-work-components` 的 `prepare`（pnpm ≥10 可能还需在 profile 的 `pnpm-workspace.yaml` 里允许该包）。桌面经纪人 exe 随 npm 包分发；纯 git 安装且本机无 .NET SDK 时，桌面控制需另跑 `npm run build:desktop`（或改用 npm 包）。
+2. 推荐从 **npm** 安装（发布包已含 `lib/` 构建产物）。发布 tarball 由 `node scripts/pack-release.mjs` 生成，并删掉 `scripts`（含 `prepare`），所以注册表安装不会去跑仓库里才有的 `scripts/prepare.mjs`。Git 安装仍保留 `prepare`：产物缺失或源码比产物新时会构建。若 `plugin_manager` 列出待批准的构建脚本，先确认来源再批准（pnpm ≥10 可能还需在 profile 的 `pnpm-workspace.yaml` 里允许该包）。桌面经纪人 exe 不在 tarball 里。
 3. 用 `list_bundles` / `list_plugins` 确认 `dsh-work-components` 已启用；结果是 `restart-required` 时重启 DSH Desktop。替换已装的版本（升级）同样需要重启才会加载新代码。
 4. 打开设置页「工作组件」，按需「下载安装」各组件并打开「启用」（新装时全部默认关闭）。
 
 卸载：`plugin_manager` 的 `remove_bundle`。数据目录（设置、已下载的工具、GameBot 数据）不随包删除，需要时手动删掉。
 
-要求：DSH Desktop（运行时 Node `^22.19 || >=24`，与 package.json 的 engines 一致；会话控制要用 zstd）；Office / Photoshop / Windows / 桌面控制等组件只在 Windows 上可用。桌面控制随插件提供，不需要单独下载或安装 .NET。装好后可用设置页打开「启用」并调用 `mm_send_image` 等工具做一次冒烟；仓库 CI（`.github/workflows/ci.yml`）在 PR / push 时跑 `check` + `smoke`。
+要求：DSH Desktop（运行时 Node `^22.19 || >=24`，与 package.json 的 engines 一致；会话控制要用 zstd）。Office / Photoshop / Windows / 桌面控制等组件只在 Windows 上可用。安装插件本身不需要 .NET，npm 包也不附带桌面经纪人 exe。启用桌面控制前，要在设置页下载并校验经纪人，或在源码树里自行 `npm run build:desktop`。兼容声明目前只写 `engines.dsh` 与可选 peer `@deepseek-ai/dsh@0.2.2-rc.5`，不是全部 0.2.x；`optional` 不会让官方门控跳过不匹配的版本。声明仍是 `0.2.1-rc.5` 时，0.2.2-rc.5 会跳过整个 bundle，设置页不会出现「工作组件」。装好后可用设置页打开「启用」并调用 `mm_send_image` 等工具做一次冒烟。仓库 CI 在 Ubuntu 上跑 `check` + `smoke` 并用无哈希模板 tarball 做体积检查；Windows 任务编译经纪人、把同一次 exe 的哈希注入清单后校验 tarball，并把宿主 / UIA 记为未运行。
 
 ## 数据目录
 
@@ -174,11 +179,12 @@
 
 GPT Image 2 生图（「多模态」分组，默认关闭）：在设置页填写 API Key、Base URL（默认 `https://api.openai.com/v1`）、模型（默认 `gpt-image-2`）与默认尺寸 / 质量并打开「启用」后，注册 `image_generate`（`POST {base}/images/generations`）与 `image_edit`（`POST {base}/images/edits`，multipart，1–16 张本地 png/jpg/webp 与可选 PNG 蒙版）。返回的 `b64_json` 或 `url` 图片保存到数据目录 `images/<YYYY-MM-DD>/`（上海时区），经 attachments 以图片块显示，并返回文件路径。「测试连接」只请求 `GET {base}/models`，不产生出图费用。API Key 为 secret 设置项，设置接口只返回掩码，错误信息中出现的 Key 会被打码。Telegram：两个工具都不在 `OPEN_TOOLS` 中，只有授权用户（所有者）触发的回合可用——`image_generate` 消耗付费额度，`image_edit` 会读取本机任意图片并上传到第三方。
 
-视频理解（「多模态」分组，默认开启）：经 Google Gemini 观看视频。设置项为「启用」「Gemini API 密钥」「模型」（默认 `gemini-3.8-flash`）「YouTube 链接」「哔哩哔哩链接」与「yt-dlp 路径」；组件卡片中的状态框显示密钥来源与末四位掩码、会话工具是否已挂载、正在使用的 yt-dlp 版本与来源。密钥只用本组件单独配置的 `videoGeminiKey`（输入框与其他密钥一致：已保存时留空并显示「已配置 ••••xxxx」，输入新值即替换，「清除」删除）（与「余额查询」各服务商密钥相同的做法：设置中按密钥保存、界面只显示掩码；不沿用聊天室转写密钥或成员凭据，也不读取环境变量），未填写时状态为「未配置密钥」；密钥只放在请求头中，不写入日志，也不经设置接口返回。聊天室语音转写与原生 Gemini 成员的「视频输入」仍用各自原来的密钥；访问 Gemini 时沿用聊天室的 Telegram 代理设置。
+视频理解（「多模态」分组，默认开启）：经 Google Gemini 观看视频。设置项为「启用」「Gemini API 密钥」「模型」（默认 `gemini-3.8-flash`）「长视频自动分段」（默认开启）「每段时长」（默认 600 秒）「段间重叠」（默认 5 秒）「原始视频上限」（默认 4096 MB）「YouTube 链接」「哔哩哔哩链接」与「yt-dlp 路径」；组件卡片中的状态框显示密钥来源与末四位掩码、会话工具是否已挂载、自动分段、原始视频下载上限、正在使用的 yt-dlp 版本与来源。密钥只用本组件单独配置的 `videoGeminiKey`（输入框与其他密钥一致：已保存时留空并显示「已配置 ••••xxxx」，输入新值即替换，「清除」删除）（与「余额查询」各服务商密钥相同的做法：设置中按密钥保存、界面只显示掩码；不沿用聊天室转写密钥或成员凭据，也不读取环境变量），未填写时状态为「未配置密钥」；密钥只放在请求头中，不写入日志，也不经设置接口返回。聊天室语音转写与原生 Gemini 成员的「视频输入」仍用各自原来的密钥；访问 Gemini 时沿用聊天室的 Telegram 代理设置。
 
-- 聊天室：每个视频（本机上传、Telegram 群发送，以及消息中的 YouTube / 哔哩哔哩链接）都会在后台生成带时间戳的中文内容描述，显示在消息的「视频 · 内容描述」卡片中并提供给所有成员；成员可调用 `watch_video` 就某一时间段提问；原生 Gemini 成员可在成员设置中开启「视频输入」，直接收到最新消息中的视频。
-- 会话工具：`describe_video`（整体描述）与 `watch_video`（按问题与时间段观看，相同问题直接返回上次的回答）。参数可为本机视频文件的绝对路径（不超过 200 MB）、YouTube 公开链接（不下载，直接交给 Gemini）或哔哩哔哩链接。不超过 14 MB 的视频内联发送，更大的经 Gemini Files API 上传，48 小时内复用。Telegram：两个工具都不在 `OPEN_TOOLS` 中，只有授权用户（所有者）触发的回合可用（会把本机文件上传给 Google）。
-- 哔哩哔哩（可选）：需要 [yt-dlp](https://github.com/yt-dlp/yt-dlp)（Unlicense，本插件不附带）。查找顺序：「yt-dlp 路径」设置 → `PATH` → 按需下载的副本。组件卡片的「下载 yt-dlp」（下载后变为「更新 / 重新下载 yt-dlp」）与棋类辅助引擎同一做法：只在设置页（本机，即所有者）点击时，从官方 GitHub 发布页取最新正式版中适合本平台的单文件程序（Windows `yt-dlp.exe`、macOS `yt-dlp_macos`、Linux `yt-dlp_linux` 等），用同一版本的 `SHA2-256SUMS` 校验 sha256（不符即删除），放到 `<数据目录>/bin/`，并记录版本；下载过程显示进度，完成后清除检测缓存。没有注册为 AI 工具。版本号先问 GitHub API（带 `User-Agent` 与 `Accept: application/vnd.github+json`）；API 失败时（常见：未登录请求每小时 60 次的上限在共用代理出口上用完，返回 403）改读 `github.com/yt-dlp/yt-dlp/releases/latest` 的跳转目标取版本号，程序与校验文件都从 `github.com/…/releases/download/<版本>/` 下载，sha256 校验照样强制。所有请求与其他下载一样走设置「下载代理」（留空时用环境变量 `HTTPS_PROXY` / `HTTP_PROXY`），失败时给出中文原因。棋类辅助引擎的下载同样改为走「下载代理」。视频下载到数据目录 `videos/<YYYY-MM-DD>/`（会话工具）或房间附件目录（聊天室）后按普通视频处理，单个不超过 25 MB。未检测到 yt-dlp 或下载失败时给出原因。
+- 聊天室：每个视频（本机上传、Telegram 群发送，以及消息中的 YouTube / 哔哩哔哩 / TikTok / 抖音链接）都会在后台生成带时间戳的中文内容描述，显示在消息的「视频 · 内容描述」卡片中并提供给所有成员；成员可调用 `watch_video` 就某一时间段提问；原生 Gemini 成员可在成员设置中开启「视频输入」，直接收到最新消息中的视频。本机上传与不超过 25 MB 的链接下载仍走附件；更大的链接下载按上面的自动分段处理，不会把整文件塞进 25 MB 附件。YouTube 仍走公开链接，不下载。
+- 会话工具：`describe_video`（整体描述）与 `watch_video`（按问题与时间段观看，相同问题在全部分段都成功时直接返回上次的回答）。参数可为本机视频文件的绝对路径（自动分段开启时原始文件默认不超过 4096 MB）、YouTube 公开链接（不下载、不分段，直接交给 Gemini）或哔哩哔哩 / TikTok / 抖音链接。长视频按时间切开后合并，每段的起止时间标在原视频时间轴上；模型给出的时间戳会加上该段起点。`watch_video` 带 start/end 时只切并上传覆盖该范围的片段。不超过 14 MB 的单段内联发送，更大的经 Gemini Files API 上传，48 小时内复用。上传分段仍守入口上限（会话 200 MB、哔哩哔哩 25 MB、服务账号未配置存储桶时 20 MB）。Telegram：两个工具都不在 `OPEN_TOOLS` 中，只有授权用户（所有者）触发的回合可用（会把本机文件上传给 Google）。
+- 哔哩哔哩（可选）：需要 [yt-dlp](https://github.com/yt-dlp/yt-dlp)（Unlicense，本插件不附带）。查找顺序：「yt-dlp 路径」设置 → `PATH` → 按需下载的副本。组件卡片的「下载 yt-dlp」（下载后变为「更新 / 重新下载 yt-dlp」）与棋类辅助引擎同一做法：只在设置页（本机，即所有者）点击时，从官方 GitHub 发布页取最新正式版中适合本平台的单文件程序（Windows `yt-dlp.exe`、macOS `yt-dlp_macos`、Linux `yt-dlp_linux` 等），用同一版本的 `SHA2-256SUMS` 校验 sha256（不符即删除），放到 `<数据目录>/bin/`，并记录版本；下载过程显示进度，完成后清除检测缓存。没有注册为 AI 工具。版本号先问 GitHub API（带 `User-Agent` 与 `Accept: application/vnd.github+json`）；API 失败时（常见：未登录请求每小时 60 次的上限在共用代理出口上用完，返回 403）改读 `github.com/yt-dlp/yt-dlp/releases/latest` 的跳转目标取版本号，程序与校验文件都从 `github.com/…/releases/download/<版本>/` 下载，sha256 校验照样强制。所有请求与其他下载一样走设置「下载代理」（留空时用环境变量 `HTTPS_PROXY` / `HTTP_PROXY`），失败时给出中文原因。棋类辅助引擎的下载同样改为走「下载代理」。视频下载到数据目录 `videos/<YYYY-MM-DD>/`（会话工具）。聊天室里不超过 25 MB 的下载仍存为房间附件；更大的文件移到数据目录 `videos/downloads/`，不整文件读入内存，也不放进 25 MB 附件库。自动分段开启时原始文件默认不超过 4096 MB，随后切成不超过 25 MB 的片段；关闭自动分段时单个不超过 25 MB。未检测到 yt-dlp 或下载失败时给出原因。
+- TikTok / 中国大陆抖音：默认开启，均直接使用「工作组件 › Chrome」的浏览器会话加载页面、提取当前作品的视频地址，再下载文件提交 Gemini，不经过 yt-dlp。支持视频长链接、TikTok 的 `vm` / `vt` / `/t/` 短链、`v.douyin.com` 短链和包含链接的分享文案。浏览器需已连接；可复用已打开的作品页，需要登录或验证码时在浏览器完成后重试。Cookie 不导出给 Gemini；仅上传视频文件。TikTok 文件下载沿用插件「下载代理」，抖音文件下载直连；页面加载使用 Chrome 自身网络设置。自动分段默认开启：原始文件默认不超过 4096 MB，流式落到磁盘后再分段。上传给 Gemini 的每一段仍不超过会话 200 MB、聊天室 25 MB；服务账号未配置存储桶时每一段不超过 20 MB，超限会继续缩短或降低分辨率，仍超限则停止且不上传。普通聊天室附件上限仍是 25 MB。分段文件和分析结果缓存在数据目录 `videos/segments/`，按原文件指纹、分段参数、模型和凭据哈希区分；缓存与日志不写密钥明文。需要本机 FFmpeg 与 ffprobe。图文、直播和 DRM 视频不在此路径的支持范围内。
 - 关闭「启用」后，上述功能全部停用：视频不再生成描述（卡片注明「视频理解未启用」），成员没有 `watch_video` 与视频输入，会话工具卸下；已保存的视频与描述保留。旧版设置键 `chatroomVideoEnabled` / `chatroomVideoModel`（原在聊天室「附件与语音」中）仍会读取，并在启动时迁移到本组件。
 
 日历（默认开启）：`calendar_show`、`calendar_event_save`、`calendar_event_delete`。公历、农历、节气和中国法定节假日（含调休）由 `lunar-javascript` 离线计算，「今天」按 Asia/Shanghai。日程写在数据目录 `calendar/events.json`，不放进设置。天气预报来自 [Open-Meteo](https://open-meteo.com/)（CC BY 4.0），填写设置项「天气城市」后按接口能提供的最长天数查询，不使用高德 Key，请求沿用当前进程的代理。未填城市时历法与日程仍然可用。聊天卡片和设置页「日历」共用同一块月历，每种天气有一枚动态小图标。发到 Telegram 时，`calendar_show` 的卡片另成一条 HTML 月历（天气用对应表情），模型的文字回复仍走原通道。
@@ -220,7 +226,7 @@ DSH 设置里的「工作组件」页：首页是功能列表（按分组），�
 | --- | --- | --- | --- |
 | 多模态 | 媒体卡片 | mm_send_image · 可用 | `mm_send_image` 发图（API text+image；settled MmCard 在 turnTail，toolview 折叠后仍可见） |
 | 多模态 | 日历 | 已启用 | 月历、农历、节假日、日程；天气城市走 Open-Meteo |
-| 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Gmail / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / Termalin / KiCad / Fusion / FreeCAD / MATLAB / ESP-IDF / 串口 / Rhino / Altium / FFmpeg / Obsidian / REA 逆向分析（徽标「已验证」） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
+| 工作组件 | Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / Notion / Gmail / Cloudflare / Cloudflare Docs / GitHub / ComfyUI / Termalin / KiCad / Fusion / FreeCAD / MATLAB / ESP-IDF / 串口 / Rhino / Altium / FFmpeg / Obsidian / REA 逆向分析 / DeepSlate / Cursor / Ghidra / ILSpy（仓库自带，标题旁不另挂徽标） | 已连接 / 已启用 / 未启用 / 未安装 / 出错 / 安装中… | 运行与连接说明、下载安装 / 卸载、「启用」、组件专属配置 |
 | 本地兼容 | `local-components/<id>/` 下的用户模块（徽标「本地」；可用 env `DSH_WORKBENCH_LOCAL_COMPONENTS_DIR`） | 同上 | 与仓库自带同接口；详情页「启用」；管理页复制 PR 清单 / 打开 Compare（**不**自动 commit / push / `gh pr create`） |
 | 通道 | Telegram（徽标「已验证」，**默认关闭**） | 未启动 / 正在连接 / 已连接 / 未连接 / 出错 | 卡片内完成全部设置：启用、机器人令牌（存宿主凭据）、网络代理、所有者 / 允许的用户 ID、新会话预设、新消息插队；连接行显示实时说明或最近一条错误 |
 | 游戏 | Minecraft / 文明 VI / 视觉（徽标「已验证」与「实验性」，**默认关闭**） | 未启动 / 已启动 / 出错… | 共享 GameBot REST + 按游戏 MCP；仓库自带无需下载，首次启用准备 Python 环境 |
@@ -315,13 +321,19 @@ npm run smoke:local    # 本地兼容发现 / moduleSource / contribute 清单
 npm run smoke:gamebot  # GameBot 设置下发冒烟（SMOKE_GAMEBOT_URL，默认 http://127.0.0.1:8767；临时配置 / 记忆目录）
 npm run check          # 语法检查 + GameBot 字段与 lib/client.js 一致性 + vendor/wsz987 与补丁一致（prepublishOnly 会先 build 再跑它）
 npm run vendor:channels  # 由 npm 上的 @wsz987/channel-* 0.5.1 + vendor/wsz987/patches 重新生成 vendor/wsz987（加 -- --check 只校验）
-npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/desktop/broker/dist（不进 git；npm run build 会在需要时自动调用）
+npm run build:desktop  # dotnet publish 到 broker/dist。不进 git，也不进 npm tarball。有 .NET SDK 时 npm run build 会调用它
 ```
 
 发布走 GitHub Actions（`.github/workflows/publish.yml`，npm trusted publishing / OIDC，自动带 provenance）：推送 `v*` 标签触发；本地不要 `npm publish`。
 
 从源码挂进 DSH Desktop：在 `~/.dsh/profiles/desktop` 用 `pnpm add link:<插件目录>`，并在 `dsh.profile.bundles` 加入 `"dsh-work-components"`（若 profile 里曾直接挂同名 mcp-client，先去掉以免重复）。改 bundle 后需重启 Desktop。
 
+
+### Telegram / QQ 消息携带用户 ID
+
+在「设置 → 工作组件 → 通道 → Telegram / QQ」中，各有一个 **消息携带用户 ID** 开关，位于「启用」下方，默认开启。两通道分别控制，复用原有的 `telegramIncludeMetadataPrefix` / `qqIncludeMetadataPrefix` 设置，已有开关值保留。
+
+关闭后，新入站消息仅向模型传递正文和附件：Telegram 不再附加 `[channel=… sender=… message=…]`，QQ 不再附加 `[OpenID 昵称]`。适合不希望身份前缀打断角色扮演的会话。内部仍用真实用户 ID 做权限判断、会话分流和回复路由。此开关不移除用户主动写在正文里的 ID，也不改写历史消息；其他独立功能的提示词注入仍由各自设置控制。保存后通道按现有配置同步机制重新连接。
 
 ## 会话控制（通用）
 
@@ -334,6 +346,7 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 | **撤回** | 用户消息下方操作行的「撤回」（设置 → 工作组件 → 通用 → 会话控制 可关） | 先把当前页正在看的会话恢复到内存，再追加一条 `surfaceOp: replace`，当前页收起该回合及之后的内容。恢复失败时才备份并物理截断磁盘日志，并由页面重新同步。 |
 | **重试** | 助手操作行的「重试」（复制与分支之间） | 先恢复会话，再保留这条用户消息，用 `surfaceOp: replace` 收起它后面的回复，然后 `followup` 同一条内容。新回复直接流在原问题下面。恢复失败时不改磁盘日志。 |
 | **熔断** | 输入框「暂停」按钮（随时可用，含思考中）；或自动阈值 | 暂停只调用 `agent.cancel({ kind: 'user' }, { keepInbox: true })`。自动熔断在同一取消之后，等回合停写，再按撤回把失败尾轮从磁盘截掉。 |
+| **采样** | 输入栏模型选择左侧的「采样」（不依赖上面的实验开关） | 按会话保存 temperature（0 到 2）和 top_p（大于 0 到 1），使用带数值显示的范围滑块，各自可选“使用默认”（不写入）。仅当前模型为 DeepSeek 且使用官方连接（`deepseek-official` / `deepseek-account`）时可用。切换其他模型禁用按钮、关闭弹窗；后端按请求模型再次过滤。已有同名字段保留原值。 |
 
 ### 使用注意
 
@@ -350,6 +363,10 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 - `POST /dsh-workbench/api/session/regenerate` `{ sessionId, userMessageSeq?, messageId? }`
 - `POST /dsh-workbench/api/session/cancel` `{ sessionId, reason? }`
 - `GET /dsh-workbench/api/session/notices`
+- `GET /dsh-workbench/api/session/sampling?sessionId=`
+- `POST /dsh-workbench/api/session/sampling` `{ sessionId, temperature, top_p }`（`null` 或空字符串删除该项）
+
+采样值写在数据目录 `sampling-overrides.json`。宿主 0.2.1-rc.5 把 `conversation.input.right` 画在 `conversation.input.model` 左侧同一行；按钮用该 list slot、`order: 1000`，因此紧挨模型选择。扩展字段经 `deepseekLlmApiExtensions.register` 在官方适配器发 `/messages` 前合并，不改全局 `fetch`。
 
 ## 通道 · Telegram
 
@@ -513,9 +530,19 @@ npm run build:desktop  # dotnet publish 桌面控制经纪人到 src/components/
 
 **勿与 DSH 桌面大脑同时驱动同一游戏**（双脑）。
 
+Minecraft 自主陪玩：选择席位只登记资格；使用游戏内 `/minaret agent spawn <编码> [名称]` 加入后，各席独立持续观察、移动探索与交流。移除后不自动重建，同世界重进恢复。游戏公开消息回写绑定聊天室，房间摘要与近期交流供游戏决策参考；私聊不进入共享记忆。需要同步更新插件和 Minaret 模组（提供持久化世界 UUID）。详见 `src/components/gamebot/README.md`。
+
 ## 更新日志
 
-按版本从新到旧整理，依据 git 标签、提交记录与 [GitHub Releases](https://github.com/meya-ashuripehya/dsh-work-components/releases)。
+按版本从新到旧整理。0.4.4 的英文全文在 [CHANGELOG.md](./CHANGELOG.md)，中文全文在 [docs/release/CHANGELOG-0.4.4.md](./docs/release/CHANGELOG-0.4.4.md)。这一版还没有 `npm publish`，也没有推 tag。
+
+### 0.4.4（候选，尚未发布）
+
+- 打包：发布 tarball 去掉 `scripts`，不再带悬空的 `prepare`；桌面目录不再使用宽 glob；经纪人 exe 不进包。严格市场体积预算是 50 MiB 再留 5 MiB。
+- 桌面控制：只有用户点击「下载安装」才下载。固定 HTTPS、SHA-256 与 SHA-512，校验失败不替换已有程序。v0.4.4 的 Release 文件尚未上传。
+- 更新：npm 更新先核对 `dist.integrity`（SHA-512）、包名和版本，通过后才调用 `dsh plugin add`。失败不写 profile。uv 改为钉死具体 tag 并核对上游 `.sha256`。
+- 兼容：`engines.dsh` 与可选 peer 只声明 `@deepseek-ai/dsh@0.2.2-rc.5`。官方门控不把 `optional` 当豁免，因此这不是「全部 0.2.x 已验证」。`0.2.1-rc.5` 不再在声明里。
+- 功能集合还包括当前工作区里尚未单独发布的通道与跨会话记忆、DeepSeek 会话采样、长视频分段，以及 Minecraft 自主陪玩和 NeoForge 桥的改动。细节见上面两份更新日志。真实宿主、浏览器和 UIA 没有在本轮运行。
 
 ### 0.4.4-beta.1（预览版，2026-11-16）
 
