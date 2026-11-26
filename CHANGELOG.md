@@ -1,8 +1,20 @@
 # Changelog
 
-## 0.4.4 (candidate, not published)
+## 0.5.0
 
-This is the workspace candidate. It is not an npm release and no git tag was pushed. It contains the `0.4.4-beta.1` tree (HEAD `57c5901`) plus the functional changes present in the working tree. English text here is the release note. The Chinese note is `docs/release/CHANGELOG-0.4.4.md`.
+Formal npm release on the `latest` tag. The unpublished `0.4.4` candidate is included here and was not published as its own version. Chinese notes: `docs/release/CHANGELOG-0.5.0.md`. The longer candidate write-up remains `docs/release/CHANGELOG-0.4.4.md`.
+
+The desktop broker URL for this release is `https://github.com/meya-ashuripehya/dsh-work-components/releases/download/v0.5.0/DSHDesktopBroker-win-x64.exe`. The repository manifest stays an unhashed template. `publish.yml` fills the hashes from the exe built for tag `v0.5.0`.
+
+`scripts/pack-release.mjs` still deletes `scripts` from the packed `package.json`, so `npm install dsh-work-components@0.5.0 --ignore-scripts` does not need `scripts/prepare.mjs`. Git checkouts keep `prepare`.
+
+The settings save bar no longer paints an opaque banner. Its background is transparent and the save button stays centered.
+
+Live host install, browser settings, and UI Automation were not run for this release. Do not read this file as a compatibility certificate or a security audit.
+
+## 0.4.4 (candidate, not published on its own)
+
+This candidate was not an npm release and its tag was not pushed. Its tree is the `0.4.4-beta.1` commit `57c5901` plus the functional changes that shipped in `0.5.0`. The broker URL below was the candidate plan; the published asset is the `v0.5.0` URL in the section above.
 
 Live host install, browser settings, and UI Automation were not run. Do not read this file as a compatibility certificate or a security audit.
 

@@ -4,7 +4,7 @@
 
 可用的短句：
 
-> dsh-work-components 0.4.4 候选把桌面经纪人移出 npm 包，改为设置页按需下载并校验 SHA-256 / SHA-512。插件更新在调用宿主安装前核对 npm dist.integrity。兼容声明只写 DeepSeek Harness 0.2.2-rc.5，不代表全部 0.2.x。
+> dsh-work-components 0.5.0 把桌面经纪人移出 npm 包，改为设置页按需下载并校验 SHA-256 / SHA-512。插件更新在调用宿主安装前核对 npm dist.integrity。兼容声明只写 DeepSeek Harness 0.2.2-rc.5，不代表全部 0.2.x。
 
 不要写成：
 

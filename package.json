@@ -1,6 +1,6 @@
 {
   "name": "dsh-work-components",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "DSH 工作组件插件：在「工作组件」设置页统一挂载并管理控制其他工作软件的 MCP 服务器（Office / Blender / Unity / Figma / Photoshop / Chrome / Godot / Windows / 桌面控制 / Notion / Gmail / Cloudflare / GitHub / ComfyUI / FFmpeg / Obsidian / REA 逆向分析 / Cursor / Ghidra / ILSpy），另含游戏分组的棋类与牌类、会话控制、「通道」分组的 Telegram 和多模态工具 mm_send_image。",
   "keywords": [
     "dsh",
@@ -80,6 +80,7 @@
     "CHANGELOG.md",
     "docs/compatibility.md",
     "docs/release/market-readiness.md",
+    "docs/release/CHANGELOG-0.5.0.md",
     "docs/release/CHANGELOG-0.4.4.md",
     "docs/release/about-suggestion.md",
     "docs/release/host-not-run.md",

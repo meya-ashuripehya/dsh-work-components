@@ -535,12 +535,19 @@ Minecraft 自主陪玩：选择席位只登记资格；使用游戏内 `/minaret
 
 ## 更新日志
 
-按版本从新到旧整理。0.4.4 的英文全文在 [CHANGELOG.md](./CHANGELOG.md)，中文全文在 [docs/release/CHANGELOG-0.4.4.md](./docs/release/CHANGELOG-0.4.4.md)。这一版还没有 `npm publish`，也没有推 tag。
+按版本从新到旧整理。0.5.0 的英文全文在 [CHANGELOG.md](./CHANGELOG.md)，中文全文在 [docs/release/CHANGELOG-0.5.0.md](./docs/release/CHANGELOG-0.5.0.md)。
 
-### 0.4.4（候选，尚未发布）
+### 0.5.0（正式版，2026-11-26）
+
+- 发布：0.4.4 候选没有单独上 npm，内容并入这一版。推送 tag `v0.5.0` 后由 GitHub Actions 发布到 npm `latest`，并上传同一次编译的桌面经纪人。
+- 安装：发布包去掉 `scripts`。`npm install dsh-work-components@0.5.0 --ignore-scripts` 不依赖包内的 `prepare`。
+- 设置页：底部「保存」不再铺黑色横幅，底色透明，按钮居中。
+- 其余打包、桌面经纪人、更新校验、宿主声明和功能范围见 0.4.4 候选说明。真实宿主、浏览器和 UIA 没有在这一版运行。
+
+### 0.4.4（候选，未单独发布）
 
 - 打包：发布 tarball 去掉 `scripts`，不再带悬空的 `prepare`；桌面目录不再使用宽 glob；经纪人 exe 不进包。严格市场体积预算是 50 MiB 再留 5 MiB。
-- 桌面控制：只有用户点击「下载安装」才下载。固定 HTTPS、SHA-256 与 SHA-512，校验失败不替换已有程序。v0.4.4 的 Release 文件尚未上传。
+- 桌面控制：只有用户点击「下载安装」才下载。固定 HTTPS、SHA-256 与 SHA-512，校验失败不替换已有程序。正式资源在 `v0.5.0`，不是 `v0.4.4`。
 - 更新：npm 更新先核对 `dist.integrity`（SHA-512）、包名和版本，通过后才调用 `dsh plugin add`。失败不写 profile。uv 改为钉死具体 tag 并核对上游 `.sha256`。
 - 兼容：`engines.dsh` 与可选 peer 只声明 `@deepseek-ai/dsh@0.2.2-rc.5`。官方门控不把 `optional` 当豁免，因此这不是「全部 0.2.x 已验证」。`0.2.1-rc.5` 不再在声明里。
 - 功能集合还包括当前工作区里尚未单独发布的通道与跨会话记忆、DeepSeek 会话采样、长视频分段，以及 Minecraft 自主陪玩和 NeoForge 桥的改动。设置页不显示 Minecraft 与文明 VI；GameBot 视觉桌面驱动已删除。细节见上面两份更新日志。真实宿主、浏览器和 UIA 没有在本轮运行。

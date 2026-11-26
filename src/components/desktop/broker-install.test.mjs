@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -64,7 +65,9 @@ test('repository manifest is an unhashed template and refuses download', () => {
   assert.equal(asset.sha256, '')
   assert.equal(asset.sha512, '')
   assert.equal(asset.bytes, null)
-  assert.match(asset.url, /^https:\/\/github\.com\/meya-ashuripehya\/dsh-work-components\/releases\/download\/v0\.4\.4\//)
+  const version = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version
+  assert.equal(manifest.version, version)
+  assert.match(asset.url, new RegExp(`/releases/download/v${version.replaceAll('.', '\\.')}/DSHDesktopBroker-win-x64\\.exe$`))
   assert.throws(() => assertManifestAsset(asset), /sha256/)
 })
 
