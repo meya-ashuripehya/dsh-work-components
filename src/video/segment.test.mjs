@@ -444,9 +444,9 @@ test('timeout removes partial segment files', async () => {
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('real FFmpeg cuts a 20 second synthetic video and ffprobe plans the read-only Douyin file', async () => {
+test('real FFmpeg cuts a 20 second synthetic video', async (t) => {
   const bins = await resolveVideoFfmpeg({})
-  assert.equal(bins.ok, true, bins.error)
+  if (!bins.ok) return t.skip(bins.error || FFMPEG_MISSING)
   await mkdir(samples, { recursive: true })
   const src = join(samples, 'synthetic-20s.mp4')
   const cacheRoot = join(samples, 'cache')
@@ -552,8 +552,12 @@ test('real FFmpeg cuts a 20 second synthetic video and ffprobe plans the read-on
   await writeFile(join(samples, 'segments.json'), JSON.stringify(index, null, 2))
   assert.match(r.text, /## 片段 1/)
   assert.match(r.text, /彩条与蜂鸣/)
+})
 
-  assert.equal(existsSync(DOUYIN), true)
+test('ffprobe plans the read-only Douyin file without rewriting it', async (t) => {
+  if (!existsSync(DOUYIN)) return t.skip('本机抖音样片不在，跳过只读规划')
+  const bins = await resolveVideoFfmpeg({})
+  if (!bins.ok) return t.skip(bins.error || FFMPEG_MISSING)
   const before = await stat(DOUYIN)
   const duration = await probeDuration(DOUYIN, { ffprobe: bins.ffprobe })
   const after = await stat(DOUYIN)
@@ -696,9 +700,9 @@ test('two callers with the same cache key cut once and do not leave partial file
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('a 1210 second file under 8MB is segmented by the session tool without a known duration', async () => {
+test('a 1210 second file under 8MB is segmented by the session tool without a known duration', async (t) => {
   const proof = 'C:\\Users\\10917\\AppData\\Local\\Temp\\dsh-video-segmentation-proof\\long-1210s.mp4'
-  assert.equal(existsSync(proof), true)
+  if (!existsSync(proof)) return t.skip('本机长视频证明文件不在，跳过只读分段复核')
   const before = await stat(proof)
   assert.equal(before.size, 4129361)
   assert.ok(before.size < 8 * 1024 * 1024)

@@ -308,7 +308,14 @@ async function moderatorFixture(cfgOver = {}, script = {}) {
 test('feature: API end to end over mocked DSH llm + presets: catalog, seats CRUD, streaming, stop, no secrets', async () => {
   const dir = await tmp()
   let cfg = { ...z.object(chatroomSchemaShape(z))({}), chatroomEnabled: false, chatroomTurnBudget: 4 }
-  const llm = mockLlm({ anthropic: () => ({ text: 'Claude到啦', delayMs: 2 }), openai: () => ({ error: '未配置凭据 OPENAI_API_KEY' }) })
+  const llm = mockLlm({
+    anthropic: (options) => {
+      const blob = JSON.stringify(options.messages || '')
+      if (blob.includes('再说一次')) return { text: 'Claude到啦', hang: true }
+      return { text: 'Claude到啦', delayMs: 2 }
+    },
+    openai: () => ({ error: '未配置凭据 OPENAI_API_KEY' }),
+  })
   const saved = []
   const feat = createChatroomFeature(null, () => cfg, { dir, llm, presets: mockPresets(), saveSeats: async (seats) => { saved.push(seats); cfg = { ...cfg, chatroomSeats: seats } } })
   const call = async (method, sub, body, headers = {}) => {
@@ -381,15 +388,21 @@ test('feature: API end to end over mocked DSH llm + presets: catalog, seats CRUD
     assert.ok(remote.join('').includes('event: delta'))
     assert.ok(!remote.join('').includes('思考不应出现'))
     assert.ok(!remote.join('').includes('thinking-delta'))
-    // stop during a slow stream
+    // stop while the named seat is still inside llm.stream（挂起直到 abort，不靠毫秒竞态）
     cfg = { ...cfg, chatroomSeats: [{ id: 'cl', name: 'Claude', provider: 'anthropic', model: 'claude-x', enabled: true }] }
     await call('POST', `/chatroom/rooms/${room.id}/messages`, { text: '@Claude 再说一次' })
-    await new Promise((r) => setTimeout(r, 5))
+    let pending
+    for (let i = 0; i < 200 && !pending; i++) {
+      pending = llm.calls.findLast((c) => JSON.stringify(c.messages || '').includes('再说一次'))
+      if (!pending) await new Promise((r) => setTimeout(r, 10))
+    }
+    assert.ok(pending, '停止前应已发起针对「再说一次」的模型请求')
     assert.equal((await call('POST', `/chatroom/rooms/${room.id}/stop`)).json.stopped, true)
     for (let i = 0; i < 100 && feat.moderator.status(room.id).running; i++) await new Promise((r) => setTimeout(r, 10))
     const last = (await call('GET', `/chatroom/rooms/${room.id}`)).json.messages.at(-1)
     assert.equal(last.status, 'stopped')
-    assert.ok(llm.calls.at(-1).signal.aborted)
+    assert.equal(pending.signal.aborted, true)
+    assert.equal(llm.calls.at(-1).signal.aborted, true)
   } finally { await feat.dispose(); await rm(dir, { recursive: true, force: true }) }
 })
 

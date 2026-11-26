@@ -13,8 +13,17 @@ import { dirname, join } from 'node:path'
 function loadSemver() {
   const require = createRequire(import.meta.url)
   try { return require('semver') } catch { /* not a direct dependency */ }
-  const bundled = join(dirname(process.execPath), 'node_modules', 'npm', 'node_modules', 'semver')
-  if (existsSync(join(bundled, 'package.json'))) return require(bundled)
+  // 官方 Node 自带的 npm 依赖。Windows 安装包把 node.exe 和 node_modules 放在同一层；
+  // Linux / macOS（含 GitHub setup-node）是 bin/node，semver 在 ../lib/node_modules。
+  const execDir = dirname(process.execPath)
+  const candidates = [
+    join(execDir, 'node_modules', 'npm', 'node_modules', 'semver'),
+    join(execDir, '..', 'lib', 'node_modules', 'npm', 'node_modules', 'semver'),
+    join(execDir, '..', 'node_modules', 'npm', 'node_modules', 'semver'),
+  ]
+  for (const bundled of candidates) {
+    if (existsSync(join(bundled, 'package.json'))) return require(bundled)
+  }
   throw new Error('找不到 semver。兼容性门控需要与官方 app-boot 相同的 semver.satisfies。')
 }
 
